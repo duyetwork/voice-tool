@@ -1,0 +1,46 @@
+version: 0.2
+
+# Khuôn theo strongbody-api: build image, tag theo branch, push ECR.
+# Khác biệt: repo này build 3 target từ cùng 1 Dockerfile (api, worker,
+# scheduler) nên push 3 image.
+#
+# Biến môi trường cần khai trong CodeBuild project:
+#   AWS_ACCOUNT_ID, AWS_DEFAULT_REGION (ap-southeast-1),
+#   IMAGE_REPO_NAME (vd: voice-tool), FRONTEND_REPO_NAME (tuỳ chọn)
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - BRANCH=$(echo $CODEBUILD_WEBHOOK_HEAD_REF | cut -d'/' -f3)
+      - if [ -z "$BRANCH" ]; then BRANCH=$(echo $CODEBUILD_SOURCE_VERSION | sed 's|refs/heads/||'); fi
+      - echo "Branch is $BRANCH"
+      - REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building api image...
+      - docker build --target api       -t $IMAGE_REPO_NAME-api:$BRANCH       ./backend
+      - echo Building worker image...
+      - docker build --target worker    -t $IMAGE_REPO_NAME-worker:$BRANCH    ./backend
+      - echo Building scheduler image...
+      - docker build --target scheduler -t $IMAGE_REPO_NAME-scheduler:$BRANCH ./backend
+      - docker tag $IMAGE_REPO_NAME-api:$BRANCH       $REGISTRY/$IMAGE_REPO_NAME-api:$BRANCH
+      - docker tag $IMAGE_REPO_NAME-worker:$BRANCH    $REGISTRY/$IMAGE_REPO_NAME-worker:$BRANCH
+      - docker tag $IMAGE_REPO_NAME-scheduler:$BRANCH $REGISTRY/$IMAGE_REPO_NAME-scheduler:$BRANCH
+
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing images...
+      - docker push $REGISTRY/$IMAGE_REPO_NAME-api:$BRANCH
+      - docker push $REGISTRY/$IMAGE_REPO_NAME-worker:$BRANCH
+      - docker push $REGISTRY/$IMAGE_REPO_NAME-scheduler:$BRANCH
+      - echo Writing image definitions file...
+      - printf '{"ImageURI":"%s"}' $REGISTRY/$IMAGE_REPO_NAME-api:$BRANCH > imageDetail.json
+
+artifacts:
+  files:
+    - imageDetail.json

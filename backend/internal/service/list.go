@@ -1,0 +1,598 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/strongbody/voice-tool/backend/internal/domain"
+	"github.com/strongbody/voice-tool/backend/internal/pkg/validator"
+	"github.com/strongbody/voice-tool/backend/internal/repository"
+)
+
+const (
+	// minScanFrequency chặn cấu hình quét quá dày gây vượt rate-limit nền tảng
+	// (specs mục 5, câu 3/4).
+	minScanFrequency = time.Minute
+	// minBreakingScanInterval thấp hơn vì Breaking ưu tiên tốc độ.
+	minBreakingScanInterval = 15 * time.Second
+	// maxRegexPatterns chặn 1 kênh có quá nhiều pattern (mỗi vòng quét phải
+	// chạy hết tất cả pattern trên tất cả bài).
+	maxRegexPatterns = 20
+	// maxScanLimit khớp CHECK constraint trong migration.
+	maxScanLimit = 200
+)
+
+// ScanDefaults là chỉ số quét tối ưu của hệ thống, dùng khi kênh không cấu hình
+// riêng. Lấy từ .env (xem config.Config).
+type ScanDefaults struct {
+	Interval       time.Duration
+	Limit          int
+	MaxPostsPerRun int
+}
+
+// List quản lý cả 2 danh sách kênh. Breaking và Scheduled là 2 thực thể độc lập
+// (specs 0.1) nhưng dùng chung validate regex / nhận diện nền tảng.
+type List struct {
+	q               *repository.Queries
+	platforms       domain.PlatformRegistry
+	enq             domain.Enqueuer
+	audit           *Audit
+	defaultLanguage string
+	scanDefaults    ScanDefaults
+	enabledModes    []domain.CollectMode
+}
+
+func NewList(
+	q *repository.Queries,
+	platforms domain.PlatformRegistry,
+	enq domain.Enqueuer,
+	audit *Audit,
+	defaultLanguage string,
+	scanDefaults ScanDefaults,
+	enabledModes []domain.CollectMode,
+) *List {
+	return &List{
+		q: q, platforms: platforms, enq: enq, audit: audit,
+		defaultLanguage: defaultLanguage, scanDefaults: scanDefaults,
+		enabledModes: enabledModes,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Danh sách Breaking (F2)
+// ---------------------------------------------------------------------------
+
+type BreakingInput struct {
+	SourceURL string
+	// RegexPatterns nhận cả từ khoá/hashtag thô — service tự chuẩn hoá từng
+	// phần tử về regex (business rule #3). Nhiều pattern kết hợp OR.
+	RegexPatterns []string
+	CollectMode   domain.CollectMode
+	PromptID      *uuid.UUID
+	Language      string
+	AutoProcess   *bool
+	AutoPublish   *bool
+	Status        string
+	ScanLimit     *int32
+	ScanInterval  *time.Duration
+}
+
+func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingInput) (repository.ListBreaking, error) {
+	platform, contentType, err := l.detect(in.SourceURL)
+	if err != nil {
+		return repository.ListBreaking{}, err
+	}
+	if err := ModeEnabled(in.CollectMode, l.enabledModes); err != nil {
+		return repository.ListBreaking{}, err
+	}
+	if err := validateMode(in.CollectMode, in.PromptID); err != nil {
+		return repository.ListBreaking{}, err
+	}
+	patterns, err := normalizePatterns(in.RegexPatterns)
+	if err != nil {
+		return repository.ListBreaking{}, err
+	}
+	interval, err := optionalBreakingInterval(in.ScanInterval)
+	if err != nil {
+		return repository.ListBreaking{}, err
+	}
+
+	list, err := l.q.CreateListBreaking(ctx, repository.CreateListBreakingParams{
+		SourceUrl:       strings.TrimSpace(in.SourceURL),
+		Platform:        platform,
+		ContentType:     nilIfEmpty(contentType),
+		CollectMode:     string(in.CollectMode),
+		PromptID:        in.PromptID,
+		RegexPatterns:   patterns,
+		LanguageDefault: resolveLanguage(in.Language, "", l.defaultLanguage),
+		// Breaking ưu tiên tốc độ -> auto_process mặc định bật (specs -1).
+		AutoProcess:  boolOr(in.AutoProcess, true),
+		AutoPublish:  boolOr(in.AutoPublish, false),
+		Status:       statusOr(in.Status),
+		ScanLimit:    l.scanLimitOr(in.ScanLimit),
+		ScanInterval: interval,
+		CreatedBy:    actor,
+	})
+	if err != nil {
+		return repository.ListBreaking{}, fmt.Errorf("tạo list_breaking: %w", err)
+	}
+
+	l.audit.Record(ctx, actor, domain.AuditCreate, domain.ObjectListBreaking, list.ID, map[string]any{
+		"source_url":     list.SourceUrl,
+		"platform":       list.Platform,
+		"collect_mode":   list.CollectMode,
+		"regex_patterns": list.RegexPatterns,
+		"scan_limit":     list.ScanLimit,
+	})
+	return list, nil
+}
+
+func (l *List) GetBreaking(ctx context.Context, id uuid.UUID) (repository.ListBreaking, error) {
+	list, err := l.q.GetListBreaking(ctx, id)
+	if err != nil {
+		return repository.ListBreaking{}, wrapNotFound(err, "list_breaking "+id.String())
+	}
+	return list, nil
+}
+
+// ChannelFilter là bộ lọc chung của 2 bảng danh sách kênh.
+type ChannelFilter struct {
+	Status    *string
+	Search    *string
+	Platform  *string
+	CreatedBy *uuid.UUID
+	Limit     int32
+	Offset    int32
+}
+
+// ListBreaking hỗ trợ filter/search bằng regex trên source_url (chức năng B2).
+func (l *List) ListBreaking(ctx context.Context, f ChannelFilter) ([]repository.ListListBreakingsRow, error) {
+	limit, offset := clampPage(f.Limit, f.Offset)
+	if f.Search != nil {
+		if err := validator.Validate(*f.Search); err != nil {
+			return nil, err
+		}
+	}
+	return l.q.ListListBreakings(ctx, repository.ListListBreakingsParams{
+		Status:    f.Status,
+		Search:    f.Search,
+		Platform:  f.Platform,
+		CreatedBy: f.CreatedBy,
+		Lim:       limit,
+		Off:       offset,
+	})
+}
+
+type BreakingUpdate struct {
+	SourceURL     *string
+	RegexPatterns []string
+	CollectMode   *string
+	PromptID      *uuid.UUID
+	Language      *string
+	AutoProcess   *bool
+	AutoPublish   *bool
+	Status        *string
+	ScanLimit     *int32
+	ScanInterval  *time.Duration
+}
+
+func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in BreakingUpdate) (repository.ListBreaking, error) {
+	before, err := l.GetBreaking(ctx, id)
+	if err != nil {
+		return repository.ListBreaking{}, err
+	}
+
+	params := repository.UpdateListBreakingParams{
+		ID:              id,
+		CollectMode:     in.CollectMode,
+		PromptID:        in.PromptID,
+		LanguageDefault: in.Language,
+		AutoProcess:     in.AutoProcess,
+		AutoPublish:     in.AutoPublish,
+		Status:          in.Status,
+		ScanLimit:       in.ScanLimit,
+	}
+
+	if in.SourceURL != nil {
+		platform, contentType, err := l.detect(*in.SourceURL)
+		if err != nil {
+			return repository.ListBreaking{}, err
+		}
+		params.SourceUrl = in.SourceURL
+		params.Platform = &platform
+		params.ContentType = nilIfEmpty(contentType)
+	}
+	if in.RegexPatterns != nil {
+		patterns, err := normalizePatterns(in.RegexPatterns)
+		if err != nil {
+			return repository.ListBreaking{}, err
+		}
+		params.RegexPatterns = patterns
+	}
+	if in.CollectMode != nil {
+		mode := domain.CollectMode(*in.CollectMode)
+		promptID := before.PromptID
+		if in.PromptID != nil {
+			promptID = in.PromptID
+		}
+		if err := validateMode(mode, promptID); err != nil {
+			return repository.ListBreaking{}, err
+		}
+	}
+	if in.ScanInterval != nil {
+		interval, err := optionalBreakingInterval(in.ScanInterval)
+		if err != nil {
+			return repository.ListBreaking{}, err
+		}
+		params.ScanInterval = interval
+	}
+	if in.ScanLimit != nil {
+		if err := validateScanLimit(*in.ScanLimit); err != nil {
+			return repository.ListBreaking{}, err
+		}
+	}
+
+	after, err := l.q.UpdateListBreaking(ctx, params)
+	if err != nil {
+		return repository.ListBreaking{}, wrapNotFound(err, "list_breaking "+id.String())
+	}
+
+	l.audit.Record(ctx, actor, domain.AuditUpdate, domain.ObjectListBreaking, id, Diff(
+		breakingSnapshot(before), breakingSnapshot(after)))
+	return after, nil
+}
+
+func (l *List) DeleteBreaking(ctx context.Context, actor, id uuid.UUID) error {
+	rows, err := l.q.DeleteListBreaking(ctx, id)
+	if err != nil {
+		return fmt.Errorf("xoá list_breaking: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: list_breaking %s", domain.ErrNotFound, id)
+	}
+	l.audit.Record(ctx, actor, domain.AuditDelete, domain.ObjectListBreaking, id, nil)
+	return nil
+}
+
+// RunBreaking trigger 1 vòng quét thủ công (dùng để test cấu hình regex).
+func (l *List) RunBreaking(ctx context.Context, actor, id uuid.UUID) error {
+	if _, err := l.GetBreaking(ctx, id); err != nil {
+		return err
+	}
+	if err := l.enq.EnqueueBreakingScan(ctx, id.String()); err != nil {
+		return err
+	}
+	l.audit.Record(ctx, actor, domain.AuditRun, domain.ObjectListBreaking, id, nil)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Danh sách Định kỳ (F3)
+// ---------------------------------------------------------------------------
+
+type ScheduledInput struct {
+	SourceURL      string
+	CollectMode    domain.CollectMode
+	PromptID       *uuid.UUID
+	ScanFrequency  time.Duration
+	Language       string
+	AutoProcess    *bool
+	AutoPublish    *bool
+	Status         string
+	ScanLimit      *int32
+	MaxPostsPerRun *int32
+}
+
+func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in ScheduledInput) (repository.ListScheduled, error) {
+	platform, contentType, err := l.detect(in.SourceURL)
+	if err != nil {
+		return repository.ListScheduled{}, err
+	}
+	if err := ModeEnabled(in.CollectMode, l.enabledModes); err != nil {
+		return repository.ListScheduled{}, err
+	}
+	if err := validateMode(in.CollectMode, in.PromptID); err != nil {
+		return repository.ListScheduled{}, err
+	}
+	freq, err := toInterval(in.ScanFrequency)
+	if err != nil {
+		return repository.ListScheduled{}, err
+	}
+
+	list, err := l.q.CreateListScheduled(ctx, repository.CreateListScheduledParams{
+		SourceUrl:       strings.TrimSpace(in.SourceURL),
+		Platform:        platform,
+		ContentType:     nilIfEmpty(contentType),
+		CollectMode:     string(in.CollectMode),
+		PromptID:        in.PromptID,
+		ScanFrequency:   freq,
+		LanguageDefault: resolveLanguage(in.Language, "", l.defaultLanguage),
+		// F3 có thể gom bài để duyệt hàng loạt -> mặc định vẫn bật, tuỳ kênh tắt.
+		AutoProcess:    boolOr(in.AutoProcess, true),
+		AutoPublish:    boolOr(in.AutoPublish, false),
+		Status:         statusOr(in.Status),
+		ScanLimit:      l.scanLimitOr(in.ScanLimit),
+		MaxPostsPerRun: l.maxPostsOr(in.MaxPostsPerRun),
+		CreatedBy:      actor,
+	})
+	if err != nil {
+		return repository.ListScheduled{}, fmt.Errorf("tạo list_scheduled: %w", err)
+	}
+
+	l.audit.Record(ctx, actor, domain.AuditCreate, domain.ObjectListScheduled, list.ID, map[string]any{
+		"source_url":     list.SourceUrl,
+		"platform":       list.Platform,
+		"collect_mode":   list.CollectMode,
+		"scan_frequency": in.ScanFrequency.String(),
+		"scan_limit":     list.ScanLimit,
+	})
+	return list, nil
+}
+
+func (l *List) GetScheduled(ctx context.Context, id uuid.UUID) (repository.ListScheduled, error) {
+	list, err := l.q.GetListScheduled(ctx, id)
+	if err != nil {
+		return repository.ListScheduled{}, wrapNotFound(err, "list_scheduled "+id.String())
+	}
+	return list, nil
+}
+
+func (l *List) ListScheduled(ctx context.Context, f ChannelFilter) ([]repository.ListListScheduledsRow, error) {
+	limit, offset := clampPage(f.Limit, f.Offset)
+	if f.Search != nil {
+		if err := validator.Validate(*f.Search); err != nil {
+			return nil, err
+		}
+	}
+	return l.q.ListListScheduleds(ctx, repository.ListListScheduledsParams{
+		Status:    f.Status,
+		Search:    f.Search,
+		Platform:  f.Platform,
+		CreatedBy: f.CreatedBy,
+		Lim:       limit,
+		Off:       offset,
+	})
+}
+
+type ScheduledUpdate struct {
+	SourceURL      *string
+	CollectMode    *string
+	PromptID       *uuid.UUID
+	ScanFrequency  *time.Duration
+	Language       *string
+	AutoProcess    *bool
+	AutoPublish    *bool
+	Status         *string
+	ScanLimit      *int32
+	MaxPostsPerRun *int32
+}
+
+func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in ScheduledUpdate) (repository.ListScheduled, error) {
+	before, err := l.GetScheduled(ctx, id)
+	if err != nil {
+		return repository.ListScheduled{}, err
+	}
+
+	params := repository.UpdateListScheduledParams{
+		ID:              id,
+		CollectMode:     in.CollectMode,
+		PromptID:        in.PromptID,
+		LanguageDefault: in.Language,
+		AutoProcess:     in.AutoProcess,
+		AutoPublish:     in.AutoPublish,
+		Status:          in.Status,
+		ScanLimit:       in.ScanLimit,
+		MaxPostsPerRun:  in.MaxPostsPerRun,
+		// pgtype.Interval zero value = NULL -> COALESCE giữ giá trị cũ.
+	}
+
+	if in.SourceURL != nil {
+		platform, contentType, err := l.detect(*in.SourceURL)
+		if err != nil {
+			return repository.ListScheduled{}, err
+		}
+		params.SourceUrl = in.SourceURL
+		params.Platform = &platform
+		params.ContentType = nilIfEmpty(contentType)
+	}
+	if in.CollectMode != nil {
+		mode := domain.CollectMode(*in.CollectMode)
+		promptID := before.PromptID
+		if in.PromptID != nil {
+			promptID = in.PromptID
+		}
+		if err := validateMode(mode, promptID); err != nil {
+			return repository.ListScheduled{}, err
+		}
+	}
+	if in.ScanFrequency != nil {
+		freq, err := toInterval(*in.ScanFrequency)
+		if err != nil {
+			return repository.ListScheduled{}, err
+		}
+		params.ScanFrequency = freq
+	}
+	if in.ScanLimit != nil {
+		if err := validateScanLimit(*in.ScanLimit); err != nil {
+			return repository.ListScheduled{}, err
+		}
+	}
+
+	after, err := l.q.UpdateListScheduled(ctx, params)
+	if err != nil {
+		return repository.ListScheduled{}, wrapNotFound(err, "list_scheduled "+id.String())
+	}
+
+	l.audit.Record(ctx, actor, domain.AuditUpdate, domain.ObjectListScheduled, id, Diff(
+		scheduledSnapshot(before), scheduledSnapshot(after)))
+	return after, nil
+}
+
+func (l *List) DeleteScheduled(ctx context.Context, actor, id uuid.UUID) error {
+	rows, err := l.q.DeleteListScheduled(ctx, id)
+	if err != nil {
+		return fmt.Errorf("xoá list_scheduled: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: list_scheduled %s", domain.ErrNotFound, id)
+	}
+	l.audit.Record(ctx, actor, domain.AuditDelete, domain.ObjectListScheduled, id, nil)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+// detect nhận diện nền tảng từ URL; không nhận ra thì báo lỗi, không đoán mò.
+func (l *List) detect(rawURL string) (platform, contentType string, err error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", "", fmt.Errorf("%w: source_url là bắt buộc", domain.ErrInvalidInput)
+	}
+	adapter, err := l.platforms.Resolve(rawURL)
+	if err != nil {
+		return "", "", err
+	}
+	// URL kênh (không phải 1 bài cụ thể) sẽ không parse ra content type — bỏ qua.
+	ct, _, _ := adapter.ExtractID(rawURL)
+	return string(adapter.Name()), ct, nil
+}
+
+func (l *List) scanLimitOr(v *int32) int32 {
+	if v != nil && *v > 0 {
+		return *v
+	}
+	return int32(l.scanDefaults.Limit)
+}
+
+func (l *List) maxPostsOr(v *int32) *int32 {
+	if v != nil {
+		if *v <= 0 {
+			return nil // 0/âm = không giới hạn
+		}
+		return v
+	}
+	if l.scanDefaults.MaxPostsPerRun <= 0 {
+		return nil
+	}
+	return ptr(int32(l.scanDefaults.MaxPostsPerRun))
+}
+
+// normalizePatterns chuẩn hoá từng pattern về regex và loại trùng lặp.
+func normalizePatterns(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("%w: cần ít nhất 1 regex pattern", domain.ErrInvalidInput)
+	}
+	if len(raw) > maxRegexPatterns {
+		return nil, fmt.Errorf("%w: tối đa %d pattern cho 1 kênh",
+			domain.ErrInvalidInput, maxRegexPatterns)
+	}
+
+	seen := make(map[string]struct{}, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, r := range raw {
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		pattern, err := validator.NormalizePattern(r)
+		if err != nil {
+			return nil, err
+		}
+		if _, dup := seen[pattern]; dup {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		out = append(out, pattern)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: cần ít nhất 1 regex pattern", domain.ErrInvalidInput)
+	}
+	return out, nil
+}
+
+func validateMode(mode domain.CollectMode, promptID *uuid.UUID) error {
+	if !mode.Valid() {
+		return fmt.Errorf("%w: collect_mode phải là A, B hoặc C", domain.ErrInvalidInput)
+	}
+	if mode.NeedsPrompt() && promptID == nil {
+		return domain.ErrPromptRequired
+	}
+	return nil
+}
+
+func validateScanLimit(v int32) error {
+	if v < 1 || v > maxScanLimit {
+		return fmt.Errorf("%w: scan_limit phải trong khoảng 1..%d", domain.ErrInvalidInput, maxScanLimit)
+	}
+	return nil
+}
+
+func toInterval(d time.Duration) (pgtype.Interval, error) {
+	if d < minScanFrequency {
+		return pgtype.Interval{}, fmt.Errorf("%w: scan_frequency tối thiểu %s",
+			domain.ErrInvalidInput, minScanFrequency)
+	}
+	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}, nil
+}
+
+// optionalBreakingInterval: nil = kênh dùng khoảng nghỉ mặc định của hệ thống.
+func optionalBreakingInterval(d *time.Duration) (pgtype.Interval, error) {
+	if d == nil {
+		return pgtype.Interval{}, nil
+	}
+	if *d < minBreakingScanInterval {
+		return pgtype.Interval{}, fmt.Errorf("%w: scan_interval tối thiểu %s",
+			domain.ErrInvalidInput, minBreakingScanInterval)
+	}
+	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}, nil
+}
+
+func intervalDuration(i pgtype.Interval) time.Duration {
+	if !i.Valid {
+		return 0
+	}
+	const day = 24 * time.Hour
+	return time.Duration(i.Microseconds)*time.Microsecond +
+		time.Duration(i.Days)*day +
+		time.Duration(i.Months)*30*day
+}
+
+func boolOr(p *bool, fallback bool) bool {
+	if p == nil {
+		return fallback
+	}
+	return *p
+}
+
+func statusOr(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "active"
+	}
+	return s
+}
+
+func breakingSnapshot(l repository.ListBreaking) map[string]any {
+	return map[string]any{
+		"source_url": l.SourceUrl, "platform": l.Platform, "collect_mode": l.CollectMode,
+		"prompt_id": l.PromptID, "regex_patterns": l.RegexPatterns,
+		"language_default": l.LanguageDefault, "auto_process": l.AutoProcess,
+		"auto_publish": l.AutoPublish, "status": l.Status,
+		"scan_limit": l.ScanLimit, "scan_interval": intervalDuration(l.ScanInterval).String(),
+	}
+}
+
+func scheduledSnapshot(l repository.ListScheduled) map[string]any {
+	return map[string]any{
+		"source_url": l.SourceUrl, "platform": l.Platform, "collect_mode": l.CollectMode,
+		"prompt_id": l.PromptID, "scan_frequency": intervalDuration(l.ScanFrequency).String(),
+		"language_default": l.LanguageDefault, "auto_process": l.AutoProcess,
+		"auto_publish": l.AutoPublish, "status": l.Status,
+		"scan_limit": l.ScanLimit, "max_posts_per_run": l.MaxPostsPerRun,
+	}
+}

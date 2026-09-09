@@ -1,0 +1,23 @@
+# Chuẩn hoá xuống dòng: repo luôn lưu LF, kể cả khi commit từ Windows.
+# Không có dòng này thì file sinh/sửa trên Windows vào repo dưới dạng CRLF,
+# làm `gofmt -l` báo lệch chuẩn toàn bộ file và diff phình ra vô nghĩa.
+* text=auto eol=lf
+
+# File nhị phân: không đụng vào nội dung.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.mp3 binary
+*.mp4 binary
+*.woff binary
+*.woff2 binary
+
+# Script chạy trong container Linux — CRLF làm shebang hỏng.
+*.sh text eol=lf
+
+# Code sqlc sinh ra: gộp lại trong diff của PR cho đỡ nhiễu.
+backend/internal/repository/*.sql.go linguist-generated=true
+frontend/package-lock.json linguist-generated=true

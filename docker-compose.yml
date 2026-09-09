@@ -1,0 +1,183 @@
+name: voice-tool
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: voice-tool-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-voice}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-voice}
+      POSTGRES_DB: ${POSTGRES_DB:-voice_tool}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voice} -d ${POSTGRES_DB:-voice_tool}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: voice-tool-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # S3-compatible storage cho dev; production dùng AWS S3 thật.
+  minio:
+    image: minio/minio:latest
+    container_name: voice-tool-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: voice-tool-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/migrations:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=${DATABASE_URL:-postgres://voice:voice@postgres:5432/voice_tool?sslmode=disable}"
+      - "up"
+
+  api:
+    build:
+      context: ./backend
+      target: api
+    container_name: voice-tool-api
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://voice:voice@postgres:5432/voice_tool?sslmode=disable}
+      REDIS_ADDR: redis:6379
+      S3_ENDPOINT: http://minio:9000
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # 2 process worker: mọi task đều idempotent nên scale ngang được.
+  # Mode A (tải video + tách audio) tốn CPU/băng thông nên 2 process là mức
+  # cân bằng cho 1 máy 2-4 vCPU.
+  worker:
+    build:
+      context: ./backend
+      target: worker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://voice:voice@postgres:5432/voice_tool?sslmode=disable}
+      REDIS_ADDR: redis:6379
+      S3_ENDPOINT: http://minio:9000
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # CHỈ 1 process scheduler — nhiều process = task theo lịch bị nhân đôi.
+  scheduler:
+    build:
+      context: ./backend
+      target: scheduler
+    container_name: voice-tool-scheduler
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://voice:voice@postgres:5432/voice_tool?sslmode=disable}
+      REDIS_ADDR: redis:6379
+      S3_ENDPOINT: http://minio:9000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./frontend
+      # NEXT_PUBLIC_* phải truyền lúc BUILD (Next.js nướng thẳng vào bundle JS).
+      # Sửa giá trị này thì phải build lại image: docker compose up -d --build frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080/api/v1}
+    container_name: voice-tool-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+  # UI xem/sửa database: http://localhost:8085
+  # Đăng nhập: System=PostgreSQL, Server=postgres, User/Password/Database lấy
+  # từ POSTGRES_* trong .env.
+  adminer:
+    image: adminer:latest
+    container_name: voice-tool-adminer
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: dracula
+    ports:
+      - "${ADMINER_PORT:-8085}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # UI theo dõi queue Asynq: http://localhost:8081
+  asynqmon:
+    image: hibiken/asynqmon:latest
+    container_name: voice-tool-asynqmon
+    restart: unless-stopped
+    command: ["--redis-addr=redis:6379"]
+    ports:
+      - "8081:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS skipped_log;
+DROP TABLE IF EXISTS voice;
+DROP TABLE IF EXISTS source_post;
+DROP TABLE IF EXISTS list_scheduled;
+DROP TABLE IF EXISTS list_breaking;
+DROP TABLE IF EXISTS ai_engine;
+DROP TABLE IF EXISTS prompt;
+DROP TABLE IF EXISTS app_user;

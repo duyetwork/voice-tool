@@ -30,3 +30,24 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# ---------------------------------------------------------------------------
+# Node / Next.js
+# ---------------------------------------------------------------------------
+node_modules/
+.next/
+out/
+next-env.d.ts
+.env.local
+.env*.local
+npm-debug.log*
+tsconfig.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+bin/
+dist/
+
+# ban sao luu database sinh boi scripts/backup-db.sh
+backups/
