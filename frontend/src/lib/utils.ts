@@ -37,12 +37,22 @@ export function formatInterval(
   return `mỗi ${totalSeconds}s`;
 }
 
-/** Nhãn tiếng Việt cho 3 hình thức thu thập voice (specs 1.2). */
+/**
+ * Nhãn tiếng Việt cho 3 hình thức thu thập voice (specs 1.2).
+ *
+ * Không hiện mã A/B/C: người dùng chỉ cần biết cách làm, còn mã chỉ là giá trị
+ * lưu trong DB. Mọi chỗ hiển thị hình thức đều đi qua `collectModeLabel`.
+ */
 export const COLLECT_MODE_LABELS: Record<string, string> = {
-  A: "A — Extract từ URL",
-  B: "B — Text → AI gen → voice",
-  C: "C — Text + Prompt → AI gen → voice",
+  A: "Extract từ URL",
+  B: "Text → TTS → Voice",
+  C: "Text + Prompt → TTS → Voice",
 };
+
+export function collectModeLabel(mode?: string | null): string {
+  if (!mode) return "—";
+  return COLLECT_MODE_LABELS[mode] ?? mode;
+}
 
 export const POST_STATUS_LABELS: Record<string, string> = {
   new: "Mới",
@@ -52,6 +62,7 @@ export const POST_STATUS_LABELS: Record<string, string> = {
 };
 
 export const PUBLISH_STATUS_LABELS: Record<string, string> = {
+  processing: "Đang xử lý",
   draft: "Nháp",
   ready: "Chờ đăng",
   published: "Đã đăng",
@@ -75,24 +86,6 @@ export const PLATFORM_LABELS: Record<string, string> = {
 export function platformLabel(value?: string | null): string {
   if (!value) return "—";
   return PLATFORM_LABELS[value] ?? value;
-}
-
-/**
- * Ngôn ngữ: "auto" là mặc định — để nền tảng nguồn / multime.ai tự nhận diện.
- * Đoán sai ngôn ngữ tệ hơn là không đoán.
- */
-export const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
-  { value: "auto", label: "Tự nhận diện" },
-  { value: "vi", label: "Tiếng Việt (vi)" },
-  { value: "en", label: "English (en)" },
-  { value: "ja", label: "日本語 (ja)" },
-  { value: "ko", label: "한국어 (ko)" },
-  { value: "zh", label: "中文 (zh)" },
-];
-
-export function languageLabel(value?: string | null): string {
-  if (!value) return "—";
-  return LANGUAGE_OPTIONS.find((o) => o.value === value)?.label ?? value;
 }
 
 /** formatBytes hiển thị dung lượng file voice. */

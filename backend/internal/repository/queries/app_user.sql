@@ -26,7 +26,11 @@ SELECT * FROM app_user WHERE email = $1;
 SELECT * FROM app_user WHERE id = $1;
 
 -- name: ListUsers :many
-SELECT * FROM app_user ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+SELECT * FROM app_user
+ORDER BY
+  CASE WHEN sqlc.arg('dir')::text = 'asc' THEN created_at END ASC,
+  created_at DESC
+LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: SetUserRole :one
 UPDATE app_user SET role = $2 WHERE id = $1 RETURNING *;

@@ -19,7 +19,15 @@ WHERE (sqlc.narg('status')::varchar   IS NULL OR lb.status     = sqlc.narg('stat
   AND (sqlc.narg('platform')::varchar IS NULL OR lb.platform   = sqlc.narg('platform'))
   AND (sqlc.narg('created_by')::uuid  IS NULL OR lb.created_by = sqlc.narg('created_by'))
   AND (sqlc.narg('search')::text      IS NULL OR lb.source_url ~* sqlc.narg('search'))
-ORDER BY lb.created_at DESC
+-- Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
+ORDER BY
+  CASE WHEN sqlc.arg('sort')::text = 'last_scanned_at' AND sqlc.arg('dir')::text = 'asc'
+       THEN lb.last_scanned_at END ASC NULLS LAST,
+  CASE WHEN sqlc.arg('sort')::text = 'last_scanned_at' AND sqlc.arg('dir')::text = 'desc'
+       THEN lb.last_scanned_at END DESC NULLS LAST,
+  CASE WHEN sqlc.arg('dir')::text = 'asc' AND sqlc.arg('sort')::text <> 'last_scanned_at'
+       THEN lb.created_at END ASC,
+  lb.created_at DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: ListActiveListBreakings :many
@@ -58,3 +66,12 @@ UPDATE list_breaking SET last_scanned_at = now() WHERE id = $1;
 
 -- name: DeleteListBreaking :execrows
 DELETE FROM list_breaking WHERE id = $1;
+
+-- name: CountListBreakings :one
+-- Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
+SELECT COUNT(*)
+FROM list_breaking lb
+WHERE (sqlc.narg('status')::varchar   IS NULL OR lb.status     = sqlc.narg('status'))
+  AND (sqlc.narg('platform')::varchar IS NULL OR lb.platform   = sqlc.narg('platform'))
+  AND (sqlc.narg('created_by')::uuid  IS NULL OR lb.created_by = sqlc.narg('created_by'))
+  AND (sqlc.narg('search')::text      IS NULL OR lb.source_url ~* sqlc.narg('search'));

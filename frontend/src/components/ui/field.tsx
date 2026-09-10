@@ -48,7 +48,7 @@ export function Field({
   hint,
   children,
 }: {
-  label: string;
+  label: React.ReactNode;
   hint?: string;
   children: React.ReactNode;
 }) {
@@ -58,5 +58,51 @@ export function Field({
       {children}
       {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
     </div>
+  );
+}
+
+/**
+ * Toggle — công tắc bật/tắt. Dùng cho trạng thái nhị phân đọc-hiểu-ngay
+ * (tài khoản bật/tắt), thay vì nút phải đọc chữ mới biết đang ở trạng thái nào.
+ */
+export function Toggle({
+  checked,
+  onChange,
+  disabled,
+  label,
+  className,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  /** Nhãn hiện cạnh công tắc; cũng là nhãn cho screen reader. */
+  label?: string;
+  className?: string;
+}) {
+  return (
+    <label className={cn("inline-flex items-center gap-2", disabled && "opacity-50", className)}>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={cn(
+          "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600",
+          disabled ? "cursor-not-allowed" : "cursor-pointer",
+          checked ? "bg-indigo-700" : "bg-slate-300",
+        )}
+      >
+        <span
+          className={cn(
+            "inline-block size-4 rounded-full bg-white shadow transition-transform",
+            checked ? "translate-x-4.5" : "translate-x-0.5",
+          )}
+        />
+      </button>
+      {label ? <span className="text-sm text-slate-700">{label}</span> : null}
+    </label>
   );
 }

@@ -89,9 +89,10 @@ func TestRolePermissions(t *testing.T) {
 		write, delete, manage bool
 	}{
 		{domain.RoleAdmin, true, true, true},
+		// Editor: toàn quyền nghiệp vụ, chỉ thiếu quyền phân quyền.
+		{domain.RoleEditor, true, true, false},
 		// User bình thường: đăng được voice nhưng KHÔNG xoá được.
 		{domain.RoleUser, true, false, false},
-		{domain.RoleViewer, false, false, false},
 	}
 
 	for _, c := range cases {
@@ -106,7 +107,7 @@ func TestRolePermissions(t *testing.T) {
 		}
 	}
 
-	for _, invalid := range []domain.Role{"superuser", "editor", ""} {
+	for _, invalid := range []domain.Role{"superuser", "viewer", ""} {
 		if invalid.Valid() {
 			t.Errorf("role %q phải bị từ chối", invalid)
 		}

@@ -18,12 +18,13 @@ type YouTube struct {
 var _ domain.PlatformAdapter = (*YouTube)(nil)
 
 func NewYouTube(runner CommandRunner, tempDir string) *YouTube {
-	return &YouTube{core: newCore(runner, tempDir)}
+	return &YouTube{core: newCore(runner, tempDir, true)}
 }
 
 func (y *YouTube) Name() domain.Platform { return domain.PlatformYouTube }
 
-var ytHostRe = regexp.MustCompile(`(?i)^(www\.|m\.|music\.)?(youtube\.com|youtu\.be)$`)
+var ytHostRe = regexp.MustCompile(
+	`(?i)^(www\.|m\.|music\.)?(youtube\.com|youtube-nocookie\.com|youtu\.be)$`)
 
 func (y *YouTube) DetectPlatform(rawURL string) bool {
 	host, _, ok := splitHostPath(rawURL)
@@ -43,6 +44,8 @@ var ytPatterns = []struct {
 	{domain.ContentShort, regexp.MustCompile(`(?i)/shorts/([\w-]{11})`)},
 	{domain.ContentVideo, regexp.MustCompile(`(?i)/live/([\w-]{11})`)},
 	{domain.ContentVideo, regexp.MustCompile(`(?i)/embed/([\w-]{11})`)},
+	{domain.ContentVideo, regexp.MustCompile(`(?i)/v/([\w-]{11})`)},
+	{domain.ContentShort, regexp.MustCompile(`(?i)/short/([\w-]{11})`)},
 }
 
 func (y *YouTube) ExtractID(rawURL string) (string, string, error) {
@@ -61,11 +64,20 @@ func (y *YouTube) FetchContent(
 ) (domain.FetchedContent, error) {
 	// YouTube dựng lại được URL chuẩn từ ID, nên ID là nguồn tin cậy hơn URL
 	// người dùng dán (có thể kèm playlist, timestamp...).
-	videoURL := ref.URL
+	return y.core.fetch(ctx, y.videoURL(ref), ref.PostID, domain.ContentVideo, mode)
+}
+
+func (y *YouTube) FetchMetadata(ctx context.Context, ref domain.PostRef) (domain.PostMetadata, error) {
+	return y.core.metadata(ctx, y.videoURL(ref))
+}
+
+// videoURL dựng URL chuẩn từ ID: URL người dùng dán có thể kèm playlist,
+// timestamp, tham số tracking.
+func (y *YouTube) videoURL(ref domain.PostRef) string {
 	if ref.PostID != "" {
-		videoURL = "https://www.youtube.com/watch?v=" + ref.PostID
+		return "https://www.youtube.com/watch?v=" + ref.PostID
 	}
-	return y.core.fetch(ctx, videoURL, ref.PostID, domain.ContentVideo, mode)
+	return ref.URL
 }
 
 func (y *YouTube) FetchLatestPosts(ctx context.Context, channelURL string, limit int) ([]domain.RemotePost, error) {

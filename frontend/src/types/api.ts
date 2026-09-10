@@ -1,17 +1,15 @@
 export type CollectMode = "A" | "B" | "C";
 export type SourceType = "F1" | "BREAKING" | "SCHEDULED";
 export type PostStatus = "new" | "processing" | "processed" | "failed";
-export type PublishStatus = "draft" | "ready" | "published" | "failed";
+/**
+ * `processing`: record đã tạo, worker đang tải/tạo audio. Chưa có file nên
+ * chưa sửa/đăng được — tồn tại để thấy voice ngay khi bấm tạo.
+ */
+export type PublishStatus = "processing" | "draft" | "ready" | "published" | "failed";
 
 export interface Page<T> {
   items: T[];
   total: number;
-  limit: number;
-  offset: number;
-}
-
-export interface ItemList<T> {
-  items: T[];
   limit: number;
   offset: number;
 }
@@ -22,7 +20,11 @@ export interface TokenPair {
   expires_in: number;
 }
 
-export type Role = "admin" | "user" | "viewer";
+/**
+ * Vai trò: admin (toàn quyền), editor (toàn quyền nghiệp vụ trừ phân quyền),
+ * user (tạo/chạy/đăng voice, không xoá).
+ */
+export type Role = "admin" | "editor" | "user";
 
 export interface User {
   id: string;
@@ -62,6 +64,20 @@ export interface PublishRequirements {
   min_duration_seconds: number;
 }
 
+/**
+ * Bài Post đã có trong hệ thống, trả kèm lỗi `duplicate_post` (HTTP 409) khi
+ * tạo bài trùng ID bài đăng.
+ */
+export interface DuplicatePost {
+  id: string;
+  source_url: string;
+  title?: string;
+  status: PostStatus;
+  collect_mode: CollectMode;
+  created_at: string;
+  post_id_extracted?: string;
+}
+
 export interface SourcePost {
   id: string;
   source_type: SourceType;
@@ -80,9 +96,11 @@ export interface SourcePost {
   created_by: string;
   created_at: string;
 
-  /** Metadata gốc của bài, dùng auto-fill khi tạo Voice. */
+  /**
+   * Metadata gốc của bài, dùng auto-fill khi tạo Voice. `title` là TOÀN BỘ nội
+   * dung bài (trừ hashtag) — hệ thống không còn trường mô tả riêng.
+   */
   title: string | null;
-  description: string | null;
   hashtags: string[];
   thumbnail_url: string | null;
   author_name: string | null;
@@ -98,11 +116,11 @@ export interface Voice {
   ai_engine_id: string | null;
   voice_file_url: string | null;
   duration_seconds: number | null;
+  /** Nội dung Bài Post gộp về 1 dòng, cắt 200 ký tự — giới hạn của multime. */
   title: string | null;
   mime_type: string | null;
   size_bytes: number | null;
   sample_rate: number | null;
-  description: string | null;
   hashtag: string | null;
   language: string;
   image_url: string | null;
@@ -187,6 +205,8 @@ export interface AIEngine {
 export interface AuditLog {
   id: string;
   user_id: string;
+  /** Email người thao tác (JOIN app_user); null nếu tài khoản không còn. */
+  user_email: string | null;
   action: "create" | "update" | "delete" | "run" | "publish";
   object_type: string;
   object_id: string;

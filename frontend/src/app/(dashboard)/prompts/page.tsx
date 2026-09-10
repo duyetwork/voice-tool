@@ -3,18 +3,24 @@
 import * as React from "react";
 
 import { ErrorNote, PageHeader } from "@/components/page-header";
-import { Can, ViewerNotice, usePermissions } from "@/components/permission";
+import { Can, usePermissions } from "@/components/permission";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Field, Input, Textarea } from "@/components/ui/field";
-import { EmptyRow, Table, Td, Th } from "@/components/ui/table";
+import { Pagination, usePaging } from "@/components/ui/pagination";
+import { DateCell, EmptyRow, RowActions, SortableTh, Table, Td, Th, useSorting } from "@/components/ui/table";
 import { useCreatePrompt, useDeletePrompt, usePrompts } from "@/hooks/use-api";
-import { formatDateTime } from "@/lib/utils";
 
 /** A1 — Quản lý Prompt mẫu, dùng cho Mode C. */
 export default function PromptsPage() {
   const { perms } = usePermissions();
-  const prompts = usePrompts();
+  const paging = usePaging();
+  const sorting = useSorting("created_at", paging.reset);
+  const prompts = usePrompts({
+    ...sorting.params,
+    limit: paging.limit,
+    offset: paging.offset,
+  });
   const create = useCreatePrompt();
   const remove = useDeletePrompt();
 
@@ -34,8 +40,6 @@ export default function PromptsPage() {
         title="Prompt mẫu"
         description="Chỉ dẫn biên tập cho Mode C — LLM viết lại text nguồn theo prompt trước khi đưa qua TTS."
       />
-
-      <ViewerNotice />
 
       <div className={perms.can_write ? "grid gap-6 xl:grid-cols-[420px_1fr]" : ""}>
         <Can permission="can_write">
@@ -82,9 +86,11 @@ export default function PromptsPage() {
                 <tr>
                   <Th>Tên</Th>
                   <Th>Nội dung</Th>
-                  <Th>Tạo lúc</Th>
+                  <SortableTh sorting={sorting} column="created_at">
+                    Tạo lúc
+                  </SortableTh>
                   <Can permission="can_delete">
-                    <Th className="text-right" />
+                    <Th className="text-right">Hành động</Th>
                   </Can>
                 </tr>
               </thead>
@@ -98,18 +104,22 @@ export default function PromptsPage() {
                       <Td className="max-w-md">
                         <p className="line-clamp-3 text-slate-600">{prompt.content}</p>
                       </Td>
-                      <Td className="whitespace-nowrap">{formatDateTime(prompt.created_at)}</Td>
+                      <Td>
+                        <DateCell value={prompt.created_at} />
+                      </Td>
                       <Can permission="can_delete">
                         <Td className="text-right">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              if (confirm(`Xoá prompt "${prompt.name}"?`)) remove.mutate(prompt.id);
-                            }}
-                          >
-                            Xoá
-                          </Button>
+                          <RowActions>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              onClick={() => {
+                                if (confirm(`Xoá prompt "${prompt.name}"?`)) remove.mutate(prompt.id);
+                              }}
+                            >
+                              Xoá
+                            </Button>
+                          </RowActions>
                         </Td>
                       </Can>
                     </tr>
@@ -119,6 +129,8 @@ export default function PromptsPage() {
                 )}
               </tbody>
             </Table>
+
+            <Pagination total={prompts.data?.total} paging={paging} unit="prompt" />
           </CardBody>
         </Card>
       </div>

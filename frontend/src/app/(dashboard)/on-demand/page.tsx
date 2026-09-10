@@ -2,28 +2,31 @@
 
 import * as React from "react";
 
+import { DuplicatePostNotice } from "@/components/duplicate-notice";
 import { ErrorNote, PageHeader } from "@/components/page-header";
-import { Can, ViewerNotice } from "@/components/permission";
+import { Can } from "@/components/permission";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Checkbox, Field, Input, Select } from "@/components/ui/field";
-import { EmptyRow, Table, Td, Th } from "@/components/ui/table";
+import { Pagination, usePaging } from "@/components/ui/pagination";
+import { DateCell, EmptyRow, SortableTh, Table, Td, Th, useSorting } from "@/components/ui/table";
 import {
+  duplicateOf,
   useCollectModes,
   useCreateSourcePost,
   usePlatforms,
   usePrompts,
   useSourcePosts,
 } from "@/hooks/use-api";
+import { LANGUAGE_OPTIONS } from "@/lib/languages";
 import {
   COLLECT_MODE_LABELS,
-  LANGUAGE_OPTIONS,
+  collectModeLabel,
   POST_STATUS_LABELS,
-  formatDateTime,
   platformLabel,
 } from "@/lib/utils";
-import type { CollectMode } from "@/types/api";
+import type { CollectMode, DuplicatePost } from "@/types/api";
 
 /**
  * F1 — Tạo Voice theo yêu cầu.
@@ -40,29 +43,51 @@ export default function OnDemandPage() {
   const [language, setLanguage] = React.useState("auto");
   const [platform, setPlatform] = React.useState("");
   const [autoProcess, setAutoProcess] = React.useState(true);
+  // Bài trùng đang chờ người dùng quyết định bỏ qua hay vẫn tạo mới.
+  const [duplicate, setDuplicate] = React.useState<DuplicatePost | null>(null);
 
   const prompts = usePrompts();
   const platforms = usePlatforms();
   const modes = useCollectModes();
   const create = useCreateSourcePost();
-  const recent = useSourcePosts({ source_type: "F1", limit: 10 });
+  const paging = usePaging(10);
+  const sorting = useSorting("created_at", paging.reset);
+  const recent = useSourcePosts({
+    source_type: "F1",
+    ...sorting.params,
+    limit: paging.limit,
+    offset: paging.offset,
+  });
 
   const needsPrompt = collectMode === "C";
   const modeMeta = modes.data?.collect_modes ?? [];
   const isEnabled = (mode: string) =>
     modeMeta.find((m) => m.mode === mode)?.enabled ?? mode === "A";
 
+  async function send(allowDuplicate: boolean) {
+    try {
+      await create.mutateAsync({
+        source_url: sourceUrl.trim(),
+        collect_mode: collectMode,
+        prompt_id: needsPrompt && promptId ? promptId : null,
+        language,
+        auto_process: autoProcess,
+        platform: platform || undefined,
+        allow_duplicate: allowDuplicate || undefined,
+      });
+      setDuplicate(null);
+      setSourceUrl("");
+    } catch (err) {
+      // Trùng bài thì không phải lỗi: hỏi lại người dùng.
+      const dup = duplicateOf(err);
+      if (!dup) throw err;
+      setDuplicate(dup);
+    }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    await create.mutateAsync({
-      source_url: sourceUrl.trim(),
-      collect_mode: collectMode,
-      prompt_id: needsPrompt && promptId ? promptId : null,
-      language,
-      auto_process: autoProcess,
-      platform: platform || undefined,
-    });
-    setSourceUrl("");
+    await send(false);
   }
 
   return (
@@ -71,8 +96,6 @@ export default function OnDemandPage() {
         title="F1 — Tạo Voice theo yêu cầu"
         description="Dán 1 URL, hệ thống tự nhận diện nền tảng và ID bài đăng, tạo Bài Post rồi sinh Voice."
       />
-
-      <ViewerNotice />
 
       <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
         <Can permission="can_write">
@@ -158,7 +181,19 @@ export default function OnDemandPage() {
                   Chạy tạo Voice ngay sau khi tạo Bài Post
                 </label>
 
-                <ErrorNote error={create.error} />
+                {duplicate ? (
+                  <DuplicatePostNotice
+                    existing={duplicate}
+                    pending={create.isPending}
+                    onSkip={() => {
+                      setDuplicate(null);
+                      setSourceUrl("");
+                    }}
+                    onCreateAnyway={() => void send(true)}
+                  />
+                ) : (
+                  <ErrorNote error={create.error} />
+                )}
 
                 <Button type="submit" className="w-full" disabled={create.isPending}>
                   {create.isPending ? "Đang xử lý…" : "Tạo Bài Post"}
@@ -190,11 +225,13 @@ export default function OnDemandPage() {
                 <tr>
                   <Th>Bài gốc</Th>
                   <Th>Nền tảng</Th>
-                  <Th>Mode</Th>
+                  <Th>Hình thức</Th>
                   <Th>Ngôn ngữ</Th>
                   <Th>Người tạo</Th>
                   <Th>Trạng thái</Th>
-                  <Th>Tạo lúc</Th>
+                  <SortableTh sorting={sorting} column="created_at">
+                    Tạo lúc
+                  </SortableTh>
                 </tr>
               </thead>
               <tbody>
@@ -220,7 +257,7 @@ export default function OnDemandPage() {
                         ) : null}
                       </Td>
                       <Td className="whitespace-nowrap">{platformLabel(post.platform)}</Td>
-                      <Td>{post.collect_mode}</Td>
+                      <Td className="text-xs">{collectModeLabel(post.collect_mode)}</Td>
                       <Td>{post.language}</Td>
                       <Td className="text-xs text-slate-600">{post.created_by_email ?? "—"}</Td>
                       <Td>
@@ -228,7 +265,9 @@ export default function OnDemandPage() {
                           {POST_STATUS_LABELS[post.status] ?? post.status}
                         </Badge>
                       </Td>
-                      <Td>{formatDateTime(post.created_at)}</Td>
+                      <Td>
+                        <DateCell value={post.created_at} />
+                      </Td>
                     </tr>
                   ))
                 ) : (
@@ -236,6 +275,8 @@ export default function OnDemandPage() {
                 )}
               </tbody>
             </Table>
+
+            <Pagination total={recent.data?.total} paging={paging} unit="bài" />
           </CardBody>
         </Card>
       </div>

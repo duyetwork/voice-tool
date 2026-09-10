@@ -215,8 +215,8 @@ func (c *Config) validate() error {
 	if c.TokenEncryptionKey == "" {
 		return fmt.Errorf("TOKEN_ENCRYPTION_KEY là bắt buộc (sinh bằng `make gen-key`)")
 	}
-	if role := Role(c.DefaultUserRole); role != "admin" && role != "user" && role != "viewer" {
-		return fmt.Errorf("DEFAULT_USER_ROLE phải là admin, user hoặc viewer")
+	if role := Role(c.DefaultUserRole); role != "admin" && role != "editor" && role != "user" {
+		return fmt.Errorf("DEFAULT_USER_ROLE phải là admin, editor hoặc user")
 	}
 	return nil
 }

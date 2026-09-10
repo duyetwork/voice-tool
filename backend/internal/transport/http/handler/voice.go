@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"mime"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -53,12 +55,15 @@ func (h *Voice) List(c *gin.Context) {
 		return
 	}
 	limit, offset := pagination(c)
+	sortCol, dir := sorting(c)
 
 	items, total, err := h.svc.List(c.Request.Context(), service.VoiceFilter{
 		PublishStatus: queryString(c, "publish_status"),
 		SourcePostID:  sourcePostID,
 		Platform:      queryString(c, "platform"),
 		Language:      queryString(c, "language"),
+		Sort:          sortCol,
+		Dir:           dir,
 		CreatedBy:     createdBy,
 		CreatedFrom:   createdFrom,
 		CreatedTo:     createdTo,
@@ -78,6 +83,10 @@ func (h *Voice) List(c *gin.Context) {
 
 // Audio trả file voice để nghe thử / tải về trước khi đăng (prompt.md mục 2).
 // File nằm trong bucket riêng tư nên bắt buộc đi qua API, không lộ URL storage.
+//
+// Trả bằng http.ServeContent, KHÔNG phải c.Data: nó tự xử lý header Range và
+// phát ra `Accept-Ranges: bytes`. Thiếu cái này thì thanh phát của trình duyệt
+// không tua được — nó phải xin đúng byte offset mới nhảy tới giữa file.
 func (h *Voice) Audio(c *gin.Context) {
 	id, err := pathUUID(c, "id")
 	if err != nil {
@@ -97,7 +106,10 @@ func (h *Voice) Audio(c *gin.Context) {
 	c.Header("Content-Disposition",
 		mime.FormatMediaType(disposition, map[string]string{"filename": file.FileName}))
 	c.Header("Cache-Control", "private, max-age=300")
-	c.Data(http.StatusOK, file.MimeType, file.Data)
+	// ServeContent chỉ tự đoán Content-Type khi tên file có đuôi; ở đây đặt sẵn
+	// theo mime_type lưu trong DB nên truyền tên rỗng.
+	c.Header("Content-Type", file.MimeType)
+	http.ServeContent(c.Writer, c.Request, "", time.Time{}, bytes.NewReader(file.Data))
 }
 
 func (h *Voice) Get(c *gin.Context) {
@@ -115,11 +127,10 @@ func (h *Voice) Get(c *gin.Context) {
 }
 
 type updateVoiceRequest struct {
-	Title       *string `json:"title"`
-	Description *string `json:"description"`
-	Hashtag     *string `json:"hashtag"`
-	Language    *string `json:"language"`
-	ImageURL    *string `json:"image_url"`
+	Title    *string `json:"title"`
+	Hashtag  *string `json:"hashtag"`
+	Language *string `json:"language"`
+	ImageURL *string `json:"image_url"`
 }
 
 func (h *Voice) Update(c *gin.Context) {
@@ -136,11 +147,10 @@ func (h *Voice) Update(c *gin.Context) {
 
 	voice, err := h.svc.UpdateMetadata(c.Request.Context(), middleware.ActorID(c), id,
 		service.UpdateMetadataInput{
-			Title:       req.Title,
-			Description: req.Description,
-			Hashtag:     req.Hashtag,
-			Language:    req.Language,
-			ImageURL:    req.ImageURL,
+			Title:    req.Title,
+			Hashtag:  req.Hashtag,
+			Language: req.Language,
+			ImageURL: req.ImageURL,
 		})
 	if err != nil {
 		httpx.Fail(c, err)

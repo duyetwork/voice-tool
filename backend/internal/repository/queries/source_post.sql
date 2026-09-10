@@ -2,14 +2,14 @@
 INSERT INTO source_post (
   source_type, list_breaking_id, list_scheduled_id, source_url, platform,
   content_type, post_id_extracted, extracted_text, collect_mode, prompt_id,
-  language, status, created_by, title, description, hashtags, thumbnail_url,
+  language, status, created_by, title, hashtags, thumbnail_url,
   author_name, posted_at
 ) VALUES (
   sqlc.arg('source_type'), sqlc.narg('list_breaking_id'), sqlc.narg('list_scheduled_id'),
   sqlc.arg('source_url'), sqlc.arg('platform'), sqlc.narg('content_type'),
   sqlc.narg('post_id_extracted'), sqlc.narg('extracted_text'), sqlc.arg('collect_mode'),
   sqlc.narg('prompt_id'), sqlc.arg('language'), sqlc.arg('status'), sqlc.arg('created_by'),
-  sqlc.narg('title'), sqlc.narg('description'),
+  sqlc.narg('title'),
   COALESCE(sqlc.narg('hashtags')::text[], '{}'),
   sqlc.narg('thumbnail_url'), sqlc.narg('author_name'), sqlc.narg('posted_at')
 )
@@ -32,7 +32,11 @@ WHERE (sqlc.narg('source_type')::varchar IS NULL OR sp.source_type = sqlc.narg('
   AND (sqlc.narg('list_scheduled_id')::uuid IS NULL OR sp.list_scheduled_id = sqlc.narg('list_scheduled_id'))
   AND (sqlc.narg('created_from')::timestamptz IS NULL OR sp.created_at >= sqlc.narg('created_from'))
   AND (sqlc.narg('created_to')::timestamptz   IS NULL OR sp.created_at <= sqlc.narg('created_to'))
-ORDER BY sp.created_at DESC
+-- Sắp xếp động: chỉ có 1 cột thời gian nên chỉ cần chiều. Nhánh CASE toàn
+-- NULL khi dir='desc' -> rơi về mặc định mới nhất trước.
+ORDER BY
+  CASE WHEN sqlc.arg('dir')::text = 'asc' THEN sp.created_at END ASC,
+  sp.created_at DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: CountSourcePosts :one
@@ -58,11 +62,13 @@ WHERE id = sqlc.arg('id')
 RETURNING *;
 
 -- name: UpdateSourcePostMetadata :one
--- Worker ghi lại metadata gốc lấy được từ nền tảng (tiêu đề, mô tả, hashtag,
--- ảnh bìa...) để Voice và form đăng bài auto-fill từ đây.
+-- Worker ghi lại metadata gốc lấy được từ nền tảng để Voice và form đăng bài
+-- auto-fill từ đây.
+--
+-- `title` là TOÀN BỘ nội dung bài (trừ hashtag) — hệ thống không còn trường mô
+-- tả riêng. COALESCE để lần fetch không ra thì giữ nguyên phần đã có.
 UPDATE source_post
 SET title         = COALESCE(sqlc.narg('title'), title),
-    description   = COALESCE(sqlc.narg('description'), description),
     hashtags      = COALESCE(sqlc.narg('hashtags')::text[], hashtags),
     thumbnail_url = COALESCE(sqlc.narg('thumbnail_url'), thumbnail_url),
     author_name   = COALESCE(sqlc.narg('author_name'), author_name),
@@ -86,3 +92,12 @@ RETURNING *;
 
 -- name: DeleteSourcePost :execrows
 DELETE FROM source_post WHERE id = $1;
+
+-- name: FindSourcePostByPostID :one
+-- Tra cứu bài trùng theo ID bài đăng trên nền tảng (KHÔNG theo URL): cùng 1
+-- bài có nhiều dạng URL khác nhau nhưng chỉ 1 id.
+-- Trả bản CŨ NHẤT để thông báo trùng luôn trỏ về bài gốc.
+SELECT * FROM source_post
+WHERE platform = $1 AND post_id_extracted = $2
+ORDER BY created_at ASC
+LIMIT 1;

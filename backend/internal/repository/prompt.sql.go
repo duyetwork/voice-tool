@@ -11,6 +11,17 @@ import (
 	"github.com/google/uuid"
 )
 
+const countPrompts = `-- name: CountPrompts :one
+SELECT COUNT(*) FROM prompt
+`
+
+func (q *Queries) CountPrompts(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPrompts)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createPrompt = `-- name: CreatePrompt :one
 INSERT INTO prompt (name, content, created_by)
 VALUES ($1, $2, $3)
@@ -67,17 +78,20 @@ func (q *Queries) GetPrompt(ctx context.Context, id uuid.UUID) (Prompt, error) {
 
 const listPrompts = `-- name: ListPrompts :many
 SELECT id, name, content, created_by, created_at FROM prompt
-ORDER BY created_at DESC
-LIMIT $1 OFFSET $2
+ORDER BY
+  CASE WHEN $1::text = 'asc' THEN created_at END ASC,
+  created_at DESC
+LIMIT $3 OFFSET $2
 `
 
 type ListPromptsParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Dir string `json:"dir"`
+	Off int32  `json:"off"`
+	Lim int32  `json:"lim"`
 }
 
 func (q *Queries) ListPrompts(ctx context.Context, arg ListPromptsParams) ([]Prompt, error) {
-	rows, err := q.db.Query(ctx, listPrompts, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listPrompts, arg.Dir, arg.Off, arg.Lim)
 	if err != nil {
 		return nil, err
 	}

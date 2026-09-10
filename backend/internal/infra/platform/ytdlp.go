@@ -20,13 +20,21 @@ import (
 type ytdlpCore struct {
 	runner  CommandRunner
 	tempDir string
+	// og là đường lấy metadata cho bài KHÔNG có media (bài viết text, bài chỉ
+	// có ảnh) — yt-dlp thoát ngay với "no video" nên không đọc được gì.
+	og *OpenGraph
+
+	// ownTitle: nền tảng này có tiêu đề riêng do người đăng đặt (YouTube) hay
+	// chỉ có caption (Facebook, TikTok, Instagram, X). Quyết định cách dựng
+	// nội dung Bài Post — xem title.go.
+	ownTitle bool
 }
 
-func newCore(runner CommandRunner, tempDir string) ytdlpCore {
+func newCore(runner CommandRunner, tempDir string, ownTitle bool) ytdlpCore {
 	if tempDir == "" {
 		tempDir = os.TempDir()
 	}
-	return ytdlpCore{runner: runner, tempDir: tempDir}
+	return ytdlpCore{runner: runner, tempDir: tempDir, og: NewOpenGraph(0), ownTitle: ownTitle}
 }
 
 // ytEntry là các field của `yt-dlp --dump-json` mà hệ thống dùng tới.
@@ -48,7 +56,7 @@ type ytEntry struct {
 func (c ytdlpCore) dumpJSON(ctx context.Context, url string) (ytEntry, error) {
 	stdout, err := c.runner.Run(ctx, "yt-dlp", "--dump-json", "--no-warnings", "--skip-download", url)
 	if err != nil {
-		return ytEntry{}, fmt.Errorf("yt-dlp metadata %s: %w", url, err)
+		return ytEntry{}, explainYtDlp(err)
 	}
 	var e ytEntry
 	if err := json.Unmarshal(stdout, &e); err != nil {
@@ -71,7 +79,7 @@ func (c ytdlpCore) downloadAudio(ctx context.Context, url, name string) ([]byte,
 	if _, err := c.runner.Run(ctx, "yt-dlp",
 		"-f", "bestaudio/best", "-x", "--audio-format", "mp3",
 		"--no-warnings", "-o", outTmpl, url); err != nil {
-		return nil, fmt.Errorf("yt-dlp tách audio %s: %w", url, err)
+		return nil, explainYtDlp(err)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, name+".mp3"))
@@ -141,10 +149,31 @@ func (c ytdlpCore) latestPosts(ctx context.Context, target string, limit int) ([
 			URL:    e.WebpageURL,
 			// Text dùng để so khớp regex ở breaking scan.
 			Text: strings.TrimSpace(e.Title + "\n" + e.Description),
-			Meta: metaFrom(e),
+			Meta: c.metaFrom(e),
 		})
 	}
 	return posts, nil
+}
+
+// metadata chỉ lấy metadata gốc của bài (tiêu đề, mô tả, ảnh bìa, tác giả) —
+// không tải audio, không lấy phụ đề. Dùng lúc TẠO Bài Post để bảng hiện được
+// nội dung ngay, tách khỏi việc tạo Voice.
+//
+// yt-dlp không đọc được (bài viết text, bài chỉ có ảnh) thì fallback sang thẻ
+// Open Graph của trang; cả hai thất bại thì trả lỗi của yt-dlp vì nó cụ thể hơn.
+func (c ytdlpCore) metadata(ctx context.Context, url string) (domain.PostMetadata, error) {
+	entry, err := c.dumpJSON(ctx, url)
+	if err == nil {
+		return c.metaFrom(entry), nil
+	}
+	if c.og == nil {
+		return domain.PostMetadata{}, err
+	}
+	meta, ogErr := c.og.Fetch(ctx, url)
+	if ogErr != nil {
+		return domain.PostMetadata{}, err
+	}
+	return meta, nil
 }
 
 // fetch chạy chung cho mọi nền tảng: 1 lần lấy metadata, rồi tải audio (mode A)
@@ -156,9 +185,29 @@ func (c ytdlpCore) fetch(
 ) (domain.FetchedContent, error) {
 	entry, err := c.dumpJSON(ctx, url)
 	if err != nil {
-		return domain.FetchedContent{}, err
+		// Mode A cần audio: không có media thì không có đường nào cứu.
+		if mode == domain.ModeExtract {
+			return domain.FetchedContent{}, err
+		}
+		// Mode B/C chỉ cần text -> thử đọc nội dung bài qua thẻ Open Graph.
+		meta, ogErr := c.og.Fetch(ctx, url)
+		if ogErr != nil {
+			return domain.FetchedContent{}, err
+		}
+		// meta.Title đã là toàn bộ nội dung bài (xem PostContent).
+		text := strings.TrimSpace(meta.Title)
+		if text == "" {
+			return domain.FetchedContent{}, domain.Permanent(domain.Explain(
+				"Bài này không có nội dung text để đọc", domain.ErrNoTextExtracted))
+		}
+		return domain.FetchedContent{
+			ContentType: contentType,
+			Language:    meta.Language,
+			Meta:        meta,
+			Text:        text,
+		}, nil
 	}
-	meta := metaFrom(entry)
+	meta := c.metaFrom(entry)
 
 	out := domain.FetchedContent{
 		ContentType: contentType,
@@ -178,10 +227,13 @@ func (c ytdlpCore) fetch(
 		return out, nil
 	}
 
-	// Mode B/C: ưu tiên phụ đề (transcript), fallback title + description.
+	// Mode B/C: ưu tiên phụ đề (transcript), fallback text gốc của bài.
+	//
+	// Fallback lấy thẳng từ entry chứ không từ meta.Title: TTS đọc được cả phần
+	// mô tả, còn tiêu đề Bài Post thì cố tình bỏ mô tả của video YouTube đi.
 	text, err := c.subtitleText(ctx, url, name, meta.Language)
 	if err != nil || strings.TrimSpace(text) == "" {
-		text = strings.TrimSpace(meta.Title + "\n\n" + meta.Description)
+		text = strings.TrimSpace(entry.Title + "\n\n" + entry.Description)
 	}
 	if strings.TrimSpace(text) == "" {
 		return domain.FetchedContent{}, domain.Permanent(
@@ -195,23 +247,30 @@ func (c ytdlpCore) fetch(
 // Metadata gốc của bài đăng
 // ---------------------------------------------------------------------------
 
-// metaFrom rút metadata phục vụ đăng lại lên multime.ai: tiêu đề, mô tả,
-// hashtag, ảnh bìa, tác giả, ngày đăng gốc.
-func metaFrom(e ytEntry) domain.PostMetadata {
+// metaFrom rút metadata phục vụ đăng lại lên multime.ai: tiêu đề (= nội dung
+// bài), hashtag, ảnh bìa, tác giả, ngày đăng gốc.
+func (c ytdlpCore) metaFrom(e ytEntry) domain.PostMetadata {
 	author := strings.TrimSpace(e.Uploader)
 	if author == "" {
 		author = strings.TrimSpace(e.Channel)
 	}
 	return domain.PostMetadata{
-		Title: strings.TrimSpace(e.Title),
-		// Mô tả bỏ hashtag: chúng đã tách sang trường Hashtags riêng.
-		Description:  StripHashtags(e.Description),
+		// Tiêu đề = toàn bộ nội dung bài, trừ hashtag (xem title.go).
+		Title:        c.postContent(e.Title, e.Description),
 		Hashtags:     ExtractHashtags(e.Title+"\n"+e.Description, e.Tags),
 		ThumbnailURL: strings.TrimSpace(e.Thumbnail),
 		AuthorName:   author,
 		PostedAt:     postedAt(e),
 		Language:     strings.ToLower(strings.TrimSpace(e.Language)),
 	}
+}
+
+// postContent chọn cách dựng nội dung theo kiểu bài của nền tảng.
+func (c ytdlpCore) postContent(title, description string) string {
+	if c.ownTitle {
+		return PostContentTitled(title, description)
+	}
+	return PostContent(title, description)
 }
 
 func postedAt(e ytEntry) *time.Time {

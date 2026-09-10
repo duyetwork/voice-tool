@@ -18,6 +18,13 @@ type Querier interface {
 	// Token hết hiệu lực và refresh cũng thất bại -> buộc user đăng nhập lại.
 	ClearUserMultimeToken(ctx context.Context, id uuid.UUID) error
 	CountAdmins(ctx context.Context) (int64, error)
+	// Tổng số bản ghi khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
+	CountAuditLogs(ctx context.Context, arg CountAuditLogsParams) (int64, error)
+	// Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
+	CountListBreakings(ctx context.Context, arg CountListBreakingsParams) (int64, error)
+	// Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
+	CountListScheduleds(ctx context.Context, arg CountListScheduledsParams) (int64, error)
+	CountPrompts(ctx context.Context) (int64, error)
 	// Tỉ lệ bỏ qua giúp đánh giá regex có quá chặt/quá lỏng hay không.
 	CountSkippedLogsSince(ctx context.Context, arg CountSkippedLogsSinceParams) (int64, error)
 	CountSourcePosts(ctx context.Context, arg CountSourcePostsParams) (int64, error)
@@ -38,6 +45,14 @@ type Querier interface {
 	DeleteSkippedLogsBefore(ctx context.Context, before time.Time) (int64, error)
 	DeleteSourcePost(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteVoice(ctx context.Context, id uuid.UUID) (int64, error)
+	// Tra cứu bài trùng theo ID bài đăng trên nền tảng (KHÔNG theo URL): cùng 1
+	// bài có nhiều dạng URL khác nhau nhưng chỉ 1 id.
+	// Trả bản CŨ NHẤT để thông báo trùng luôn trỏ về bài gốc.
+	FindSourcePostByPostID(ctx context.Context, arg FindSourcePostByPostIDParams) (SourcePost, error)
+	// Worker điền kết quả vào record `processing` đã tạo sẵn lúc enqueue.
+	// Metadata dùng COALESCE: fetch không ra tiêu đề thì giữ nguyên phần đã điền
+	// sẵn từ Bài Post, không xoá trắng.
+	FinishVoice(ctx context.Context, arg FinishVoiceParams) (Voice, error)
 	GetAIEngine(ctx context.Context, id uuid.UUID) (AiEngine, error)
 	GetDefaultAIEngine(ctx context.Context) (AiEngine, error)
 	GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaking, error)
@@ -50,18 +65,28 @@ type Querier interface {
 	ListAIEngines(ctx context.Context, onlyActive *bool) ([]AiEngine, error)
 	ListActiveListBreakings(ctx context.Context) ([]ListBreaking, error)
 	ListActiveListScheduleds(ctx context.Context) ([]ListScheduled, error)
-	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
+	// Kèm email người thao tác để bảng nhật ký hiện được "ai làm" mà không phải
+	// gọi thêm API. LEFT JOIN cho chắc: bản ghi audit không được mất chỉ vì user
+	// tham chiếu không đọc được.
+	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]ListAuditLogsRow, error)
 	// Chỉ lấy kênh đã quá khoảng nghỉ của chính nó (scan_interval), fallback về
 	// khoảng nghỉ mặc định của hệ thống khi kênh không cấu hình riêng.
 	ListDueListBreakings(ctx context.Context, defaultInterval pgtype.Interval) ([]ListBreaking, error)
+	// Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 	ListListBreakings(ctx context.Context, arg ListListBreakingsParams) ([]ListListBreakingsRow, error)
+	// Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 	ListListScheduleds(ctx context.Context, arg ListListScheduledsParams) ([]ListListScheduledsRow, error)
 	ListPrompts(ctx context.Context, arg ListPromptsParams) ([]Prompt, error)
 	ListSkippedLogs(ctx context.Context, arg ListSkippedLogsParams) ([]SkippedLog, error)
+	// Sắp xếp động: chỉ có 1 cột thời gian nên chỉ cần chiều. Nhánh CASE toàn
+	// NULL khi dir='desc' -> rơi về mặc định mới nhất trước.
 	ListSourcePosts(ctx context.Context, arg ListSourcePostsParams) ([]ListSourcePostsRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]AppUser, error)
 	// Trả kèm nền tảng nguồn + email người tạo để bảng Voice hiển thị và lọc được
 	// mà không phải gọi thêm API (prompt.md mục 3, 4, 8).
+	// Sắp xếp động: mỗi nhánh CASE chỉ có giá trị khi đúng cột + đúng chiều đang
+	// chọn, các nhánh còn lại toàn NULL nên không ảnh hưởng thứ tự. Dòng cuối là
+	// mặc định (mới nhất trước) và cũng là nhánh sort=created_at + dir=desc.
 	ListVoices(ctx context.Context, arg ListVoicesParams) ([]ListVoicesRow, error)
 	ListVoicesBySourcePost(ctx context.Context, sourcePostID uuid.UUID) ([]Voice, error)
 	// Business rule #2: publish thành công -> xoá file S3 và set voice_file_url = NULL,
@@ -81,8 +106,11 @@ type Querier interface {
 	UpdateListScheduled(ctx context.Context, arg UpdateListScheduledParams) (ListScheduled, error)
 	UpdatePrompt(ctx context.Context, arg UpdatePromptParams) (Prompt, error)
 	UpdateSourcePost(ctx context.Context, arg UpdateSourcePostParams) (SourcePost, error)
-	// Worker ghi lại metadata gốc lấy được từ nền tảng (tiêu đề, mô tả, hashtag,
-	// ảnh bìa...) để Voice và form đăng bài auto-fill từ đây.
+	// Worker ghi lại metadata gốc lấy được từ nền tảng để Voice và form đăng bài
+	// auto-fill từ đây.
+	//
+	// `title` là TOÀN BỘ nội dung bài (trừ hashtag) — hệ thống không còn trường mô
+	// tả riêng. COALESCE để lần fetch không ra thì giữ nguyên phần đã có.
 	UpdateSourcePostMetadata(ctx context.Context, arg UpdateSourcePostMetadataParams) (SourcePost, error)
 	UpdateVoiceMetadata(ctx context.Context, arg UpdateVoiceMetadataParams) (Voice, error)
 	// Đăng nhập bằng strongbody: tạo user nếu chưa có, cập nhật thông tin + token

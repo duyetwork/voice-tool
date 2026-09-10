@@ -30,6 +30,12 @@ export class ApiError extends Error {
     public status: number,
     public code: string,
     message: string,
+    /**
+     * Payload gốc của response lỗi. Một số lỗi mang thêm dữ liệu có cấu trúc
+     * (ví dụ `duplicate_post` trả kèm bài đã có trong hệ thống) mà UI cần đọc,
+     * không chỉ hiện câu thông báo.
+     */
+    public payload?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -113,6 +119,7 @@ async function request<T>(path: string, options: RequestOptions = {}, retry = tr
       res.status,
       payload?.error ?? "unknown_error",
       payload?.message ?? `Yêu cầu thất bại (HTTP ${res.status})`,
+      payload,
     );
   }
 

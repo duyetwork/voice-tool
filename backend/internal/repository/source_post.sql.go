@@ -16,7 +16,7 @@ const claimSourcePostForProcessing = `-- name: ClaimSourcePostForProcessing :one
 UPDATE source_post
 SET status = 'processing', last_error = NULL
 WHERE id = $1 AND status IN ('new', 'failed')
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, description, hashtags, thumbnail_url, author_name, posted_at
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
 `
 
 // Chỉ 1 worker được xử lý 1 bài tại 1 thời điểm (idempotent khi Asynq retry).
@@ -41,7 +41,6 @@ func (q *Queries) ClaimSourcePostForProcessing(ctx context.Context, id uuid.UUID
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Title,
-		&i.Description,
 		&i.Hashtags,
 		&i.ThumbnailUrl,
 		&i.AuthorName,
@@ -99,18 +98,18 @@ const createSourcePost = `-- name: CreateSourcePost :one
 INSERT INTO source_post (
   source_type, list_breaking_id, list_scheduled_id, source_url, platform,
   content_type, post_id_extracted, extracted_text, collect_mode, prompt_id,
-  language, status, created_by, title, description, hashtags, thumbnail_url,
+  language, status, created_by, title, hashtags, thumbnail_url,
   author_name, posted_at
 ) VALUES (
   $1, $2, $3,
   $4, $5, $6,
   $7, $8, $9,
   $10, $11, $12, $13,
-  $14, $15,
-  COALESCE($16::text[], '{}'),
-  $17, $18, $19
+  $14,
+  COALESCE($15::text[], '{}'),
+  $16, $17, $18
 )
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, description, hashtags, thumbnail_url, author_name, posted_at
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
 `
 
 type CreateSourcePostParams struct {
@@ -128,7 +127,6 @@ type CreateSourcePostParams struct {
 	Status          string     `json:"status"`
 	CreatedBy       uuid.UUID  `json:"created_by"`
 	Title           *string    `json:"title"`
-	Description     *string    `json:"description"`
 	Hashtags        []string   `json:"hashtags"`
 	ThumbnailUrl    *string    `json:"thumbnail_url"`
 	AuthorName      *string    `json:"author_name"`
@@ -151,7 +149,6 @@ func (q *Queries) CreateSourcePost(ctx context.Context, arg CreateSourcePostPara
 		arg.Status,
 		arg.CreatedBy,
 		arg.Title,
-		arg.Description,
 		arg.Hashtags,
 		arg.ThumbnailUrl,
 		arg.AuthorName,
@@ -176,7 +173,6 @@ func (q *Queries) CreateSourcePost(ctx context.Context, arg CreateSourcePostPara
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Title,
-		&i.Description,
 		&i.Hashtags,
 		&i.ThumbnailUrl,
 		&i.AuthorName,
@@ -197,8 +193,52 @@ func (q *Queries) DeleteSourcePost(ctx context.Context, id uuid.UUID) (int64, er
 	return result.RowsAffected(), nil
 }
 
+const findSourcePostByPostID = `-- name: FindSourcePostByPostID :one
+SELECT id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at FROM source_post
+WHERE platform = $1 AND post_id_extracted = $2
+ORDER BY created_at ASC
+LIMIT 1
+`
+
+type FindSourcePostByPostIDParams struct {
+	Platform        string  `json:"platform"`
+	PostIDExtracted *string `json:"post_id_extracted"`
+}
+
+// Tra cứu bài trùng theo ID bài đăng trên nền tảng (KHÔNG theo URL): cùng 1
+// bài có nhiều dạng URL khác nhau nhưng chỉ 1 id.
+// Trả bản CŨ NHẤT để thông báo trùng luôn trỏ về bài gốc.
+func (q *Queries) FindSourcePostByPostID(ctx context.Context, arg FindSourcePostByPostIDParams) (SourcePost, error) {
+	row := q.db.QueryRow(ctx, findSourcePostByPostID, arg.Platform, arg.PostIDExtracted)
+	var i SourcePost
+	err := row.Scan(
+		&i.ID,
+		&i.SourceType,
+		&i.ListBreakingID,
+		&i.ListScheduledID,
+		&i.SourceUrl,
+		&i.Platform,
+		&i.ContentType,
+		&i.PostIDExtracted,
+		&i.ExtractedText,
+		&i.CollectMode,
+		&i.PromptID,
+		&i.Language,
+		&i.Status,
+		&i.LastError,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.Title,
+		&i.Hashtags,
+		&i.ThumbnailUrl,
+		&i.AuthorName,
+		&i.PostedAt,
+	)
+	return i, err
+}
+
 const getSourcePost = `-- name: GetSourcePost :one
-SELECT id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, description, hashtags, thumbnail_url, author_name, posted_at FROM source_post WHERE id = $1
+SELECT id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at FROM source_post WHERE id = $1
 `
 
 func (q *Queries) GetSourcePost(ctx context.Context, id uuid.UUID) (SourcePost, error) {
@@ -222,7 +262,6 @@ func (q *Queries) GetSourcePost(ctx context.Context, id uuid.UUID) (SourcePost, 
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Title,
-		&i.Description,
 		&i.Hashtags,
 		&i.ThumbnailUrl,
 		&i.AuthorName,
@@ -232,7 +271,7 @@ func (q *Queries) GetSourcePost(ctx context.Context, id uuid.UUID) (SourcePost, 
 }
 
 const listSourcePosts = `-- name: ListSourcePosts :many
-SELECT sp.id, sp.source_type, sp.list_breaking_id, sp.list_scheduled_id, sp.source_url, sp.platform, sp.content_type, sp.post_id_extracted, sp.extracted_text, sp.collect_mode, sp.prompt_id, sp.language, sp.status, sp.last_error, sp.created_by, sp.created_at, sp.title, sp.description, sp.hashtags, sp.thumbnail_url, sp.author_name, sp.posted_at, u.email AS created_by_email
+SELECT sp.id, sp.source_type, sp.list_breaking_id, sp.list_scheduled_id, sp.source_url, sp.platform, sp.content_type, sp.post_id_extracted, sp.extracted_text, sp.collect_mode, sp.prompt_id, sp.language, sp.status, sp.last_error, sp.created_by, sp.created_at, sp.title, sp.hashtags, sp.thumbnail_url, sp.author_name, sp.posted_at, u.email AS created_by_email
 FROM source_post sp
 JOIN app_user u ON u.id = sp.created_by
 WHERE ($1::varchar IS NULL OR sp.source_type = $1)
@@ -245,8 +284,10 @@ WHERE ($1::varchar IS NULL OR sp.source_type = $1)
   AND ($8::uuid IS NULL OR sp.list_scheduled_id = $8)
   AND ($9::timestamptz IS NULL OR sp.created_at >= $9)
   AND ($10::timestamptz   IS NULL OR sp.created_at <= $10)
-ORDER BY sp.created_at DESC
-LIMIT $12 OFFSET $11
+ORDER BY
+  CASE WHEN $11::text = 'asc' THEN sp.created_at END ASC,
+  sp.created_at DESC
+LIMIT $13 OFFSET $12
 `
 
 type ListSourcePostsParams struct {
@@ -260,6 +301,7 @@ type ListSourcePostsParams struct {
 	ListScheduledID *uuid.UUID `json:"list_scheduled_id"`
 	CreatedFrom     *time.Time `json:"created_from"`
 	CreatedTo       *time.Time `json:"created_to"`
+	Dir             string     `json:"dir"`
 	Off             int32      `json:"off"`
 	Lim             int32      `json:"lim"`
 }
@@ -282,7 +324,6 @@ type ListSourcePostsRow struct {
 	CreatedBy       uuid.UUID  `json:"created_by"`
 	CreatedAt       time.Time  `json:"created_at"`
 	Title           *string    `json:"title"`
-	Description     *string    `json:"description"`
 	Hashtags        []string   `json:"hashtags"`
 	ThumbnailUrl    *string    `json:"thumbnail_url"`
 	AuthorName      *string    `json:"author_name"`
@@ -290,6 +331,8 @@ type ListSourcePostsRow struct {
 	CreatedByEmail  string     `json:"created_by_email"`
 }
 
+// Sắp xếp động: chỉ có 1 cột thời gian nên chỉ cần chiều. Nhánh CASE toàn
+// NULL khi dir='desc' -> rơi về mặc định mới nhất trước.
 func (q *Queries) ListSourcePosts(ctx context.Context, arg ListSourcePostsParams) ([]ListSourcePostsRow, error) {
 	rows, err := q.db.Query(ctx, listSourcePosts,
 		arg.SourceType,
@@ -302,6 +345,7 @@ func (q *Queries) ListSourcePosts(ctx context.Context, arg ListSourcePostsParams
 		arg.ListScheduledID,
 		arg.CreatedFrom,
 		arg.CreatedTo,
+		arg.Dir,
 		arg.Off,
 		arg.Lim,
 	)
@@ -330,7 +374,6 @@ func (q *Queries) ListSourcePosts(ctx context.Context, arg ListSourcePostsParams
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.Title,
-			&i.Description,
 			&i.Hashtags,
 			&i.ThumbnailUrl,
 			&i.AuthorName,
@@ -351,7 +394,7 @@ const setSourcePostStatus = `-- name: SetSourcePostStatus :one
 UPDATE source_post
 SET status = $1, last_error = $2
 WHERE id = $3
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, description, hashtags, thumbnail_url, author_name, posted_at
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
 `
 
 type SetSourcePostStatusParams struct {
@@ -381,7 +424,6 @@ func (q *Queries) SetSourcePostStatus(ctx context.Context, arg SetSourcePostStat
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Title,
-		&i.Description,
 		&i.Hashtags,
 		&i.ThumbnailUrl,
 		&i.AuthorName,
@@ -397,7 +439,7 @@ SET collect_mode   = COALESCE($1, collect_mode),
     language       = COALESCE($3, language),
     extracted_text = COALESCE($4, extracted_text)
 WHERE id = $5
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, description, hashtags, thumbnail_url, author_name, posted_at
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
 `
 
 type UpdateSourcePostParams struct {
@@ -435,7 +477,6 @@ func (q *Queries) UpdateSourcePost(ctx context.Context, arg UpdateSourcePostPara
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Title,
-		&i.Description,
 		&i.Hashtags,
 		&i.ThumbnailUrl,
 		&i.AuthorName,
@@ -447,19 +488,17 @@ func (q *Queries) UpdateSourcePost(ctx context.Context, arg UpdateSourcePostPara
 const updateSourcePostMetadata = `-- name: UpdateSourcePostMetadata :one
 UPDATE source_post
 SET title         = COALESCE($1, title),
-    description   = COALESCE($2, description),
-    hashtags      = COALESCE($3::text[], hashtags),
-    thumbnail_url = COALESCE($4, thumbnail_url),
-    author_name   = COALESCE($5, author_name),
-    posted_at     = COALESCE($6, posted_at),
-    content_type  = COALESCE($7, content_type)
-WHERE id = $8
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, description, hashtags, thumbnail_url, author_name, posted_at
+    hashtags      = COALESCE($2::text[], hashtags),
+    thumbnail_url = COALESCE($3, thumbnail_url),
+    author_name   = COALESCE($4, author_name),
+    posted_at     = COALESCE($5, posted_at),
+    content_type  = COALESCE($6, content_type)
+WHERE id = $7
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
 `
 
 type UpdateSourcePostMetadataParams struct {
 	Title        *string    `json:"title"`
-	Description  *string    `json:"description"`
 	Hashtags     []string   `json:"hashtags"`
 	ThumbnailUrl *string    `json:"thumbnail_url"`
 	AuthorName   *string    `json:"author_name"`
@@ -468,12 +507,14 @@ type UpdateSourcePostMetadataParams struct {
 	ID           uuid.UUID  `json:"id"`
 }
 
-// Worker ghi lại metadata gốc lấy được từ nền tảng (tiêu đề, mô tả, hashtag,
-// ảnh bìa...) để Voice và form đăng bài auto-fill từ đây.
+// Worker ghi lại metadata gốc lấy được từ nền tảng để Voice và form đăng bài
+// auto-fill từ đây.
+//
+// `title` là TOÀN BỘ nội dung bài (trừ hashtag) — hệ thống không còn trường mô
+// tả riêng. COALESCE để lần fetch không ra thì giữ nguyên phần đã có.
 func (q *Queries) UpdateSourcePostMetadata(ctx context.Context, arg UpdateSourcePostMetadataParams) (SourcePost, error) {
 	row := q.db.QueryRow(ctx, updateSourcePostMetadata,
 		arg.Title,
-		arg.Description,
 		arg.Hashtags,
 		arg.ThumbnailUrl,
 		arg.AuthorName,
@@ -500,7 +541,6 @@ func (q *Queries) UpdateSourcePostMetadata(ctx context.Context, arg UpdateSource
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Title,
-		&i.Description,
 		&i.Hashtags,
 		&i.ThumbnailUrl,
 		&i.AuthorName,

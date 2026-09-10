@@ -76,6 +76,15 @@ func (a *YtDlpAdapter) FetchContent(
 	return a.core.fetch(ctx, ref.URL, ref.PostID, contentType, mode)
 }
 
+func (a *YtDlpAdapter) FetchMetadata(ctx context.Context, ref domain.PostRef) (domain.PostMetadata, error) {
+	if strings.TrimSpace(ref.URL) == "" {
+		return domain.PostMetadata{}, domain.Permanent(fmt.Errorf(
+			"%w: nền tảng %s cần URL gốc của bài, không dựng lại được từ ID",
+			domain.ErrInvalidInput, a.name))
+	}
+	return a.core.metadata(ctx, ref.URL)
+}
+
 func (a *YtDlpAdapter) FetchLatestPosts(ctx context.Context, channelURL string, limit int) ([]domain.RemotePost, error) {
 	target := strings.TrimRight(strings.TrimSpace(channelURL), "/") + a.channelSuffix
 	posts, err := a.core.latestPosts(ctx, target, limit)
@@ -120,19 +129,34 @@ func fallbackID(raw string) string {
 // Các nền tảng cụ thể
 // ---------------------------------------------------------------------------
 
+// Facebook có nhiều dạng URL nhất, và link share sinh ra từ app mobile
+// (`/share/p/`, `/share/r/`, `/share/v/`) không mang ID thật — yt-dlp tự
+// resolve redirect nên chỉ cần nhận đúng nền tảng + loại nội dung.
 func NewFacebook(runner CommandRunner, tempDir string) *YtDlpAdapter {
 	return &YtDlpAdapter{
-		name:   domain.PlatformFacebook,
-		hostRe: regexp.MustCompile(`(?i)^(www\.|m\.|web\.|mbasic\.)?(facebook\.com|fb\.com|fb\.watch)$`),
+		name: domain.PlatformFacebook,
+		hostRe: regexp.MustCompile(
+			`(?i)^(www\.|m\.|web\.|mbasic\.|touch\.)?(facebook\.com|fb\.com|fb\.me|fb\.watch)$`),
 		patterns: []idPattern{
-			{domain.ContentReel, regexp.MustCompile(`(?i)/reel/(\d+)`)},
+			{domain.ContentReel, regexp.MustCompile(`(?i)/reels?/(\d+)`)},
 			{domain.ContentVideo, regexp.MustCompile(`(?i)/videos/(?:[^/]+/)?(\d+)`)},
+			{domain.ContentVideo, regexp.MustCompile(`(?i)/watch/?\?v=(\d+)`)},
 			{domain.ContentVideo, regexp.MustCompile(`(?i)[?&]v=(\d+)`)},
-			{domain.ContentPost, regexp.MustCompile(`(?i)[?&]story_fbid=(\d+)`)},
+			// Bài viết: /posts/<id>, permalink.php?story_fbid=, group post.
+			{domain.ContentPost, regexp.MustCompile(`(?i)/groups/[^/]+/posts/(\d+)`)},
+			{domain.ContentPost, regexp.MustCompile(`(?i)/posts/(?:pfbid)?([\w-]+)`)},
+			{domain.ContentPost, regexp.MustCompile(`(?i)[?&]story_fbid=([\w-]+)`)},
+			{domain.ContentPost, regexp.MustCompile(`(?i)[?&]fbid=(\d+)`)},
+			{domain.ContentPost, regexp.MustCompile(`(?i)/permalink/(\d+)`)},
+			// Link rút gọn và link share.
 			{domain.ContentVideo, regexp.MustCompile(`(?i)fb\.watch/([\w-]+)`)},
-			{domain.ContentVideo, regexp.MustCompile(`(?i)/share/[rv]/([\w-]+)`)},
+			{domain.ContentVideo, regexp.MustCompile(`(?i)fb\.me/([\w-]+)`)},
+			{domain.ContentReel, regexp.MustCompile(`(?i)/share/r/([\w-]+)`)},
+			{domain.ContentVideo, regexp.MustCompile(`(?i)/share/v/([\w-]+)`)},
+			{domain.ContentPost, regexp.MustCompile(`(?i)/share/p/([\w-]+)`)},
+			{domain.ContentPost, regexp.MustCompile(`(?i)/share/([\w-]+)/?$`)},
 		},
-		core:          newCore(runner, tempDir),
+		core:          newCore(runner, tempDir, false),
 		channelSuffix: "/videos",
 	}
 }
@@ -144,35 +168,43 @@ func NewTikTok(runner CommandRunner, tempDir string) *YtDlpAdapter {
 		patterns: []idPattern{
 			{domain.ContentVideo, regexp.MustCompile(`(?i)/video/(\d+)`)},
 			{domain.ContentPost, regexp.MustCompile(`(?i)/photo/(\d+)`)},
-			// Link rút gọn vm.tiktok.com/XXXX — yt-dlp tự resolve redirect.
-			{domain.ContentVideo, regexp.MustCompile(`(?i)tiktok\.com/(?:t/)?([A-Za-z0-9]{6,})/?$`)},
+			// Link rút gọn: vm./vt.tiktok.com/XXXX và tiktok.com/t/XXXX —
+			// yt-dlp tự resolve redirect.
+			{domain.ContentVideo, regexp.MustCompile(`(?i)tiktok\.com/t/([A-Za-z0-9]{6,})`)},
+			{domain.ContentVideo, regexp.MustCompile(`(?i)tiktok\.com/([A-Za-z0-9]{6,})/?$`)},
 		},
-		core: newCore(runner, tempDir),
+		core: newCore(runner, tempDir, false),
 	}
 }
 
 func NewInstagram(runner CommandRunner, tempDir string) *YtDlpAdapter {
 	return &YtDlpAdapter{
 		name:   domain.PlatformInstagram,
-		hostRe: regexp.MustCompile(`(?i)^(www\.)?instagram\.com$`),
+		hostRe: regexp.MustCompile(`(?i)^(www\.|m\.)?(instagram\.com|instagr\.am)$`),
 		patterns: []idPattern{
+			// Link share của Instagram: /share/reel/XXX, /share/p/XXX.
+			{domain.ContentReel, regexp.MustCompile(`(?i)/share/reels?/([\w-]+)`)},
+			{domain.ContentPost, regexp.MustCompile(`(?i)/share/p/([\w-]+)`)},
 			{domain.ContentReel, regexp.MustCompile(`(?i)/reels?/([\w-]+)`)},
 			{domain.ContentPost, regexp.MustCompile(`(?i)/p/([\w-]+)`)},
 			{domain.ContentVideo, regexp.MustCompile(`(?i)/tv/([\w-]+)`)},
 			{domain.ContentStory, regexp.MustCompile(`(?i)/stories/[^/]+/(\d+)`)},
 		},
-		core:          newCore(runner, tempDir),
+		core:          newCore(runner, tempDir, false),
 		channelSuffix: "/reels",
 	}
 }
 
 func NewX(runner CommandRunner, tempDir string) *YtDlpAdapter {
 	return &YtDlpAdapter{
-		name:   domain.PlatformX,
-		hostRe: regexp.MustCompile(`(?i)^(www\.|mobile\.)?(x\.com|twitter\.com)$`),
+		name: domain.PlatformX,
+		// t.co là link rút gọn của chính X; yt-dlp resolve được redirect.
+		hostRe: regexp.MustCompile(`(?i)^(www\.|mobile\.)?(x\.com|twitter\.com|t\.co)$`),
 		patterns: []idPattern{
 			{domain.ContentTweet, regexp.MustCompile(`(?i)/status(?:es)?/(\d+)`)},
+			{domain.ContentTweet, regexp.MustCompile(`(?i)/i/web/status/(\d+)`)},
+			{domain.ContentTweet, regexp.MustCompile(`(?i)t\.co/([A-Za-z0-9]+)`)},
 		},
-		core: newCore(runner, tempDir),
+		core: newCore(runner, tempDir, false),
 	}
 }

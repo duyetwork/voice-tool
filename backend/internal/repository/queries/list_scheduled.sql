@@ -19,7 +19,15 @@ WHERE (sqlc.narg('status')::varchar   IS NULL OR ls.status     = sqlc.narg('stat
   AND (sqlc.narg('platform')::varchar IS NULL OR ls.platform   = sqlc.narg('platform'))
   AND (sqlc.narg('created_by')::uuid  IS NULL OR ls.created_by = sqlc.narg('created_by'))
   AND (sqlc.narg('search')::text      IS NULL OR ls.source_url ~* sqlc.narg('search'))
-ORDER BY ls.created_at DESC
+-- Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
+ORDER BY
+  CASE WHEN sqlc.arg('sort')::text = 'last_scanned_at' AND sqlc.arg('dir')::text = 'asc'
+       THEN ls.last_scanned_at END ASC NULLS LAST,
+  CASE WHEN sqlc.arg('sort')::text = 'last_scanned_at' AND sqlc.arg('dir')::text = 'desc'
+       THEN ls.last_scanned_at END DESC NULLS LAST,
+  CASE WHEN sqlc.arg('dir')::text = 'asc' AND sqlc.arg('sort')::text <> 'last_scanned_at'
+       THEN ls.created_at END ASC,
+  ls.created_at DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: ListActiveListScheduleds :many
@@ -52,3 +60,12 @@ UPDATE list_scheduled SET last_scanned_at = now() WHERE id = $1;
 
 -- name: DeleteListScheduled :execrows
 DELETE FROM list_scheduled WHERE id = $1;
+
+-- name: CountListScheduleds :one
+-- Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
+SELECT COUNT(*)
+FROM list_scheduled ls
+WHERE (sqlc.narg('status')::varchar   IS NULL OR ls.status     = sqlc.narg('status'))
+  AND (sqlc.narg('platform')::varchar IS NULL OR ls.platform   = sqlc.narg('platform'))
+  AND (sqlc.narg('created_by')::uuid  IS NULL OR ls.created_by = sqlc.narg('created_by'))
+  AND (sqlc.narg('search')::text      IS NULL OR ls.source_url ~* sqlc.narg('search'));

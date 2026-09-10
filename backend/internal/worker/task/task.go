@@ -13,6 +13,8 @@ import (
 // Tên task.
 const (
 	TypeVoiceProcess = "voice:process"
+	// TypePostMetadata lấy metadata gốc của Bài Post vừa tạo (không tạo voice).
+	TypePostMetadata = "post:metadata"
 	TypeVoicePublish = "voice:publish"
 	// TypeBreakingDispatch là vòng lặp liên tục: mỗi lần chạy sẽ phát
 	// breaking:scan cho từng kênh active rồi tự enqueue lại chính nó
@@ -47,6 +49,14 @@ func RetryDelay(n int, _ error, _ *asynq.Task) time.Duration {
 type VoiceProcessPayload struct {
 	SourcePostID string `json:"source_post_id"`
 	ActorID      string `json:"actor_id"`
+	// VoiceID là record voice `processing` đã được tạo sẵn lúc enqueue —
+	// worker điền kết quả vào đúng record này. Rỗng nghĩa là task cũ enqueue
+	// trước khi có trạng thái processing; worker tự tạo record như trước.
+	VoiceID string `json:"voice_id,omitempty"`
+}
+
+type PostMetadataPayload struct {
+	SourcePostID string `json:"source_post_id"`
 }
 
 type VoicePublishPayload struct {
@@ -68,6 +78,10 @@ type MaintenanceCleanupPayload struct{}
 
 func NewVoiceProcess(p VoiceProcessPayload) (*asynq.Task, error) {
 	return newTask(TypeVoiceProcess, p, QueueDefault)
+}
+
+func NewPostMetadata(p PostMetadataPayload) (*asynq.Task, error) {
+	return newTask(TypePostMetadata, p, QueueDefault)
 }
 
 func NewVoicePublish(p VoicePublishPayload) (*asynq.Task, error) {

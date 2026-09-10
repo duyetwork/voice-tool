@@ -13,6 +13,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countListBreakings = `-- name: CountListBreakings :one
+SELECT COUNT(*)
+FROM list_breaking lb
+WHERE ($1::varchar   IS NULL OR lb.status     = $1)
+  AND ($2::varchar IS NULL OR lb.platform   = $2)
+  AND ($3::uuid  IS NULL OR lb.created_by = $3)
+  AND ($4::text      IS NULL OR lb.source_url ~* $4)
+`
+
+type CountListBreakingsParams struct {
+	Status    *string    `json:"status"`
+	Platform  *string    `json:"platform"`
+	CreatedBy *uuid.UUID `json:"created_by"`
+	Search    *string    `json:"search"`
+}
+
+// Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
+func (q *Queries) CountListBreakings(ctx context.Context, arg CountListBreakingsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countListBreakings,
+		arg.Status,
+		arg.Platform,
+		arg.CreatedBy,
+		arg.Search,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createListBreaking = `-- name: CreateListBreaking :one
 INSERT INTO list_breaking (
   source_url, platform, content_type, collect_mode, prompt_id, regex_patterns,
@@ -216,8 +245,15 @@ WHERE ($1::varchar   IS NULL OR lb.status     = $1)
   AND ($2::varchar IS NULL OR lb.platform   = $2)
   AND ($3::uuid  IS NULL OR lb.created_by = $3)
   AND ($4::text      IS NULL OR lb.source_url ~* $4)
-ORDER BY lb.created_at DESC
-LIMIT $6 OFFSET $5
+ORDER BY
+  CASE WHEN $5::text = 'last_scanned_at' AND $6::text = 'asc'
+       THEN lb.last_scanned_at END ASC NULLS LAST,
+  CASE WHEN $5::text = 'last_scanned_at' AND $6::text = 'desc'
+       THEN lb.last_scanned_at END DESC NULLS LAST,
+  CASE WHEN $6::text = 'asc' AND $5::text <> 'last_scanned_at'
+       THEN lb.created_at END ASC,
+  lb.created_at DESC
+LIMIT $8 OFFSET $7
 `
 
 type ListListBreakingsParams struct {
@@ -225,6 +261,8 @@ type ListListBreakingsParams struct {
 	Platform  *string    `json:"platform"`
 	CreatedBy *uuid.UUID `json:"created_by"`
 	Search    *string    `json:"search"`
+	Sort      string     `json:"sort"`
+	Dir       string     `json:"dir"`
 	Off       int32      `json:"off"`
 	Lim       int32      `json:"lim"`
 }
@@ -249,12 +287,15 @@ type ListListBreakingsRow struct {
 	CreatedByEmail  string          `json:"created_by_email"`
 }
 
+// Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 func (q *Queries) ListListBreakings(ctx context.Context, arg ListListBreakingsParams) ([]ListListBreakingsRow, error) {
 	rows, err := q.db.Query(ctx, listListBreakings,
 		arg.Status,
 		arg.Platform,
 		arg.CreatedBy,
 		arg.Search,
+		arg.Sort,
+		arg.Dir,
 		arg.Off,
 		arg.Lim,
 	)

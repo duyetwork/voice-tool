@@ -116,7 +116,28 @@ scheduled:scan
        lỗi tạm thời     → dừng, KHÔNG tiến mốc (lần sau retry đúng bài đó)
 ```
 
+Chống trùng: dedup theo `(platform, post_id_extracted)` toàn hệ thống, không
+theo URL và không theo từng danh sách (xem [api.md](api.md#chống-trùng-theo-id-bài-đăng)).
+
+### post:metadata
+
+```
+GetSourcePost
+  → adapter.FetchMetadata(url)     # yt-dlp --dump-json
+     → thất bại: thẻ Open Graph của trang (bài text / bài chỉ có ảnh)
+  → UpdateSourcePostMetadata       # title (= toàn bộ nội dung bài, trừ
+                                   # hashtag), hashtags, thumbnail, author,
+                                   # posted_at
+```
+
+Chạy ngay khi tạo Bài Post, không tạo Voice. Thất bại chỉ ghi `last_error`,
+KHÔNG đặt `status = failed` — bài vẫn chạy Voice được.
+
 ### voice:process (Core Engine)
+
+API tạo sẵn record `voice` ở trạng thái `processing` **trước khi** enqueue, và
+truyền `voice_id` trong payload. Nhờ vậy bảng Voice hiện dòng "đang xử lý" ngay
+lúc bấm, thay vì trống trơn cho tới khi job xong.
 
 ```
 ClaimSourcePostForProcessing   # new|failed → processing, idempotent khi retry
@@ -127,14 +148,21 @@ ClaimSourcePostForProcessing   # new|failed → processing, idempotent khi retry
   → mode B/C: lưu extracted_text (text NGUỒN, không phải bản LLM viết lại) + TTS
   → ffprobe đo duration/sample_rate/mime (multime.ai cần cho audio_asset)
   → storage.Put(voices/<post_id>/<...>.mp3)
-  → INSERT voice (publish_status=draft)
+  → FinishVoice(voice_id)        # điền file + metadata, processing → draft
+                                 # (payload không có voice_id = task cũ
+                                 #  → INSERT voice như trước)
   → source_post.status = processed
   → audit_log: create voice
   → nếu list.auto_publish: enqueue voice:publish
 ```
 
-Lỗi ở bất kỳ bước nào → `source_post.status = failed` + `last_error`, và task
-được Asynq retry 3 lần với backoff 30s/60s/120s (trừ lỗi `PermanentError`).
+`last_error` chỉ lưu 1 câu tiếng Việt (`domain.UserMessage`); nguyên văn stderr
+của yt-dlp đi vào log. Bảng phân loại lỗi nằm ở
+`internal/infra/platform/ytdlperr.go`.
+
+Lỗi ở bất kỳ bước nào → `source_post.status = failed` + `last_error`, record
+voice chuyển `processing → failed` (không để treo ở "đang xử lý"), và task được
+Asynq retry 3 lần với backoff 30s/60s/120s (trừ lỗi `PermanentError`).
 
 ### voice:publish
 
@@ -226,15 +254,16 @@ nên được mã hoá AES-256-GCM bằng `TOKEN_ENCRYPTION_KEY` — một bản
 biến thành xâu token dùng được ngay. Hết hạn thì refresh 1 lần; refresh lỗi thì
 trả lỗi vĩnh viễn yêu cầu user đăng nhập lại (không có cách nào tự sửa).
 
-**Phân quyền 3 mức, chia theo nhóm route.** `viewer` chỉ `GET`; `user` thêm
-tạo/sửa/chạy/đăng; `admin` thêm xoá và cấp quyền. Router chia 4 group
+**Phân quyền 3 mức, chia theo nhóm route.** `user` đọc + tạo/sửa/chạy/đăng;
+`editor` thêm xoá; `admin` thêm cấp quyền. Router chia 4 group
 (`authed` / `writer` / `remover` / `admin`) thay vì kiểm tra role rải rác trong
 từng handler — nhìn `router.go` là biết ai làm được gì.
 
 **Text nguồn và text đọc là 2 thứ khác nhau.** `source_post.extracted_text` giữ
-text NGUỒN; `voice.description` giữ text TTS thực sự đọc (mode C là bản LLM viết
-lại). Nếu lưu lẫn, chạy lại Bài Post với prompt khác sẽ khiến LLM đọc chính đầu
-ra của nó ở lần trước.
+đúng text NGUỒN, không bao giờ giữ bản LLM viết lại: nếu lưu lẫn, chạy lại Bài
+Post với prompt khác sẽ khiến LLM đọc chính đầu ra của nó ở lần trước. Bản LLM
+viết lại chỉ được TTS đọc, không ghi đè text nguồn; nó chỉ lọt vào
+`voice.title` khi bài gốc không có nội dung nào lấy được.
 
 **`skipped_log` có retention, `audit_log` thì không.** `skipped_log` là dữ liệu
 debug regex (mỗi vòng quét ghi tối đa `scan_limit` bản ghi cho mỗi kênh — có thể
@@ -282,7 +311,7 @@ voice-tool/
 │   │   │   ├── audit.go          # Nhật ký thao tác
 │   │   │   ├── auth.go           # đăng nhập SSO strongbody
 │   │   │   ├── multimecreds.go   # token multime của từng user (mã hoá)
-│   │   │   ├── user.go           # phân quyền admin/user/viewer
+│   │   │   ├── user.go           # phân quyền admin/editor/user
 │   │   │   ├── maintenance.go    # dọn skipped_log
 │   │   │   └── language.go       # cascade ngôn ngữ theo tầng
 │   │   ├── infra/                # cài đặt các port ra thế giới bên ngoài
@@ -327,7 +356,7 @@ voice-tool/
 | 4 | Breaking không có tần suất — worker quét liên tục, không cron | `breaking:dispatch` tự re-enqueue sau mỗi vòng |
 | 5 | Scheduled có `scan_frequency` riêng từng kênh, sửa là lịch tự cập nhật | `worker/scheduler` đọc trực tiếp DB qua `PeriodicTaskConfigProvider` |
 | — | Không đăng ký; đăng nhập bằng SSO strongbody, voice đăng bằng tài khoản của chính user | `service.Auth.SignIn`, `service.MultimeCreds`, `Engine.publishAs` |
-| — | Phân quyền viewer/user/admin — `user` đăng được voice nhưng không xoá | `middleware.RequireWrite/RequireDelete/RequireAdmin`, router chia 4 group |
+| — | Phân quyền user/editor/admin — `user` đăng được voice nhưng không xoá | `middleware.RequireWrite/RequireDelete/RequireAdmin`, router chia 4 group |
 | 6 | Chống lấy lặp: lỗi tạm thời không tiến `last_synced_post_id`, lỗi vĩnh viễn thì tiến | `service.Scan.ScanScheduled` + `domain.PermanentError` + unique index dedup |
 | 7 | `auto_process` / `auto_publish` cấu hình theo từng danh sách, không hard-code | Cột trên `list_breaking` / `list_scheduled`, đọc trong `Engine.autoPublishFor` |
 | 8 | Audit Log ghi tự động cho 4 entity, service không tự viết log riêng lẻ | `service.Audit` được inject vào mọi service có mutation |

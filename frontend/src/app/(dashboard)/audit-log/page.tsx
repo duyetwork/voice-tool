@@ -7,9 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
 import { Select } from "@/components/ui/field";
-import { EmptyRow, Table, Td, Th } from "@/components/ui/table";
+import { Pagination, usePaging } from "@/components/ui/pagination";
+import { DateCell, EmptyRow, SortableTh, Table, Td, Th, useSorting } from "@/components/ui/table";
 import { useAuditLog } from "@/hooks/use-api";
-import { formatDateTime } from "@/lib/utils";
 
 const OBJECT_TYPES = [
   { value: "list_breaking", label: "Danh sách Breaking" },
@@ -29,7 +29,14 @@ const ACTION_TONES: Record<string, "info" | "success" | "warning" | "danger" | "
 /** L1/L2/L3 — Nhật ký thao tác. Append-only, chỉ đọc. */
 export default function AuditLogPage() {
   const [objectType, setObjectType] = React.useState("");
-  const log = useAuditLog({ object_type: objectType || undefined });
+  const paging = usePaging();
+  const sorting = useSorting("created_at", paging.reset);
+  const log = useAuditLog({
+    object_type: objectType || undefined,
+    ...sorting.params,
+    limit: paging.limit,
+    offset: paging.offset,
+  });
 
   return (
     <>
@@ -41,7 +48,13 @@ export default function AuditLogPage() {
       <Card>
         <CardBody className="flex flex-wrap items-end gap-3 border-b border-slate-200">
           <div className="w-56">
-            <Select value={objectType} onChange={(e) => setObjectType(e.target.value)}>
+            <Select
+              value={objectType}
+              onChange={(e) => {
+                setObjectType(e.target.value);
+                paging.reset();
+              }}
+            >
               <option value="">Tất cả đối tượng</option>
               {OBJECT_TYPES.map((t) => (
                 <option key={t.value} value={t.value}>
@@ -53,6 +66,9 @@ export default function AuditLogPage() {
           <Button variant="secondary" onClick={() => log.refetch()}>
             Làm mới
           </Button>
+          <span className="ml-auto text-sm text-slate-500">
+            {log.data ? `${log.data.total} bản ghi` : ""}
+          </span>
         </CardBody>
 
         <CardBody className="p-0">
@@ -60,10 +76,12 @@ export default function AuditLogPage() {
           <Table>
             <thead>
               <tr>
-                <Th>Thời gian</Th>
+                <SortableTh sorting={sorting} column="created_at">
+                  Thời gian
+                </SortableTh>
+                <Th>Người dùng</Th>
                 <Th>Hành động</Th>
                 <Th>Đối tượng</Th>
-                <Th>Thay đổi</Th>
               </tr>
             </thead>
             <tbody>
@@ -72,22 +90,20 @@ export default function AuditLogPage() {
               ) : log.data?.items.length ? (
                 log.data.items.map((entry) => (
                   <tr key={entry.id}>
-                    <Td className="whitespace-nowrap">{formatDateTime(entry.created_at)}</Td>
+                    <Td>
+                      <DateCell value={entry.created_at} />
+                    </Td>
+                    <Td className="whitespace-nowrap">
+                      {entry.user_email ?? (
+                        <code className="text-xs text-slate-500">{entry.user_id}</code>
+                      )}
+                    </Td>
                     <Td>
                       <Badge tone={ACTION_TONES[entry.action] ?? "neutral"}>{entry.action}</Badge>
                     </Td>
                     <Td>
                       <div>{entry.object_type}</div>
                       <code className="text-xs text-slate-500">{entry.object_id}</code>
-                    </Td>
-                    <Td className="max-w-lg">
-                      {entry.changes ? (
-                        <pre className="overflow-x-auto rounded bg-slate-50 p-2 text-xs text-slate-600">
-                          {JSON.stringify(entry.changes, null, 2)}
-                        </pre>
-                      ) : (
-                        "—"
-                      )}
                     </Td>
                   </tr>
                 ))
@@ -96,6 +112,8 @@ export default function AuditLogPage() {
               )}
             </tbody>
           </Table>
+
+          <Pagination total={log.data?.total} paging={paging} unit="bản ghi" />
         </CardBody>
       </Card>
     </>

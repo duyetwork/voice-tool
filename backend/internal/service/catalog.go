@@ -45,9 +45,18 @@ func (c *Catalog) GetPrompt(ctx context.Context, id uuid.UUID) (repository.Promp
 	return prompt, nil
 }
 
-func (c *Catalog) ListPrompts(ctx context.Context, limit, offset int32) ([]repository.Prompt, error) {
+func (c *Catalog) ListPrompts(ctx context.Context, limit, offset int32, dirRaw string) ([]repository.Prompt, int64, error) {
 	limit, offset = clampPage(limit, offset)
-	return c.q.ListPrompts(ctx, repository.ListPromptsParams{Limit: limit, Offset: offset})
+	_, dir := normalizeSort("", dirRaw)
+	items, err := c.q.ListPrompts(ctx, repository.ListPromptsParams{Dir: dir, Lim: limit, Off: offset})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list prompt: %w", err)
+	}
+	total, err := c.q.CountPrompts(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count prompt: %w", err)
+	}
+	return items, total, nil
 }
 
 func (c *Catalog) UpdatePrompt(ctx context.Context, id uuid.UUID, name, content *string) (repository.Prompt, error) {

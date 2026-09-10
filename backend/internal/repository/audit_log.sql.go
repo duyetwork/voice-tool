@@ -7,9 +7,31 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+const countAuditLogs = `-- name: CountAuditLogs :one
+SELECT COUNT(*) FROM audit_log
+WHERE ($1::varchar IS NULL OR object_type = $1)
+  AND ($2::uuid      IS NULL OR object_id   = $2)
+  AND ($3::uuid        IS NULL OR user_id     = $3)
+`
+
+type CountAuditLogsParams struct {
+	ObjectType *string    `json:"object_type"`
+	ObjectID   *uuid.UUID `json:"object_id"`
+	UserID     *uuid.UUID `json:"user_id"`
+}
+
+// Tổng số bản ghi khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
+func (q *Queries) CountAuditLogs(ctx context.Context, arg CountAuditLogsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuditLogs, arg.ObjectType, arg.ObjectID, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const createAuditLog = `-- name: CreateAuditLog :one
 INSERT INTO audit_log (user_id, action, object_type, object_id, changes)
@@ -47,27 +69,47 @@ func (q *Queries) CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) 
 }
 
 const listAuditLogs = `-- name: ListAuditLogs :many
-SELECT id, user_id, action, object_type, object_id, changes, created_at FROM audit_log
-WHERE ($1::varchar IS NULL OR object_type = $1)
-  AND ($2::uuid      IS NULL OR object_id   = $2)
-  AND ($3::uuid        IS NULL OR user_id     = $3)
-ORDER BY created_at DESC
-LIMIT $5 OFFSET $4
+SELECT al.id, al.user_id, al.action, al.object_type, al.object_id, al.changes, al.created_at, u.email AS user_email
+FROM audit_log al
+LEFT JOIN app_user u ON u.id = al.user_id
+WHERE ($1::varchar IS NULL OR al.object_type = $1)
+  AND ($2::uuid      IS NULL OR al.object_id   = $2)
+  AND ($3::uuid        IS NULL OR al.user_id     = $3)
+ORDER BY
+  CASE WHEN $4::text = 'asc' THEN al.created_at END ASC,
+  al.created_at DESC
+LIMIT $6 OFFSET $5
 `
 
 type ListAuditLogsParams struct {
 	ObjectType *string    `json:"object_type"`
 	ObjectID   *uuid.UUID `json:"object_id"`
 	UserID     *uuid.UUID `json:"user_id"`
+	Dir        string     `json:"dir"`
 	Off        int32      `json:"off"`
 	Lim        int32      `json:"lim"`
 }
 
-func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error) {
+type ListAuditLogsRow struct {
+	ID         uuid.UUID `json:"id"`
+	UserID     uuid.UUID `json:"user_id"`
+	Action     string    `json:"action"`
+	ObjectType string    `json:"object_type"`
+	ObjectID   uuid.UUID `json:"object_id"`
+	Changes    []byte    `json:"changes"`
+	CreatedAt  time.Time `json:"created_at"`
+	UserEmail  *string   `json:"user_email"`
+}
+
+// Kèm email người thao tác để bảng nhật ký hiện được "ai làm" mà không phải
+// gọi thêm API. LEFT JOIN cho chắc: bản ghi audit không được mất chỉ vì user
+// tham chiếu không đọc được.
+func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]ListAuditLogsRow, error) {
 	rows, err := q.db.Query(ctx, listAuditLogs,
 		arg.ObjectType,
 		arg.ObjectID,
 		arg.UserID,
+		arg.Dir,
 		arg.Off,
 		arg.Lim,
 	)
@@ -75,9 +117,9 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AuditLog{}
+	items := []ListAuditLogsRow{}
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditLogsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserID,
@@ -86,6 +128,7 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 			&i.ObjectID,
 			&i.Changes,
 			&i.CreatedAt,
+			&i.UserEmail,
 		); err != nil {
 			return nil, err
 		}

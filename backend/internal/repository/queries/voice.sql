@@ -1,10 +1,10 @@
 -- name: CreateVoice :one
 INSERT INTO voice (
-  source_post_id, ai_engine_id, voice_file_url, duration_seconds, description,
+  source_post_id, ai_engine_id, voice_file_url, duration_seconds,
   hashtag, language, image_url, publish_status, title, mime_type, size_bytes,
   sample_rate, created_by
 ) VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
 RETURNING *;
 
@@ -31,7 +31,17 @@ WHERE (sqlc.narg('publish_status')::varchar IS NULL OR v.publish_status = sqlc.n
   AND (sqlc.narg('created_to')::timestamptz     IS NULL OR v.created_at   <= sqlc.narg('created_to'))
   AND (sqlc.narg('published_from')::timestamptz IS NULL OR v.published_at >= sqlc.narg('published_from'))
   AND (sqlc.narg('published_to')::timestamptz   IS NULL OR v.published_at <= sqlc.narg('published_to'))
-ORDER BY v.created_at DESC
+-- Sắp xếp động: mỗi nhánh CASE chỉ có giá trị khi đúng cột + đúng chiều đang
+-- chọn, các nhánh còn lại toàn NULL nên không ảnh hưởng thứ tự. Dòng cuối là
+-- mặc định (mới nhất trước) và cũng là nhánh sort=created_at + dir=desc.
+ORDER BY
+  CASE WHEN sqlc.arg('sort')::text = 'published_at' AND sqlc.arg('dir')::text = 'asc'
+       THEN v.published_at END ASC NULLS LAST,
+  CASE WHEN sqlc.arg('sort')::text = 'published_at' AND sqlc.arg('dir')::text = 'desc'
+       THEN v.published_at END DESC NULLS LAST,
+  CASE WHEN sqlc.arg('dir')::text = 'asc' AND sqlc.arg('sort')::text <> 'published_at'
+       THEN v.created_at END ASC,
+  v.created_at DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: CountVoices :one
@@ -48,13 +58,32 @@ WHERE (sqlc.narg('publish_status')::varchar IS NULL OR v.publish_status = sqlc.n
   AND (sqlc.narg('published_from')::timestamptz IS NULL OR v.published_at >= sqlc.narg('published_from'))
   AND (sqlc.narg('published_to')::timestamptz   IS NULL OR v.published_at <= sqlc.narg('published_to'));
 
+-- name: FinishVoice :one
+-- Worker điền kết quả vào record `processing` đã tạo sẵn lúc enqueue.
+-- Metadata dùng COALESCE: fetch không ra tiêu đề thì giữ nguyên phần đã điền
+-- sẵn từ Bài Post, không xoá trắng.
+UPDATE voice
+SET ai_engine_id     = sqlc.narg('ai_engine_id'),
+    voice_file_url   = sqlc.arg('voice_file_url'),
+    duration_seconds = sqlc.narg('duration_seconds'),
+    title            = COALESCE(sqlc.narg('title'), title),
+    hashtag          = COALESCE(sqlc.narg('hashtag'), hashtag),
+    image_url        = COALESCE(sqlc.narg('image_url'), image_url),
+    language         = sqlc.arg('language'),
+    mime_type        = sqlc.narg('mime_type'),
+    size_bytes       = sqlc.narg('size_bytes'),
+    sample_rate      = sqlc.narg('sample_rate'),
+    publish_status   = 'draft',
+    last_error       = NULL
+WHERE id = sqlc.arg('id')
+RETURNING *;
+
 -- name: ListVoicesBySourcePost :many
 SELECT * FROM voice WHERE source_post_id = $1 ORDER BY created_at DESC;
 
 -- name: UpdateVoiceMetadata :one
 UPDATE voice
-SET description = COALESCE(sqlc.narg('description'), description),
-    hashtag     = COALESCE(sqlc.narg('hashtag'), hashtag),
+SET hashtag     = COALESCE(sqlc.narg('hashtag'), hashtag),
     language    = COALESCE(sqlc.narg('language'), language),
     image_url   = COALESCE(sqlc.narg('image_url'), image_url),
     title       = COALESCE(sqlc.narg('title'), title)

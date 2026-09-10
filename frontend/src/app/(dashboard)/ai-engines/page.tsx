@@ -3,12 +3,13 @@
 import * as React from "react";
 
 import { ErrorNote, PageHeader } from "@/components/page-header";
-import { Can, ViewerNotice, usePermissions } from "@/components/permission";
+import { Can, usePermissions } from "@/components/permission";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Checkbox, Field, Input } from "@/components/ui/field";
-import { EmptyRow, Table, Td, Th } from "@/components/ui/table";
+import { Pagination, usePaging } from "@/components/ui/pagination";
+import { EmptyRow, RowActions, Table, Td, Th } from "@/components/ui/table";
 import {
   useAIEngines,
   useCreateAIEngine,
@@ -26,11 +27,17 @@ export default function AIEnginesPage() {
   const create = useCreateAIEngine();
   const update = useUpdateAIEngine();
   const remove = useDeleteAIEngine();
+  const paging = usePaging();
 
   const [name, setName] = React.useState("");
   const [provider, setProvider] = React.useState("");
   const [languages, setLanguages] = React.useState("vi, en");
   const [isActive, setIsActive] = React.useState(true);
+
+  // Endpoint /ai-engines trả về toàn bộ engine (bảng vài dòng, không có
+  // limit/offset), nên phân trang ngay ở client.
+  const all = engines.data?.items ?? [];
+  const shown = all.slice(paging.offset, paging.offset + paging.limit);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -53,8 +60,6 @@ export default function AIEnginesPage() {
         title="AI Engine (TTS)"
         description="Ngôn ngữ của Bài Post được validate với supported_languages của engine trước khi chạy TTS."
       />
-
-      <ViewerNotice />
 
       <div className={perms.can_write ? "grid gap-6 xl:grid-cols-[420px_1fr]" : ""}>
         <Can permission="can_write">
@@ -81,7 +86,10 @@ export default function AIEnginesPage() {
                     required
                   />
                 </Field>
-                <Field label="Ngôn ngữ hỗ trợ" hint="Phân tách bằng dấu phẩy.">
+                <Field
+                  label="Ngôn ngữ hỗ trợ"
+                  hint="Mã ngôn ngữ phân tách bằng dấu phẩy (vi, en, zh-CN…). Để trống = không giới hạn."
+                >
                   <Input value={languages} onChange={(e) => setLanguages(e.target.value)} />
                 </Field>
 
@@ -119,8 +127,8 @@ export default function AIEnginesPage() {
               <tbody>
                 {engines.isLoading ? (
                   <EmptyRow colSpan={5}>Đang tải…</EmptyRow>
-                ) : engines.data?.items.length ? (
-                  engines.data.items.map((engine) => (
+                ) : shown.length ? (
+                  shown.map((engine) => (
                     <tr key={engine.id}>
                       <Td className="font-medium text-slate-900">{engine.name}</Td>
                       <Td>
@@ -138,28 +146,30 @@ export default function AIEnginesPage() {
                       </Td>
                       <Can permission="can_write">
                         <Td className="whitespace-nowrap text-right">
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={update.isPending}
-                            onClick={() =>
-                              update.mutate({ id: engine.id, is_active: !engine.is_active })
-                            }
-                          >
-                            {engine.is_active ? "Tắt" : "Bật"}
-                          </Button>{" "}
-                          <Can permission="can_delete">
+                          <RowActions>
                             <Button
                               size="sm"
-                              variant="ghost"
-                              onClick={() => {
-                                if (confirm(`Xoá engine "${engine.name}"?`))
-                                  remove.mutate(engine.id);
-                              }}
+                              variant="secondary"
+                              disabled={update.isPending}
+                              onClick={() =>
+                                update.mutate({ id: engine.id, is_active: !engine.is_active })
+                              }
                             >
-                              Xoá
+                              {engine.is_active ? "Tắt" : "Bật"}
                             </Button>
-                          </Can>
+                            <Can permission="can_delete">
+                              <Button
+                                size="sm"
+                                variant="danger"
+                                onClick={() => {
+                                  if (confirm(`Xoá engine "${engine.name}"?`))
+                                    remove.mutate(engine.id);
+                                }}
+                              >
+                                Xoá
+                              </Button>
+                            </Can>
+                          </RowActions>
                         </Td>
                       </Can>
                     </tr>
@@ -169,6 +179,12 @@ export default function AIEnginesPage() {
                 )}
               </tbody>
             </Table>
+
+            <Pagination
+              total={engines.data ? all.length : undefined}
+              paging={paging}
+              unit="engine"
+            />
           </CardBody>
         </Card>
       </div>

@@ -16,13 +16,13 @@ const FALLBACK: Permissions = {
  * an toàn hơn là hiện nút rồi mới bị API từ chối.
  */
 export function usePermissions(): {
-  role: Role;
+  role: Role | null;
   perms: Permissions;
   loading: boolean;
 } {
   const me = useMe();
   return {
-    role: me.data?.role ?? "viewer",
+    role: me.data?.role ?? null,
     perms: me.data?.permissions ?? FALLBACK,
     loading: me.isLoading,
   };
@@ -42,20 +42,14 @@ export function Can({
   return perms[permission] ? <>{children}</> : <>{fallback}</>;
 }
 
-/** ViewerNotice giải thích cho viewer vì sao không thấy nút thao tác. */
-export function ViewerNotice() {
-  const { perms, loading } = usePermissions();
-  if (loading || perms.can_write) return null;
-  return (
-    <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
-      Bạn đang ở quyền <strong>viewer</strong> — chỉ xem được dữ liệu. Liên hệ admin để được nâng
-      quyền <strong>user</strong> nếu cần tạo/chạy/đăng voice.
-    </p>
-  );
-}
-
+/**
+ * ROLE_LABELS — 3 vai trò. Không còn vai trò chỉ-xem: hệ thống không có đăng
+ * ký, đăng nhập được bằng tài khoản multime nghĩa là dùng được.
+ */
 export const ROLE_LABELS: Record<Role, string> = {
-  admin: "Admin — toàn quyền, kể cả xoá và cấp quyền",
-  user: "User — xem tất cả + tạo/chạy/đăng voice, không được xoá",
-  viewer: "Viewer — chỉ xem",
+  admin: "Admin — toàn quyền, kể cả cấp quyền cho người khác",
+  editor: "Editor — toàn quyền nghiệp vụ (kể cả xoá), trừ cấp quyền",
+  user: "User — tạo/chạy/đăng voice, không được xoá",
 };
+
+export const ROLE_ORDER: Role[] = ["admin", "editor", "user"];

@@ -33,8 +33,9 @@ type publicUser struct {
 
 func (h *User) list(c *gin.Context) {
 	limit, offset := pagination(c)
+	_, dir := sorting(c)
 
-	users, total, err := h.svc.List(c.Request.Context(), limit, offset)
+	users, total, err := h.svc.List(c.Request.Context(), limit, offset, dir)
 	if err != nil {
 		httpx.Fail(c, err)
 		return
@@ -55,7 +56,7 @@ func (h *User) list(c *gin.Context) {
 }
 
 type setRoleRequest struct {
-	Role string `json:"role" binding:"required,oneof=admin editor viewer"`
+	Role string `json:"role" binding:"required,oneof=admin editor user"`
 }
 
 func (h *User) setRole(c *gin.Context) {

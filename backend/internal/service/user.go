@@ -23,10 +23,11 @@ func NewUser(q *repository.Queries, log *slog.Logger) *User {
 	return &User{q: q, log: log}
 }
 
-func (u *User) List(ctx context.Context, limit, offset int32) ([]repository.AppUser, int64, error) {
+func (u *User) List(ctx context.Context, limit, offset int32, dirRaw string) ([]repository.AppUser, int64, error) {
 	limit, offset = clampPage(limit, offset)
+	_, dir := normalizeSort("", dirRaw)
 
-	users, err := u.q.ListUsers(ctx, repository.ListUsersParams{Limit: limit, Offset: offset})
+	users, err := u.q.ListUsers(ctx, repository.ListUsersParams{Dir: dir, Lim: limit, Off: offset})
 	if err != nil {
 		return nil, 0, fmt.Errorf("list user: %w", err)
 	}
@@ -42,7 +43,7 @@ func (u *User) List(ctx context.Context, limit, offset int32) ([]repository.AppU
 func (u *User) SetRole(ctx context.Context, actor, target uuid.UUID, role string) (repository.AppUser, error) {
 	r := domain.Role(strings.ToLower(strings.TrimSpace(role)))
 	if !r.Valid() {
-		return repository.AppUser{}, fmt.Errorf("%w: role phải là admin, user hoặc viewer",
+		return repository.AppUser{}, fmt.Errorf("%w: role phải là admin, editor hoặc user",
 			domain.ErrInvalidInput)
 	}
 	if actor == target && r != domain.RoleAdmin {

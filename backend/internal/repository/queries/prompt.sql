@@ -8,8 +8,10 @@ SELECT * FROM prompt WHERE id = $1;
 
 -- name: ListPrompts :many
 SELECT * FROM prompt
-ORDER BY created_at DESC
-LIMIT $1 OFFSET $2;
+ORDER BY
+  CASE WHEN sqlc.arg('dir')::text = 'asc' THEN created_at END ASC,
+  created_at DESC
+LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: UpdatePrompt :one
 UPDATE prompt
@@ -20,3 +22,6 @@ RETURNING *;
 
 -- name: DeletePrompt :execrows
 DELETE FROM prompt WHERE id = $1;
+
+-- name: CountPrompts :one
+SELECT COUNT(*) FROM prompt;

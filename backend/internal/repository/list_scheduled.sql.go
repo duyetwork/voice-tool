@@ -13,6 +13,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countListScheduleds = `-- name: CountListScheduleds :one
+SELECT COUNT(*)
+FROM list_scheduled ls
+WHERE ($1::varchar   IS NULL OR ls.status     = $1)
+  AND ($2::varchar IS NULL OR ls.platform   = $2)
+  AND ($3::uuid  IS NULL OR ls.created_by = $3)
+  AND ($4::text      IS NULL OR ls.source_url ~* $4)
+`
+
+type CountListScheduledsParams struct {
+	Status    *string    `json:"status"`
+	Platform  *string    `json:"platform"`
+	CreatedBy *uuid.UUID `json:"created_by"`
+	Search    *string    `json:"search"`
+}
+
+// Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
+func (q *Queries) CountListScheduleds(ctx context.Context, arg CountListScheduledsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countListScheduleds,
+		arg.Status,
+		arg.Platform,
+		arg.CreatedBy,
+		arg.Search,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createListScheduled = `-- name: CreateListScheduled :one
 INSERT INTO list_scheduled (
   source_url, platform, content_type, collect_mode, prompt_id, scan_frequency,
@@ -170,8 +199,15 @@ WHERE ($1::varchar   IS NULL OR ls.status     = $1)
   AND ($2::varchar IS NULL OR ls.platform   = $2)
   AND ($3::uuid  IS NULL OR ls.created_by = $3)
   AND ($4::text      IS NULL OR ls.source_url ~* $4)
-ORDER BY ls.created_at DESC
-LIMIT $6 OFFSET $5
+ORDER BY
+  CASE WHEN $5::text = 'last_scanned_at' AND $6::text = 'asc'
+       THEN ls.last_scanned_at END ASC NULLS LAST,
+  CASE WHEN $5::text = 'last_scanned_at' AND $6::text = 'desc'
+       THEN ls.last_scanned_at END DESC NULLS LAST,
+  CASE WHEN $6::text = 'asc' AND $5::text <> 'last_scanned_at'
+       THEN ls.created_at END ASC,
+  ls.created_at DESC
+LIMIT $8 OFFSET $7
 `
 
 type ListListScheduledsParams struct {
@@ -179,6 +215,8 @@ type ListListScheduledsParams struct {
 	Platform  *string    `json:"platform"`
 	CreatedBy *uuid.UUID `json:"created_by"`
 	Search    *string    `json:"search"`
+	Sort      string     `json:"sort"`
+	Dir       string     `json:"dir"`
 	Off       int32      `json:"off"`
 	Lim       int32      `json:"lim"`
 }
@@ -204,12 +242,15 @@ type ListListScheduledsRow struct {
 	CreatedByEmail   string          `json:"created_by_email"`
 }
 
+// Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 func (q *Queries) ListListScheduleds(ctx context.Context, arg ListListScheduledsParams) ([]ListListScheduledsRow, error) {
 	rows, err := q.db.Query(ctx, listListScheduleds,
 		arg.Status,
 		arg.Platform,
 		arg.CreatedBy,
 		arg.Search,
+		arg.Sort,
+		arg.Dir,
 		arg.Off,
 		arg.Lim,
 	)

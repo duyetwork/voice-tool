@@ -60,7 +60,7 @@ export interface BulkAction {
   onRun: (ids: string[]) => Promise<void> | void;
   /** confirm hiện hộp xác nhận trước khi chạy (dùng cho hành động xoá). */
   confirm?: string;
-  variant?: "primary" | "secondary" | "ghost";
+  variant?: "primary" | "secondary" | "ghost" | "danger";
   /** Quyền cần có để thấy hành động này — ví dụ xoá cần `can_delete`. */
   permission?: keyof Permissions;
 }

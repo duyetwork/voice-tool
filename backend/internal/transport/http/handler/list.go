@@ -8,6 +8,7 @@ import (
 
 	"github.com/strongbody/voice-tool/backend/internal/domain"
 	"github.com/strongbody/voice-tool/backend/internal/pkg/httpx"
+	"github.com/strongbody/voice-tool/backend/internal/repository"
 	"github.com/strongbody/voice-tool/backend/internal/service"
 	"github.com/strongbody/voice-tool/backend/internal/transport/http/middleware"
 )
@@ -80,11 +81,14 @@ func (h *List) ListBreaking(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	items, err := h.svc.ListBreaking(c.Request.Context(), service.ChannelFilter{
+	sortCol, dir := sorting(c)
+	items, total, err := h.svc.ListBreaking(c.Request.Context(), service.ChannelFilter{
 		Status:    queryString(c, "status"),
 		Search:    queryString(c, "search"),
 		Platform:  queryString(c, "platform"),
 		CreatedBy: createdBy,
+		Sort:      sortCol,
+		Dir:       dir,
 		Limit:     limit,
 		Offset:    offset,
 	})
@@ -92,7 +96,9 @@ func (h *List) ListBreaking(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	httpx.OK(c, gin.H{"items": items, "limit": limit, "offset": offset})
+	httpx.OK(c, httpx.Page[repository.ListListBreakingsRow]{
+		Items: items, Total: total, Limit: limit, Offset: offset,
+	})
 }
 
 func (h *List) GetBreaking(c *gin.Context) {
@@ -246,11 +252,14 @@ func (h *List) ListScheduled(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	items, err := h.svc.ListScheduled(c.Request.Context(), service.ChannelFilter{
+	sortCol, dir := sorting(c)
+	items, total, err := h.svc.ListScheduled(c.Request.Context(), service.ChannelFilter{
 		Status:    queryString(c, "status"),
 		Search:    queryString(c, "search"),
 		Platform:  queryString(c, "platform"),
 		CreatedBy: createdBy,
+		Sort:      sortCol,
+		Dir:       dir,
 		Limit:     limit,
 		Offset:    offset,
 	})
@@ -258,7 +267,9 @@ func (h *List) ListScheduled(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	httpx.OK(c, gin.H{"items": items, "limit": limit, "offset": offset})
+	httpx.OK(c, httpx.Page[repository.ListListScheduledsRow]{
+		Items: items, Total: total, Limit: limit, Offset: offset,
+	})
 }
 
 func (h *List) GetScheduled(c *gin.Context) {

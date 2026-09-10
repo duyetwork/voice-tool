@@ -20,12 +20,14 @@ Danh sách (List) → Bài Post (SourcePost) → Voice → multime.ai
 | Mã | Tên | Cơ chế |
 |---|---|---|
 | **A** | Extract từ URL | Tải video/audio gốc, tách trực tiếp track giọng nói |
-| **B** | Text → AI gen → voice | Lấy caption/transcript → TTS đọc nguyên văn — *chưa bật* |
-| **C** | Text + Prompt → AI gen → voice | Text gốc → LLM viết lại theo Prompt mẫu → TTS — *chưa bật* |
+| **B** | Text → TTS → Voice | Lấy caption/transcript → TTS đọc nguyên văn — *chưa bật* |
+| **C** | Text + Prompt → TTS → Voice | Text gốc → LLM viết lại theo Prompt mẫu → TTS — *chưa bật* |
 
 Nền tảng nguồn: YouTube, Facebook, TikTok, Instagram, X — hệ thống tự nhận diện
-từ URL. Metadata bài gốc (tiêu đề, mô tả, hashtag, ảnh bìa) được lấy về và điền
-sẵn vào Voice, nên thường chỉ cần nghe thử rồi bấm Đăng.
+từ URL. Metadata bài gốc (nội dung bài, hashtag, ảnh bìa) được lấy về và điền
+sẵn vào Voice, nên thường chỉ cần nghe thử rồi bấm Đăng. Không có trường mô tả:
+multime chỉ hiển thị tiêu đề, nên tiêu đề Bài Post mang trọn nội dung bài (trừ
+hashtag) và tiêu đề Voice là 200 ký tự đầu của nó — đúng giới hạn multime nhận.
 
 Mode B/C bật bằng `ENABLED_COLLECT_MODES` trong `.env` khi đã cấu hình TTS/LLM
 thật; trước đó UI hiển thị mờ và API từ chối.
@@ -77,7 +79,7 @@ docker compose up -d --build
 ```
 
 Lần đầu build khoảng 3-5 phút (image worker phải cài `yt-dlp` + `ffmpeg`).
-Service `migrate` chạy 3 migration rồi tự thoát — đó là bình thường, không phải
+Service `migrate` chạy toàn bộ migration rồi tự thoát — đó là bình thường, không phải
 lỗi. Xong thì kiểm tra:
 
 ```bash
@@ -162,7 +164,7 @@ email trong `BOOTSTRAP_ADMIN_EMAIL` luôn là `admin`. Chi tiết phân quyền:
 4. Xem tiến trình ở http://localhost:8081 (queue `default`) hoặc
    `docker compose logs -f worker`.
 5. Vào **Voice** — bấm **▶ Nghe thử** (hoặc **⤓ Tải về**) để kiểm tra file.
-6. Tiêu đề/mô tả/hashtag/ảnh bìa đã điền sẵn từ bài gốc — bấm **Sửa metadata**
+6. Tiêu đề/hashtag/ảnh bìa đã điền sẵn từ bài gốc — bấm **Sửa metadata**
    nếu muốn đổi, rồi bấm **Đăng**.
 
 Gặp lỗi: xem [docs/troubleshooting.md](docs/troubleshooting.md).

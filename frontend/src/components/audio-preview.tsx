@@ -12,6 +12,10 @@ import { audioUrl } from "@/lib/api";
  *
  * `preload="none"`: trình duyệt chỉ tải file khi người dùng bấm play — mở bảng
  * 50 voice không kéo về 50 file. Nút tải về nằm sẵn trong menu của thanh phát.
+ *
+ * Tua được là nhờ endpoint audio trả `Accept-Ranges` và xử lý header `Range`
+ * (xem handler.Voice.Audio) — thẻ <audio> phải xin đúng byte offset mới nhảy
+ * tới giữa file.
  */
 export function AudioPreview({ voiceId }: { voiceId: string }) {
   return <audio controls preload="none" src={audioUrl(voiceId)} className="mt-2 h-9 w-full max-w-md" />;

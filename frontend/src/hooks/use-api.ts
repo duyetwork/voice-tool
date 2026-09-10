@@ -2,8 +2,9 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import type {
+  DuplicatePost,
   AIEngine,
   AuditLog,
   CollectMode,
@@ -11,7 +12,6 @@ import type {
   Platform,
   PublishRequirements,
   Me,
-  ItemList,
   ListBreaking,
   ListScheduled,
   Page,
@@ -29,7 +29,7 @@ export const keys = {
   voices: (filters: Record<string, unknown>) => ["voices", filters] as const,
   breaking: (filters: Record<string, unknown>) => ["lists", "breaking", filters] as const,
   scheduled: (filters: Record<string, unknown>) => ["lists", "scheduled", filters] as const,
-  prompts: ["prompts"] as const,
+  prompts: (filters: Record<string, unknown>) => ["prompts", filters] as const,
   aiEngines: ["ai-engines"] as const,
   auditLog: (filters: Record<string, unknown>) => ["audit-log", filters] as const,
   platforms: ["meta", "platforms"] as const,
@@ -44,6 +44,20 @@ export const keys = {
 /** Giá trị hợp lệ của query string. */
 type QueryValue = string | number | boolean | undefined | null;
 
+/** Chu kỳ tự làm mới khi còn việc đang chạy (ms). */
+const POLL_MS = 4_000;
+
+/**
+ * pollWhile bật tự làm mới chỉ khi `pending` đúng với dữ liệu vừa nhận — hết
+ * việc đang chạy thì dừng hẳn, không gọi API vô ích.
+ */
+function pollWhile<T>(pending: (data: T) => boolean) {
+  return (query: { state: { data?: T } }) => {
+    const data = query.state.data;
+    return data !== undefined && pending(data) ? POLL_MS : false;
+  };
+}
+
 export interface SourcePostFilters {
   [key: string]: QueryValue;
   source_type?: string;
@@ -56,12 +70,17 @@ export interface SourcePostFilters {
   created_to?: string;
   limit?: number;
   offset?: number;
+  sort?: string;
+  dir?: string;
 }
 
 export function useSourcePosts(filters: SourcePostFilters = {}) {
   return useQuery({
     queryKey: keys.sourcePosts(filters),
     queryFn: () => api.get<Page<SourcePost>>("/source-posts", filters),
+    refetchInterval: pollWhile((data: Page<SourcePost>) =>
+      data.items.some((p) => p.status === "processing"),
+    ),
   });
 }
 
@@ -73,6 +92,21 @@ export interface CreateSourcePostInput {
   auto_process?: boolean;
   /** Để trống thì hệ thống tự nhận diện nền tảng từ URL. */
   platform?: string;
+  /**
+   * Bỏ qua kiểm tra trùng: chỉ đặt sau khi người dùng đã thấy thông báo trùng
+   * và chọn vẫn tạo mới.
+   */
+  allow_duplicate?: boolean;
+}
+
+/**
+ * duplicateOf đọc thông tin bài trùng ra khỏi lỗi 409 `duplicate_post`;
+ * null nếu đây là lỗi khác.
+ */
+export function duplicateOf(error: unknown): DuplicatePost | null {
+  if (!(error instanceof ApiError) || error.code !== "duplicate_post") return null;
+  const existing = (error.payload as { existing?: DuplicatePost } | undefined)?.existing;
+  return existing ?? null;
 }
 
 export function useCreateSourcePost() {
@@ -131,12 +165,21 @@ export interface VoiceFilters {
   published_to?: string;
   limit?: number;
   offset?: number;
+  sort?: string;
+  dir?: string;
 }
 
+/**
+ * useVoices tự làm mới khi trong trang có voice đang xử lý — worker chạy xong
+ * là bảng tự đổi trạng thái, không phải F5.
+ */
 export function useVoices(filters: VoiceFilters = {}) {
   return useQuery({
     queryKey: keys.voices(filters),
     queryFn: () => api.get<Page<Voice>>("/voices", filters),
+    refetchInterval: pollWhile((data: Page<Voice>) =>
+      data.items.some((v) => v.publish_status === "processing"),
+    ),
   });
 }
 
@@ -175,12 +218,16 @@ export interface ChannelFilters {
   search?: string;
   platform?: string;
   created_by?: string;
+  limit?: number;
+  offset?: number;
+  sort?: string;
+  dir?: string;
 }
 
 export function useBreakingLists(filters: ChannelFilters = {}) {
   return useQuery({
     queryKey: keys.breaking(filters),
-    queryFn: () => api.get<ItemList<ListBreaking>>("/lists/breaking", filters),
+    queryFn: () => api.get<Page<ListBreaking>>("/lists/breaking", filters),
   });
 }
 
@@ -237,7 +284,7 @@ export function useDeleteBreakingList() {
 export function useScheduledLists(filters: ChannelFilters = {}) {
   return useQuery({
     queryKey: keys.scheduled(filters),
-    queryFn: () => api.get<ItemList<ListScheduled>>("/lists/scheduled", filters),
+    queryFn: () => api.get<Page<ListScheduled>>("/lists/scheduled", filters),
   });
 }
 
@@ -282,10 +329,22 @@ export function useDeleteScheduledList() {
 // Danh mục
 // ---------------------------------------------------------------------------
 
-export function usePrompts() {
+export interface PromptFilters {
+  [key: string]: QueryValue;
+  limit?: number;
+  offset?: number;
+  sort?: string;
+  dir?: string;
+}
+
+/**
+ * usePrompts: mặc định lấy 200 prompt cho các ô chọn "Prompt mẫu"; bảng quản lý
+ * prompt truyền limit/offset để phân trang thật.
+ */
+export function usePrompts(filters: PromptFilters = { limit: 200 }) {
   return useQuery({
-    queryKey: keys.prompts,
-    queryFn: () => api.get<ItemList<Prompt>>("/prompts", { limit: 200 }),
+    queryKey: keys.prompts(filters),
+    queryFn: () => api.get<Page<Prompt>>("/prompts", filters),
   });
 }
 
@@ -293,7 +352,7 @@ export function useCreatePrompt() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { name: string; content: string }) => api.post<Prompt>("/prompts", input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.prompts }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["prompts"] }),
   });
 }
 
@@ -301,14 +360,14 @@ export function useDeletePrompt() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete<void>(`/prompts/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.prompts }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["prompts"] }),
   });
 }
 
 export function useAIEngines() {
   return useQuery({
     queryKey: keys.aiEngines,
-    queryFn: () => api.get<ItemList<AIEngine>>("/ai-engines"),
+    queryFn: () => api.get<{ items: AIEngine[] }>("/ai-engines"),
   });
 }
 
@@ -346,10 +405,20 @@ export function useDeleteAIEngine() {
 // Nhật ký thao tác
 // ---------------------------------------------------------------------------
 
-export function useAuditLog(filters: { object_type?: string; object_id?: string } = {}) {
+export interface AuditLogFilters {
+  [key: string]: QueryValue;
+  object_type?: string;
+  object_id?: string;
+  limit?: number;
+  offset?: number;
+  sort?: string;
+  dir?: string;
+}
+
+export function useAuditLog(filters: AuditLogFilters = {}) {
   return useQuery({
     queryKey: keys.auditLog(filters),
-    queryFn: () => api.get<ItemList<AuditLog>>("/audit-log", { ...filters, limit: 100 }),
+    queryFn: () => api.get<Page<AuditLog>>("/audit-log", filters),
   });
 }
 
@@ -400,7 +469,9 @@ export function useMe() {
   });
 }
 
-export function useUsers(filters: { limit?: number; offset?: number } = {}) {
+export function useUsers(
+  filters: { limit?: number; offset?: number; sort?: string; dir?: string } = {},
+) {
   return useQuery({
     queryKey: keys.users(filters),
     queryFn: () => api.get<Page<User>>("/users", filters),

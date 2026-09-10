@@ -8,6 +8,7 @@ import (
 	"regexp"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/strongbody/voice-tool/backend/internal/domain"
@@ -268,8 +269,25 @@ type remoteInput struct {
 }
 
 // createFromRemote tạo Bài Post từ 1 bài thô. created=false nghĩa là bài đã có
-// trong hệ thống (unique index dedup) — không phải lỗi.
+// trong hệ thống — không phải lỗi.
+//
+// Dedup theo (platform, post_id_extracted) trên TOÀN hệ thống, không theo URL
+// và không theo từng danh sách: cùng 1 bài nằm trong cả Breaking lẫn Định kỳ
+// thì vẫn chỉ vào hệ thống 1 lần, và cùng 1 bài có nhiều dạng URL vẫn là 1.
 func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, error) {
+	if in.Post.PostID != "" {
+		_, err := s.q.FindSourcePostByPostID(ctx, repository.FindSourcePostByPostIDParams{
+			Platform:        in.Platform,
+			PostIDExtracted: &in.Post.PostID,
+		})
+		switch {
+		case err == nil:
+			return false, nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return false, fmt.Errorf("kiểm tra trùng bài post: %w", err)
+		}
+	}
+
 	params := repository.CreateSourcePostParams{
 		SourceType:      string(in.SourceType),
 		SourceUrl:       in.Post.URL,
@@ -287,7 +305,6 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 		// Metadata gốc lấy được ngay từ vòng quét — bảng Bài Post hiển thị
 		// được tiêu đề/ảnh bìa trước cả khi tạo Voice.
 		Title:        nilIfEmpty(in.Post.Meta.Title),
-		Description:  nilIfEmpty(in.Post.Meta.Description),
 		Hashtags:     in.Post.Meta.Hashtags,
 		ThumbnailUrl: nilIfEmpty(in.Post.Meta.ThumbnailURL),
 		AuthorName:   nilIfEmpty(in.Post.Meta.AuthorName),
@@ -302,6 +319,8 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 
 	post, err := s.q.CreateSourcePost(ctx, params)
 	if err != nil {
+		// Unique index vẫn là lưới an toàn: 2 worker quét song song có thể cùng
+		// vượt qua bước kiểm tra ở trên rồi cùng insert.
 		if isUniqueViolation(err) {
 			return false, nil
 		}
@@ -309,7 +328,7 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 	}
 
 	if in.AutoProcess {
-		if err := s.enq.EnqueueVoiceProcess(ctx, post.ID.String(), in.CreatedBy.String()); err != nil {
+		if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, in.CreatedBy); err != nil {
 			return true, fmt.Errorf("enqueue voice:process: %w", err)
 		}
 	}

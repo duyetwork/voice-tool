@@ -1,5 +1,7 @@
 package domain
 
+import "strings"
+
 // CollectMode — 3 hình thức thu thập voice (specs 1.2).
 type CollectMode string
 
@@ -60,10 +62,14 @@ const (
 
 // Vòng đời Voice (specs 4).
 const (
-	PublishDraft     = "draft"
-	PublishReady     = "ready"
-	PublishPublished = "published"
-	PublishFailed    = "failed"
+	// PublishProcessing: record đã tạo, worker đang tải/tạo audio. Chưa có
+	// file nên chưa đăng được — tồn tại để người dùng thấy voice ngay khi bấm
+	// tạo, thay vì bảng trống cho tới lúc job xong.
+	PublishProcessing = "processing"
+	PublishDraft      = "draft"
+	PublishReady      = "ready"
+	PublishPublished  = "published"
+	PublishFailed     = "failed"
 )
 
 // Platform — nền tảng nguồn được hỗ trợ.
@@ -95,6 +101,27 @@ const (
 // MinPublishDurationSeconds là độ dài audio tối thiểu multime.ai chấp nhận.
 const MinPublishDurationSeconds = 15
 
+// MaxVoiceTitleRunes giới hạn độ dài tiêu đề Voice gửi lên multime.ai.
+//
+// Đây là ràng buộc THẬT của nơi đăng, không phải con số tự đặt: form đăng voice
+// của multime (`multime-ai/src/components/Studio/UploadVoice.tsx`) và form sửa
+// (`MyVoices.tsx`) đều đặt `maxLength={200}` cho ô tiêu đề. Ô đó là `<input>`
+// một dòng và là trường bắt buộc — `POST /v1/seller/voice-posts/upload` từ chối
+// title rỗng.
+//
+// Trường `caption` của API tồn tại nhưng chính multime không dùng khi đăng
+// (form luôn gửi caption rỗng), nên tiêu đề là TOÀN BỘ phần chữ của bài đăng:
+// phải lọt trong 200 ký tự, trên 1 dòng.
+const MaxVoiceTitleRunes = 200
+
+// MaxPostTitleRunes chặn tiêu đề Bài Post phình vô hạn.
+//
+// Tiêu đề Bài Post là toàn bộ nội dung bài (trừ hashtag) nên dài hơn tiêu đề
+// Voice rất nhiều — caption Facebook có thể vài nghìn ký tự. Giới hạn này chỉ
+// để một bài bất thường không thổi bay bảng danh sách; phần cắt đi không ảnh
+// hưởng việc đăng vì Voice chỉ lấy 200 ký tự đầu.
+const MaxPostTitleRunes = 5000
+
 // AuditAction — hành động được ghi Audit Log (business rule #8).
 type AuditAction string
 
@@ -120,31 +147,64 @@ const (
 
 // Role — 3 vai trò. Hệ thống dùng SSO của strongbody: không có đăng ký, ai
 // đăng nhập được bằng tài khoản multime thì vào được, admin cấp quyền sau.
+//
+// Không còn vai trò chỉ-xem: đăng nhập được nghĩa là dùng được, khác nhau chỉ
+// ở quyền xoá và quyền cấp quyền.
 type Role string
 
 const (
-	// RoleAdmin: toàn quyền, kể cả xoá và cấp quyền cho người khác.
+	// RoleAdmin: toàn quyền, kể cả cấp quyền cho người khác.
 	RoleAdmin Role = "admin"
+	// RoleEditor: toàn quyền nghiệp vụ (kể cả xoá), TRỪ phân quyền.
+	RoleEditor Role = "editor"
 	// RoleUser: xem tất cả + tạo/chạy/đăng voice. KHÔNG được xoá.
 	RoleUser Role = "user"
-	// RoleViewer: chỉ xem.
-	RoleViewer Role = "viewer"
 )
 
 func (r Role) Valid() bool {
 	switch r {
-	case RoleAdmin, RoleUser, RoleViewer:
+	case RoleAdmin, RoleEditor, RoleUser:
 		return true
 	}
 	return false
 }
 
-// CanWrite: tạo/sửa Bài Post, Voice, Danh sách; chạy job; đăng voice.
-func (r Role) CanWrite() bool { return r == RoleAdmin || r == RoleUser }
+// CanWrite: tạo/sửa Bài Post, Voice, Danh sách; chạy job; đăng voice. Mọi vai
+// trò hợp lệ đều làm được — role rỗng/không hợp lệ thì không.
+func (r Role) CanWrite() bool { return r.Valid() }
 
-// CanDelete: chỉ admin. User bình thường đăng được voice nhưng không xoá được
-// dữ liệu của người khác.
-func (r Role) CanDelete() bool { return r == RoleAdmin }
+// CanDelete: admin và editor. User bình thường đăng được voice nhưng không xoá
+// được dữ liệu của người khác.
+func (r Role) CanDelete() bool { return r == RoleAdmin || r == RoleEditor }
 
-// CanManageUsers: cấp quyền, bật/tắt tài khoản.
+// CanManageUsers: cấp quyền, bật/tắt tài khoản — chỉ admin. Đây là điểm duy
+// nhất phân biệt admin với editor.
 func (r Role) CanManageUsers() bool { return r == RoleAdmin }
+
+// PostTitle chuẩn hoá tiêu đề Bài Post. Giữ nguyên xuống dòng: đây là nội dung
+// bài chứ không phải một dòng tiêu đề, ngắt dòng là một phần của nội dung.
+func PostTitle(title string) string {
+	return truncateRunes(strings.TrimSpace(title), MaxPostTitleRunes)
+}
+
+// VoiceTitle dựng tiêu đề gửi lên multime từ tiêu đề Bài Post: gộp về 1 dòng
+// (ô tiêu đề bên multime là input một dòng) rồi cắt về MaxVoiceTitleRunes.
+//
+// Đây là CHỖ DUY NHẤT áp giới hạn của multime, dùng chung cho cả lúc sinh Voice
+// lẫn lúc đăng.
+func VoiceTitle(title string) string {
+	return truncateRunes(strings.Join(strings.Fields(title), " "), MaxVoiceTitleRunes)
+}
+
+// truncateRunes cắt ở ranh giới từ để không đứt giữa chữ, thêm … khi đã cắt.
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	cut := string(runes[:max])
+	if i := strings.LastIndexAny(cut, " \n"); i > max/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " \n,.;:-") + "…"
+}

@@ -48,10 +48,15 @@ type VoiceFilter struct {
 	PublishedTo   *time.Time
 	Limit         int32
 	Offset        int32
+	// Sort: cột thời gian để sắp xếp — `created_at` (mặc định) hoặc
+	// `published_at`. Dir: `asc` | `desc` (mặc định).
+	Sort string
+	Dir  string
 }
 
 func (v *Voice) List(ctx context.Context, f VoiceFilter) ([]repository.ListVoicesRow, int64, error) {
 	limit, offset := clampPage(f.Limit, f.Offset)
+	sort, dir := normalizeSort(f.Sort, f.Dir, "created_at", "published_at")
 
 	items, err := v.q.ListVoices(ctx, repository.ListVoicesParams{
 		PublishStatus: f.PublishStatus,
@@ -63,6 +68,8 @@ func (v *Voice) List(ctx context.Context, f VoiceFilter) ([]repository.ListVoice
 		CreatedTo:     f.CreatedTo,
 		PublishedFrom: f.PublishedFrom,
 		PublishedTo:   f.PublishedTo,
+		Sort:          sort,
+		Dir:           dir,
 		Lim:           limit,
 		Off:           offset,
 	})
@@ -141,13 +148,17 @@ func audioFileName(voice repository.Voice, key string) string {
 	return base + ext
 }
 
+// errVoiceProcessing: voice chưa xử lý xong thì chưa sửa/đăng được — record
+// tồn tại chỉ để người dùng thấy tiến trình.
+var errVoiceProcessing = fmt.Errorf(
+	"%w: voice đang được xử lý, chờ xong rồi thao tác", domain.ErrInvalidInput)
+
 // UpdateMetadataInput — sửa metadata trước khi đăng (chức năng V1).
 type UpdateMetadataInput struct {
-	Title       *string
-	Description *string
-	Hashtag     *string
-	Language    *string
-	ImageURL    *string
+	Title    *string
+	Hashtag  *string
+	Language *string
+	ImageURL *string
 }
 
 func (v *Voice) UpdateMetadata(ctx context.Context, actor, id uuid.UUID, in UpdateMetadataInput) (repository.Voice, error) {
@@ -158,14 +169,24 @@ func (v *Voice) UpdateMetadata(ctx context.Context, actor, id uuid.UUID, in Upda
 	if before.PublishStatus == domain.PublishPublished {
 		return repository.Voice{}, domain.ErrAlreadyPublished
 	}
+	// Worker sẽ ghi metadata fetch được vào record này khi xong, nên sửa lúc
+	// đang xử lý là mất công vô ích.
+	if before.PublishStatus == domain.PublishProcessing {
+		return repository.Voice{}, errVoiceProcessing
+	}
+	// Tiêu đề là phần chữ DUY NHẤT multime nhận (không có trường mô tả) -> chặn
+	// ngay ở đây thay vì để job publish fail sau.
+	if in.Title != nil && len([]rune(strings.TrimSpace(*in.Title))) > domain.MaxVoiceTitleRunes {
+		return repository.Voice{}, fmt.Errorf("%w: tiêu đề tối đa %d ký tự",
+			domain.ErrInvalidInput, domain.MaxVoiceTitleRunes)
+	}
 
 	after, err := v.q.UpdateVoiceMetadata(ctx, repository.UpdateVoiceMetadataParams{
-		ID:          id,
-		Title:       in.Title,
-		Description: in.Description,
-		Hashtag:     in.Hashtag,
-		Language:    in.Language,
-		ImageUrl:    in.ImageURL,
+		ID:       id,
+		Title:    in.Title,
+		Hashtag:  in.Hashtag,
+		Language: in.Language,
+		ImageUrl: in.ImageURL,
 	})
 	if err != nil {
 		return repository.Voice{}, wrapNotFound(err, "voice "+id.String())
@@ -173,12 +194,12 @@ func (v *Voice) UpdateMetadata(ctx context.Context, actor, id uuid.UUID, in Upda
 
 	v.audit.Record(ctx, actor, domain.AuditUpdate, domain.ObjectVoice, id, Diff(
 		map[string]any{
-			"title": before.Title, "description": before.Description,
+			"title":   before.Title,
 			"hashtag": before.Hashtag, "language": before.Language,
 			"image_url": before.ImageUrl,
 		},
 		map[string]any{
-			"title": after.Title, "description": after.Description,
+			"title":   after.Title,
 			"hashtag": after.Hashtag, "language": after.Language,
 			"image_url": after.ImageUrl,
 		},
@@ -194,6 +215,9 @@ func (v *Voice) MarkReady(ctx context.Context, actor, id uuid.UUID) (repository.
 	}
 	if before.PublishStatus == domain.PublishPublished {
 		return repository.Voice{}, domain.ErrAlreadyPublished
+	}
+	if before.PublishStatus == domain.PublishProcessing {
+		return repository.Voice{}, errVoiceProcessing
 	}
 
 	after, err := v.q.SetVoicePublishStatus(ctx, repository.SetVoicePublishStatusParams{
@@ -242,6 +266,9 @@ func (v *Voice) Publish(ctx context.Context, actor, id uuid.UUID) error {
 	}
 	if voice.PublishStatus == domain.PublishPublished {
 		return domain.ErrAlreadyPublished
+	}
+	if voice.PublishStatus == domain.PublishProcessing {
+		return errVoiceProcessing
 	}
 	if voice.VoiceFileUrl == nil {
 		return domain.ErrNoVoiceFile

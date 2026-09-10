@@ -83,30 +83,31 @@ func ActorID(c *gin.Context) uuid.UUID {
 	return id
 }
 
-// ActorRole lấy role từ token đã xác thực.
+// ActorRole lấy role từ token đã xác thực. Token không mang role hợp lệ (token
+// cũ, role đã bị bỏ) trả về role rỗng — không có quyền gì, an toàn hơn là đoán.
 func ActorRole(c *gin.Context) domain.Role {
 	v, ok := c.Get(ctxRole)
 	if !ok {
-		return domain.RoleViewer
+		return ""
 	}
 	role, _ := v.(domain.Role)
 	if !role.Valid() {
-		return domain.RoleViewer
+		return ""
 	}
 	return role
 }
 
-// RequireWrite chặn viewer khỏi mọi thao tác tạo/sửa/chạy/đăng.
+// RequireWrite chặn token không có role hợp lệ khỏi thao tác tạo/sửa/chạy/đăng.
 func RequireWrite() gin.HandlerFunc {
 	return requirePermission(func(r domain.Role) bool { return r.CanWrite() },
-		"thao tác này cần quyền user hoặc admin")
+		"thao tác này cần quyền user, editor hoặc admin")
 }
 
-// RequireDelete: chỉ admin được xoá. User bình thường đăng được voice nhưng
-// không xoá được dữ liệu.
+// RequireDelete: admin và editor được xoá. User bình thường đăng được voice
+// nhưng không xoá được dữ liệu.
 func RequireDelete() gin.HandlerFunc {
 	return requirePermission(func(r domain.Role) bool { return r.CanDelete() },
-		"xoá dữ liệu cần quyền admin")
+		"xoá dữ liệu cần quyền editor hoặc admin")
 }
 
 // RequireAdmin dành cho quản lý tài khoản.

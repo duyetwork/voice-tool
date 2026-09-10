@@ -1,6 +1,10 @@
 package handler
 
 import (
+	"errors"
+	"net/http"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
@@ -26,6 +30,26 @@ type createSourcePostRequest struct {
 	Platform string `json:"platform"`
 	// AutoProcess mặc định bật cho F1 (specs -1): nhập URL là có voice ngay.
 	AutoProcess *bool `json:"auto_process"`
+	// AllowDuplicate: người dùng đã thấy thông báo trùng và chọn vẫn tạo mới.
+	AllowDuplicate bool `json:"allow_duplicate"`
+}
+
+// duplicateBody trả kèm 409 để UI hiện được bài đã có, thay vì chỉ 1 câu báo
+// lỗi mà người dùng không biết bài cũ nằm đâu.
+type duplicateBody struct {
+	Error    string       `json:"error"`
+	Message  string       `json:"message"`
+	Existing existingPost `json:"existing"`
+}
+
+type existingPost struct {
+	ID          string `json:"id"`
+	SourceURL   string `json:"source_url"`
+	Title       string `json:"title,omitempty"`
+	Status      string `json:"status"`
+	CollectMode string `json:"collect_mode"`
+	CreatedAt   string `json:"created_at"`
+	PostID      string `json:"post_id_extracted,omitempty"`
 }
 
 func (h *SourcePost) Create(c *gin.Context) {
@@ -41,14 +65,34 @@ func (h *SourcePost) Create(c *gin.Context) {
 	}
 
 	post, err := h.svc.Create(c.Request.Context(), middleware.ActorID(c), service.CreateInput{
-		SourceURL:   req.SourceURL,
-		CollectMode: domain.CollectMode(req.CollectMode),
-		PromptID:    req.PromptID,
-		Language:    req.Language,
-		AutoProcess: autoProcess,
-		Platform:    req.Platform,
+		SourceURL:      req.SourceURL,
+		CollectMode:    domain.CollectMode(req.CollectMode),
+		PromptID:       req.PromptID,
+		Language:       req.Language,
+		AutoProcess:    autoProcess,
+		Platform:       req.Platform,
+		AllowDuplicate: req.AllowDuplicate,
 	})
 	if err != nil {
+		var dup *service.DuplicatePostError
+		if errors.As(err, &dup) {
+			e := dup.Existing
+			c.AbortWithStatusJSON(http.StatusConflict, duplicateBody{
+				Error: "duplicate_post",
+				Message: "Bài đăng này đã có trong hệ thống — chọn bỏ qua, " +
+					"hoặc vẫn tạo Bài Post mới từ cùng nội dung.",
+				Existing: existingPost{
+					ID:          e.ID.String(),
+					SourceURL:   e.SourceUrl,
+					Title:       derefOr(e.Title),
+					Status:      e.Status,
+					CollectMode: e.CollectMode,
+					CreatedAt:   e.CreatedAt.Format(time.RFC3339),
+					PostID:      derefOr(e.PostIDExtracted),
+				},
+			})
+			return
+		}
 		httpx.Fail(c, err)
 		return
 	}
@@ -82,6 +126,7 @@ func (h *SourcePost) List(c *gin.Context) {
 		return
 	}
 	limit, offset := pagination(c)
+	_, dir := sorting(c)
 
 	items, total, err := h.svc.List(c.Request.Context(), service.ListFilter{
 		SourceType:      queryString(c, "source_type"),
@@ -89,6 +134,7 @@ func (h *SourcePost) List(c *gin.Context) {
 		Platform:        queryString(c, "platform"),
 		CollectMode:     queryString(c, "collect_mode"),
 		Language:        queryString(c, "language"),
+		Dir:             dir,
 		CreatedBy:       createdBy,
 		ListBreakingID:  breakingID,
 		ListScheduledID: scheduledID,

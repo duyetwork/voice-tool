@@ -135,3 +135,62 @@ func TestStripHashtags(t *testing.T) {
 		t.Errorf("StripHashtags(không có thẻ) = %q", got)
 	}
 }
+
+// Link share và link rút gọn của từng nền tảng phải nhận đúng nền tảng + loại
+// nội dung — đây là dạng người dùng dán vào nhiều nhất (copy từ app mobile).
+func TestShareAndShortLinks(t *testing.T) {
+	cases := []struct {
+		name        string
+		adapter     *YtDlpAdapter
+		url         string
+		contentType string
+		postID      string
+	}{
+		{"facebook share bài viết", NewFacebook(nil, ""),
+			"https://www.facebook.com/share/p/1GoKsA89zx/", domain.ContentPost, "1GoKsA89zx"},
+		{"facebook share reel", NewFacebook(nil, ""),
+			"https://www.facebook.com/share/r/1M2uz5WSvK/", domain.ContentReel, "1M2uz5WSvK"},
+		{"facebook share video", NewFacebook(nil, ""),
+			"https://www.facebook.com/share/v/abcDEF123/", domain.ContentVideo, "abcDEF123"},
+		{"facebook bài viết /posts/", NewFacebook(nil, ""),
+			"https://www.facebook.com/vtv24/posts/pfbid0uGgkjVMgKty", domain.ContentPost, "0uGgkjVMgKty"},
+		{"facebook permalink.php", NewFacebook(nil, ""),
+			"https://www.facebook.com/permalink.php?story_fbid=123456&id=999", domain.ContentPost, "123456"},
+		{"facebook ảnh fbid", NewFacebook(nil, ""),
+			"https://www.facebook.com/photo/?fbid=987654321", domain.ContentPost, "987654321"},
+		{"facebook post trong group", NewFacebook(nil, ""),
+			"https://www.facebook.com/groups/123456/posts/789012/", domain.ContentPost, "789012"},
+		{"facebook /watch/?v=", NewFacebook(nil, ""),
+			"https://www.facebook.com/watch/?v=555000111", domain.ContentVideo, "555000111"},
+		{"fb.watch rút gọn", NewFacebook(nil, ""),
+			"https://fb.watch/abcXYZ-9/", domain.ContentVideo, "abcXYZ-9"},
+		{"tiktok /t/ rút gọn", NewTikTok(nil, ""),
+			"https://www.tiktok.com/t/ZSabcdef/", domain.ContentVideo, "ZSabcdef"},
+		{"tiktok photo", NewTikTok(nil, ""),
+			"https://www.tiktok.com/@user/photo/7300000000000000001", domain.ContentPost, "7300000000000000001"},
+		{"instagram share reel", NewInstagram(nil, ""),
+			"https://www.instagram.com/share/reel/CxYzAbCdEfG/", domain.ContentReel, "CxYzAbCdEfG"},
+		{"instagram share post", NewInstagram(nil, ""),
+			"https://www.instagram.com/share/p/CxYzAbCdEfG/", domain.ContentPost, "CxYzAbCdEfG"},
+		{"x /i/web/status/", NewX(nil, ""),
+			"https://x.com/i/web/status/1700000000000000000", domain.ContentTweet, "1700000000000000000"},
+		{"t.co rút gọn", NewX(nil, ""),
+			"https://t.co/aBcDeF1234", domain.ContentTweet, "aBcDeF1234"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.adapter.DetectPlatform(tc.url) {
+				t.Fatalf("DetectPlatform(%q) = false, muốn true", tc.url)
+			}
+			ct, id, err := tc.adapter.ExtractID(tc.url)
+			if err != nil {
+				t.Fatalf("ExtractID(%q) lỗi: %v", tc.url, err)
+			}
+			if ct != tc.contentType || id != tc.postID {
+				t.Errorf("ExtractID(%q) = (%q, %q), muốn (%q, %q)",
+					tc.url, ct, id, tc.contentType, tc.postID)
+			}
+		})
+	}
+}

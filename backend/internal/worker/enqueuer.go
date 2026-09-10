@@ -21,11 +21,20 @@ var _ domain.Enqueuer = (*Enqueuer)(nil)
 
 func NewEnqueuer(client *asynq.Client) *Enqueuer { return &Enqueuer{client: client} }
 
-func (e *Enqueuer) EnqueueVoiceProcess(ctx context.Context, sourcePostID, actorID string) error {
+func (e *Enqueuer) EnqueueVoiceProcess(ctx context.Context, sourcePostID, actorID, voiceID string) error {
 	t, err := task.NewVoiceProcess(task.VoiceProcessPayload{
 		SourcePostID: sourcePostID,
 		ActorID:      actorID,
+		VoiceID:      voiceID,
 	})
+	if err != nil {
+		return err
+	}
+	return e.enqueue(ctx, t)
+}
+
+func (e *Enqueuer) EnqueuePostMetadata(ctx context.Context, sourcePostID string) error {
+	t, err := task.NewPostMetadata(task.PostMetadataPayload{SourcePostID: sourcePostID})
 	if err != nil {
 		return err
 	}

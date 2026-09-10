@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/strongbody/voice-tool/backend/internal/pkg/httpx"
+	"github.com/strongbody/voice-tool/backend/internal/repository"
 	"github.com/strongbody/voice-tool/backend/internal/service"
 )
 
@@ -30,17 +31,21 @@ func (h *AuditLog) list(c *gin.Context) {
 		return
 	}
 	limit, offset := pagination(c)
+	_, dir := sorting(c)
 
-	items, err := h.svc.List(c.Request.Context(), service.AuditFilter{
+	items, total, err := h.svc.List(c.Request.Context(), service.AuditFilter{
 		ObjectType: queryString(c, "object_type"),
 		ObjectID:   objectID,
 		UserID:     userID,
 		Limit:      limit,
 		Offset:     offset,
+		Dir:        dir,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	httpx.OK(c, gin.H{"items": items, "limit": limit, "offset": offset})
+	httpx.OK(c, httpx.Page[repository.ListAuditLogsRow]{
+		Items: items, Total: total, Limit: limit, Offset: offset,
+	})
 }

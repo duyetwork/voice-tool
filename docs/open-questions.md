@@ -31,32 +31,23 @@ họ tạo đều dừng**.
 Phương án khác: dùng 1 tài khoản "bot" riêng cho toàn bộ voice tự động — auto
 publish ổn định hơn, nhưng bài đăng không mang tên người thật.
 
-## 3. Cùng 1 bài xuất hiện ở cả 2 danh sách — chấp nhận đăng 2 lần? 🟡
-
-Cùng 1 URL kênh thêm vào cả Breaking và Định kỳ → hiện là 2 bản ghi độc lập,
-dedup riêng theo từng list → cùng 1 bài có thể ra 2 Voice và **đăng 2 lần** lên
-multime.
-
-Đây là giả định từ specs mục 5 câu 1, chưa được xác nhận lại. Không muốn thì
-đổi unique index sang `(platform, post_id_extracted)`.
-
-## 4. `viewer` có được xem Nhật ký thao tác không? 🟢
+## 3. `user` có được xem Nhật ký thao tác không? 🟢
 
 Hiện có. Nếu coi audit log là dữ liệu vận hành thì nên giới hạn admin.
 
-## 5. `DEFAULT_USER_ROLE` nên là `user` hay `viewer`? 🟢
+## 4. `DEFAULT_USER_ROLE` nên là `user` hay `editor`? 🟢
 
 Hiện `user` — ai đăng nhập được bằng tài khoản multime là đăng voice được ngay,
-khớp với "user bình thường có quyền post voice". Đổi sang `viewer` nếu muốn
-admin duyệt từng người trước khi cho đăng.
+khớp với "user bình thường có quyền post voice", nhưng không xoá được dữ liệu
+của người khác. Đổi sang `editor` nếu muốn ai cũng xoá được.
 
-## 6. Bài do voice-tool đăng có cần phân biệt với bài user tự đăng? 🟢
+## 5. Bài do voice-tool đăng có cần phân biệt với bài user tự đăng? 🟢
 
 Trên multime hiện không phân biệt được. Nếu cần (để thống kê hoặc rollback hàng
 loạt) thì chốt 1 hashtag/category riêng và đặt vào `MULTIME_DEFAULT_HASHTAGS` /
 `MULTIME_CATEGORY_IDS`.
 
-## 7. AI Engine chọn theo kênh hay 1 engine toàn hệ thống? 🟢
+## 6. AI Engine chọn theo kênh hay 1 engine toàn hệ thống? 🟢
 
 Hiện 1 engine mặc định toàn hệ thống (engine `is_active` đầu tiên). Muốn chọn
 theo từng kênh thì thêm cột `ai_engine_id` vào `list_breaking` / `list_scheduled`.
@@ -74,7 +65,9 @@ theo từng kênh thì thêm cột `ai_engine_id` vào `list_breaking` / `list_s
 | Số worker | api 1 / worker 2 / scheduler 1 |
 | Nơi lưu file voice | S3 dùng chung bucket `strongbody-files-api`, prefix `voice-tool/` |
 | Dọn `skipped_log` | 7 ngày, job chạy 03:15 hằng ngày |
-| Phân quyền | admin / user / viewer |
+| Phân quyền | admin / editor / user — bỏ vai trò chỉ-xem |
 | Đăng ký tài khoản | Không có — chỉ đăng nhập bằng SSO strongbody |
 | Auto-detect nền tảng thất bại | Báo lỗi rõ, không cho chọn tay |
 | 1 Bài Post ra nhiều Voice | Được, gọi `/run` nhiều lần |
+| Cùng 1 bài ở cả 2 danh sách | Chỉ vào hệ thống 1 lần — dedup theo `(platform, post_id_extracted)` toàn hệ thống |
+| Có giữ trường mô tả không | **Không.** multime chỉ hiển thị `title` (form đăng của họ luôn gửi `caption` rỗng) nên mô tả là dữ liệu chết. Tiêu đề Bài Post = toàn bộ nội dung bài trừ hashtag; tiêu đề Voice = nội dung đó gộp 1 dòng, cắt 200 ký tự |

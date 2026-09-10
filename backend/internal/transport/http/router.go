@@ -35,9 +35,9 @@ type RouterDeps struct {
 // NewRouter gắn toàn bộ route.
 //
 // Phân quyền (specs bổ sung, câu 9/10):
-//   - viewer: chỉ GET — đọc mọi thứ
-//   - user:   viewer + tạo/sửa/chạy/ĐĂNG voice, KHÔNG được xoá
-//   - admin:  toàn quyền, kể cả xoá + quản lý tài khoản
+//   - user:   đọc mọi thứ + tạo/sửa/chạy/ĐĂNG voice, KHÔNG được xoá
+//   - editor: user + xoá — tức toàn quyền nghiệp vụ, TRỪ quản lý tài khoản
+//   - admin:  toàn quyền, kể cả quản lý tài khoản
 //
 // Không có endpoint đăng ký: đăng nhập bằng tài khoản strongbody/multime.
 func NewRouter(d RouterDeps) *gin.Engine {
@@ -131,7 +131,7 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	return r
 }
 
-// registerReadOnly gắn các route GET — viewer dùng được.
+// registerReadOnly gắn các route GET — mọi vai trò đều đọc được.
 func registerReadOnly(g *gin.RouterGroup, d RouterDeps) {
 	sourcePost := handler.NewSourcePost(d.SourcePost)
 	voice := handler.NewVoice(d.Voice)

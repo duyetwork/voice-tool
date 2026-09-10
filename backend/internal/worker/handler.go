@@ -61,6 +61,7 @@ func NewHandler(d HandlerDeps) *Handler {
 func (h *Handler) Mux() *asynq.ServeMux {
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(task.TypeVoiceProcess, h.voiceProcess)
+	mux.HandleFunc(task.TypePostMetadata, h.postMetadata)
 	mux.HandleFunc(task.TypeVoicePublish, h.voicePublish)
 	mux.HandleFunc(task.TypeBreakingDispatch, h.breakingDispatch)
 	mux.HandleFunc(task.TypeBreakingScan, h.breakingScan)
@@ -82,9 +83,34 @@ func (h *Handler) voiceProcess(ctx context.Context, t *asynq.Task) error {
 	if err != nil {
 		return err
 	}
+	// Payload cũ (enqueue trước khi có trạng thái processing) không có voice_id
+	// -> uuid.Nil, engine sẽ tự tạo record.
+	var voiceID uuid.UUID
+	if p.VoiceID != "" {
+		if voiceID, err = uuid.Parse(p.VoiceID); err != nil {
+			return fmt.Errorf("%w: voice_id %q: %v", asynq.SkipRetry, p.VoiceID, err)
+		}
+	}
 
-	h.log.InfoContext(ctx, "voice:process bắt đầu", "source_post_id", postID)
-	if err := h.engine.ProcessSourcePost(ctx, postID, actor); err != nil {
+	h.log.InfoContext(ctx, "voice:process bắt đầu", "source_post_id", postID, "voice_id", voiceID)
+	if err := h.engine.ProcessSourcePost(ctx, postID, actor, voiceID); err != nil {
+		return skipIfPermanent(err)
+	}
+	return nil
+}
+
+// postMetadata lấy metadata gốc của Bài Post — chạy ngay sau khi tạo, độc lập
+// với việc tạo Voice.
+func (h *Handler) postMetadata(ctx context.Context, t *asynq.Task) error {
+	p, err := task.Decode[task.PostMetadataPayload](t)
+	if err != nil {
+		return err
+	}
+	postID, err := uuid.Parse(p.SourcePostID)
+	if err != nil {
+		return fmt.Errorf("%w: source_post_id %q: %v", asynq.SkipRetry, p.SourcePostID, err)
+	}
+	if err := h.engine.FetchPostMetadata(ctx, postID); err != nil {
 		return skipIfPermanent(err)
 	}
 	return nil

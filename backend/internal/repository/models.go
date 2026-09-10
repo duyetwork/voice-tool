@@ -119,7 +119,6 @@ type SourcePost struct {
 	CreatedBy       uuid.UUID  `json:"created_by"`
 	CreatedAt       time.Time  `json:"created_at"`
 	Title           *string    `json:"title"`
-	Description     *string    `json:"description"`
 	Hashtags        []string   `json:"hashtags"`
 	ThumbnailUrl    *string    `json:"thumbnail_url"`
 	AuthorName      *string    `json:"author_name"`
@@ -132,7 +131,6 @@ type Voice struct {
 	AiEngineID      *uuid.UUID `json:"ai_engine_id"`
 	VoiceFileUrl    *string    `json:"voice_file_url"`
 	DurationSeconds *int32     `json:"duration_seconds"`
-	Description     *string    `json:"description"`
 	Hashtag         *string    `json:"hashtag"`
 	Language        string     `json:"language"`
 	ImageUrl        *string    `json:"image_url"`

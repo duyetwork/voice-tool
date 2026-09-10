@@ -4,26 +4,38 @@ import * as React from "react";
 
 import { BulkBar, SelectAllBox, useSelection } from "@/components/bulk";
 import { ErrorNote, PageHeader } from "@/components/page-header";
-import { Can, ViewerNotice } from "@/components/permission";
+import { Can } from "@/components/permission";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
 import { Checkbox, Input, Select } from "@/components/ui/field";
-import { EmptyRow, Table, Td, Th } from "@/components/ui/table";
+import { Pagination, usePaging } from "@/components/ui/pagination";
+import { DateCell, EmptyRow, RowActions, SortableTh, Table, Td, Th, useSorting } from "@/components/ui/table";
 import {
+  useCollectModes,
   useDeleteSourcePost,
   usePlatforms,
   useRunSourcePost,
   useSourcePosts,
   useUpdateSourcePost,
 } from "@/hooks/use-api";
+import { LANGUAGE_OPTIONS, compactLanguageOptions } from "@/lib/languages";
 import {
-  LANGUAGE_OPTIONS,
+  COLLECT_MODE_LABELS,
   POST_STATUS_LABELS,
   SOURCE_TYPE_LABELS,
-  formatDateTime,
   platformLabel,
 } from "@/lib/utils";
+import type { CollectMode } from "@/types/api";
+
+const EMPTY_FILTERS = {
+  source_type: "",
+  status: "",
+  platform: "",
+  language: "",
+  created_from: "",
+  created_to: "",
+};
 
 /**
  * Màn duyệt Bài Post — dùng để lọc/duyệt trước khi tốn chi phí AI tạo Voice
@@ -33,17 +45,16 @@ import {
  * chuyển thẳng sang Voice khi bấm "Chạy tạo Voice".
  */
 export default function SourcePostsPage() {
-  const empty = {
-    source_type: "",
-    status: "",
-    platform: "",
-    language: "",
-    created_from: "",
-    created_to: "",
-  };
-  const [filters, setFilters] = React.useState(empty);
-  const set = (key: keyof typeof empty) => (value: string) =>
+  const [filters, setFilters] = React.useState(EMPTY_FILTERS);
+  const paging = usePaging();
+  const sorting = useSorting("created_at", paging.reset);
+  // Nút "Xoá lọc" chỉ hiện khi thực sự có gì để xoá.
+  const hasFilters = Object.values(filters).some(Boolean);
+
+  const set = (key: keyof typeof EMPTY_FILTERS) => (value: string) => {
     setFilters((f) => ({ ...f, [key]: value }));
+    paging.reset();
+  };
 
   const posts = useSourcePosts({
     source_type: filters.source_type || undefined,
@@ -52,9 +63,16 @@ export default function SourcePostsPage() {
     language: filters.language || undefined,
     created_from: filters.created_from || undefined,
     created_to: filters.created_to || undefined,
-    limit: 50,
+    ...sorting.params,
+    limit: paging.limit,
+    offset: paging.offset,
   });
   const platforms = usePlatforms();
+  const modes = useCollectModes();
+  // Mode B/C chỉ mở khi server bật ENABLED_COLLECT_MODES — hiện mờ thay vì để
+  // người dùng chọn rồi ăn lỗi 400 lúc chạy.
+  const modeEnabled = (mode: string) =>
+    modes.data?.collect_modes.find((m) => m.mode === mode)?.enabled ?? mode === "A";
   const run = useRunSourcePost();
   const update = useUpdateSourcePost();
   const remove = useDeleteSourcePost();
@@ -66,7 +84,6 @@ export default function SourcePostsPage() {
         title="Bài Post"
         description="Tầng trung gian bắt buộc giữa URL nguồn và Voice — mọi Voice đều truy vết về đúng 1 Bài Post."
       />
-      <ViewerNotice />
 
       <Card>
         <CardBody className="flex flex-wrap items-end gap-3 border-b border-slate-200">
@@ -106,7 +123,7 @@ export default function SourcePostsPage() {
             </Select>
           </div>
 
-          <div className="w-36">
+          <div className="w-48">
             <label className="mb-1 block text-xs font-medium text-slate-500">Ngôn ngữ</label>
             <Select value={filters.language} onChange={(e) => set("language")(e.target.value)}>
               <option value="">Tất cả</option>
@@ -140,9 +157,17 @@ export default function SourcePostsPage() {
           <Button variant="secondary" onClick={() => posts.refetch()}>
             Làm mới
           </Button>
-          <Button variant="ghost" onClick={() => setFilters(empty)}>
-            Xoá lọc
-          </Button>
+          {hasFilters ? (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setFilters(EMPTY_FILTERS);
+                paging.reset();
+              }}
+            >
+              Xoá lọc
+            </Button>
+          ) : null}
           <span className="ml-auto text-sm text-slate-500">
             {posts.data ? `${posts.data.total} bài` : ""}
           </span>
@@ -174,7 +199,7 @@ export default function SourcePostsPage() {
                   label: "Xoá",
                   permission: "can_delete",
                   confirm: "Xoá các Bài Post đã chọn? Voice liên quan cũng bị xoá.",
-                  variant: "ghost",
+                  variant: "danger",
                   onRun: async ([id]) => {
                     await remove.mutateAsync(id);
                   },
@@ -193,10 +218,13 @@ export default function SourcePostsPage() {
                 </Can>
                 <Th>Bài gốc</Th>
                 <Th>Nền tảng</Th>
+                <Th>Hình thức tạo voice</Th>
                 <Th>Ngôn ngữ</Th>
                 <Th>Người tạo</Th>
                 <Th>Trạng thái</Th>
-                <Th>Tạo lúc</Th>
+                <SortableTh sorting={sorting} column="created_at">
+                  Tạo lúc
+                </SortableTh>
                 <Can permission="can_write">
                   <Th className="text-right">Hành động</Th>
                 </Can>
@@ -204,7 +232,7 @@ export default function SourcePostsPage() {
             </thead>
             <tbody>
               {posts.isLoading ? (
-                <EmptyRow colSpan={8}>Đang tải…</EmptyRow>
+                <EmptyRow colSpan={9}>Đang tải…</EmptyRow>
               ) : posts.data?.items.length ? (
                 posts.data.items.map((post) => (
                   <tr key={post.id}>
@@ -218,7 +246,7 @@ export default function SourcePostsPage() {
                       </Td>
                     </Can>
 
-                    <Td className="max-w-md">
+                    <Td className="max-w-xs">
                       <div className="flex gap-3">
                         {post.thumbnail_url ? (
                           // eslint-disable-next-line @next/next/no-img-element
@@ -229,48 +257,74 @@ export default function SourcePostsPage() {
                           />
                         ) : null}
                         <div className="min-w-0">
-                          {post.title ? (
-                            <p className="truncate font-medium text-slate-900">{post.title}</p>
-                          ) : null}
-                          <a
-                            href={post.source_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="block truncate text-xs text-indigo-700 hover:underline"
+                          {/* Tiêu đề = toàn bộ nội dung bài (trừ hashtag) nên
+                              có thể dài; bảng chỉ hiện 3 dòng, xem đủ bằng
+                              tooltip. */}
+                          <p
+                            className="line-clamp-3 whitespace-pre-line font-medium text-slate-900"
+                            title={post.title ?? undefined}
                           >
-                            {post.source_url}
-                          </a>
-                          <p className="mt-0.5 text-xs text-slate-500">
-                            {SOURCE_TYPE_LABELS[post.source_type] ?? post.source_type}
-                            {post.author_name ? ` · ${post.author_name}` : ""}
-                            {post.content_type ? ` · ${post.content_type}` : ""}
+                            {post.title ?? (
+                              <span className="font-normal text-slate-400">(chưa có nội dung)</span>
+                            )}
                           </p>
                           {post.hashtags?.length ? (
-                            <p className="mt-0.5 truncate text-xs text-indigo-700">
+                            <p className="mt-0.5 line-clamp-2 text-xs text-indigo-700">
                               {post.hashtags.join(" ")}
                             </p>
                           ) : null}
                         </div>
                       </div>
-                      {post.last_error ? (
-                        <p className="mt-1 text-xs text-red-700">{post.last_error}</p>
-                      ) : null}
                     </Td>
 
-                    <Td className="whitespace-nowrap">{platformLabel(post.platform)}</Td>
+                    <Td className="whitespace-nowrap">
+                      <a
+                        href={post.source_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-indigo-700 hover:underline"
+                      >
+                        {platformLabel(post.platform)}
+                      </a>
+                    </Td>
+
+                    <Td>
+                      <Can permission="can_write" fallback={<span>{post.collect_mode}</span>}>
+                        <Select
+                          className="h-8 w-40 text-xs"
+                          value={post.collect_mode}
+                          disabled={post.status === "processing" || update.isPending}
+                          onChange={(e) =>
+                            update.mutate({
+                              id: post.id,
+                              collect_mode: e.target.value as CollectMode,
+                            })
+                          }
+                          aria-label="Hình thức tạo voice"
+                        >
+                          {Object.entries(COLLECT_MODE_LABELS).map(([value, label]) => (
+                            <option
+                              key={value}
+                              value={value}
+                              disabled={!modeEnabled(value) && value !== post.collect_mode}
+                            >
+                              {label}
+                              {modeEnabled(value) ? "" : " — chưa hỗ trợ"}
+                            </option>
+                          ))}
+                        </Select>
+                      </Can>
+                    </Td>
 
                     <Td>
                       <Can permission="can_write" fallback={<span>{post.language}</span>}>
                         <Select
-                          className="h-8 w-36 text-xs"
+                          className="h-8 w-28 text-xs"
                           value={post.language}
                           disabled={post.status === "processing" || update.isPending}
                           onChange={(e) => update.mutate({ id: post.id, language: e.target.value })}
                         >
-                          {LANGUAGE_OPTIONS.some((o) => o.value === post.language) ? null : (
-                            <option value={post.language}>{post.language}</option>
-                          )}
-                          {LANGUAGE_OPTIONS.map((o) => (
+                          {compactLanguageOptions(post.language).map((o) => (
                             <option key={o.value} value={o.value}>
                               {o.label}
                             </option>
@@ -279,49 +333,71 @@ export default function SourcePostsPage() {
                       </Can>
                     </Td>
 
-                    <Td className="whitespace-nowrap text-xs text-slate-600">
-                      {post.created_by_email ?? "—"}
+                    <Td className="max-w-28 text-xs text-slate-600">
+                      <span className="block truncate" title={post.created_by_email}>
+                        {post.created_by_email ?? "—"}
+                      </span>
                     </Td>
 
-                    <Td>
+                    <Td className="max-w-48">
                       <Badge tone={statusTone(post.status)}>
                         {POST_STATUS_LABELS[post.status] ?? post.status}
                       </Badge>
+                      {/* Lý do lỗi nằm ngay dưới trạng thái — đọc 1 chỗ là
+                          hiểu, không phải dò trong ô nội dung. */}
+                      {post.last_error ? (
+                        <p className="mt-1 text-xs text-red-700">{post.last_error}</p>
+                      ) : null}
                     </Td>
-                    <Td className="whitespace-nowrap">{formatDateTime(post.created_at)}</Td>
+                    <Td>
+                      <DateCell value={post.created_at} />
+                    </Td>
 
                     <Can permission="can_write">
                       <Td className="whitespace-nowrap text-right">
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          disabled={post.status === "processing" || run.isPending}
-                          onClick={() => run.mutate(post.id)}
-                        >
-                          Chạy tạo Voice
-                        </Button>{" "}
-                        <Can permission="can_delete">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              if (confirm("Xoá Bài Post này? Voice liên quan cũng bị xoá.")) {
-                                remove.mutate(post.id);
-                              }
-                            }}
-                          >
-                            Xoá
-                          </Button>
-                        </Can>
+                        <RowActions>
+                          {/* Đã tạo voice xong thì không hiện nút nữa — chạy
+                              lại chỉ sinh thêm voice trùng. Lỗi thì cho chạy
+                              lại, đang xử lý thì hiện mờ để biết là đang chạy. */}
+                          {post.status !== "processed" ? (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              disabled={post.status === "processing" || run.isPending}
+                              onClick={() => run.mutate(post.id)}
+                            >
+                              {post.status === "failed"
+                                ? "Chạy lại Voice"
+                                : post.status === "processing"
+                                  ? "Đang xử lý…"
+                                  : "Chạy tạo Voice"}
+                            </Button>
+                          ) : null}
+                          <Can permission="can_delete">
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              onClick={() => {
+                                if (confirm("Xoá Bài Post này? Voice liên quan cũng bị xoá.")) {
+                                  remove.mutate(post.id);
+                                }
+                              }}
+                            >
+                              Xoá
+                            </Button>
+                          </Can>
+                        </RowActions>
                       </Td>
                     </Can>
                   </tr>
                 ))
               ) : (
-                <EmptyRow colSpan={8}>Không có Bài Post khớp bộ lọc.</EmptyRow>
+                <EmptyRow colSpan={9}>Không có Bài Post khớp bộ lọc.</EmptyRow>
               )}
             </tbody>
           </Table>
+
+          <Pagination total={posts.data?.total} paging={paging} unit="bài" />
         </CardBody>
       </Card>
     </>

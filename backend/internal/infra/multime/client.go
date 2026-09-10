@@ -19,6 +19,10 @@
 //	           hashtags[], image, scheduled_at
 //	  resp:    {"code":0,"data":{"id":…, …}}  (code 0 = thành công)
 //
+//	`caption` KHÔNG được gửi: form đăng của chính multime luôn gửi caption
+//	rỗng và giao diện chỉ đọc `title`, nên tiêu đề là toàn bộ phần chữ của
+//	bài đăng — tối đa 200 ký tự, 1 dòng (maxLength của ô tiêu đề bên đó).
+//
 //	URL công khai: https://multime.ai/voice/<id>
 package multime
 
@@ -225,6 +229,11 @@ func (c *Client) validate(post domain.VoicePostInput) error {
 		return domain.Permanent(fmt.Errorf("%w: multime yêu cầu title cho voice post",
 			domain.ErrInvalidInput))
 	}
+	if n := len([]rune(strings.TrimSpace(post.Title))); n > domain.MaxVoiceTitleRunes {
+		return domain.Permanent(fmt.Errorf(
+			"%w: tiêu đề %d ký tự, multime chỉ nhận tối đa %d",
+			domain.ErrInvalidInput, n, domain.MaxVoiceTitleRunes))
+	}
 	if len(post.Hashtags) == 0 && len(post.CategoryIDs) == 0 &&
 		len(c.defaultHashtags) == 0 && len(c.categoryIDs) == 0 {
 		return domain.Permanent(fmt.Errorf(
@@ -294,9 +303,6 @@ func (c *Client) buildForm(
 
 	_ = mw.WriteField("author_id", strconv.FormatInt(authorID, 10))
 	_ = mw.WriteField("title", strings.TrimSpace(post.Title))
-	if post.Caption != "" {
-		_ = mw.WriteField("caption", post.Caption)
-	}
 	// source_lang luôn gửi: rỗng nghĩa là để backend tự nhận diện.
 	_ = mw.WriteField("source_lang", post.SourceLang)
 	// lang chỉ gửi khi biết chắc — nếu không, backend điền theo kết quả nhận diện.

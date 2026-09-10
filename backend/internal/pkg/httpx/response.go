@@ -45,6 +45,8 @@ func classify(err error) (int, string) {
 		return http.StatusUnauthorized, "unauthorized"
 	case errors.Is(err, domain.ErrAlreadyPublished):
 		return http.StatusConflict, "already_published"
+	case errors.Is(err, domain.ErrDuplicate):
+		return http.StatusConflict, "duplicate_post"
 	case errors.Is(err, domain.ErrInvalidInput),
 		errors.Is(err, domain.ErrUnsupportedURL),
 		errors.Is(err, domain.ErrUnsupportedType),

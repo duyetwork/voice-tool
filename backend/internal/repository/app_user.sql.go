@@ -96,16 +96,21 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (AppUser, error
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, password_hash, full_name, is_active, created_at, role, strongbody_user_id, avatar_url, multime_access_token, multime_refresh_token, multime_token_at, last_login_at FROM app_user ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, email, password_hash, full_name, is_active, created_at, role, strongbody_user_id, avatar_url, multime_access_token, multime_refresh_token, multime_token_at, last_login_at FROM app_user
+ORDER BY
+  CASE WHEN $1::text = 'asc' THEN created_at END ASC,
+  created_at DESC
+LIMIT $3 OFFSET $2
 `
 
 type ListUsersParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Dir string `json:"dir"`
+	Off int32  `json:"off"`
+	Lim int32  `json:"lim"`
 }
 
 func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]AppUser, error) {
-	rows, err := q.db.Query(ctx, listUsers, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listUsers, arg.Dir, arg.Off, arg.Lim)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -85,14 +86,31 @@ type AuditFilter struct {
 	UserID     *uuid.UUID
 	Limit      int32
 	Offset     int32
+	// Dir: chiều sắp xếp theo created_at — `asc` | `desc` (mặc định).
+	Dir string
 }
 
-func (a *Audit) List(ctx context.Context, f AuditFilter) ([]repository.AuditLog, error) {
-	return a.q.ListAuditLogs(ctx, repository.ListAuditLogsParams{
+func (a *Audit) List(ctx context.Context, f AuditFilter) ([]repository.ListAuditLogsRow, int64, error) {
+	limit, offset := clampPage(f.Limit, f.Offset)
+	_, dir := normalizeSort("", f.Dir)
+	items, err := a.q.ListAuditLogs(ctx, repository.ListAuditLogsParams{
 		ObjectType: f.ObjectType,
 		ObjectID:   f.ObjectID,
 		UserID:     f.UserID,
-		Lim:        f.Limit,
-		Off:        f.Offset,
+		Dir:        dir,
+		Lim:        limit,
+		Off:        offset,
 	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list audit_log: %w", err)
+	}
+	total, err := a.q.CountAuditLogs(ctx, repository.CountAuditLogsParams{
+		ObjectType: f.ObjectType,
+		ObjectID:   f.ObjectID,
+		UserID:     f.UserID,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("count audit_log: %w", err)
+	}
+	return items, total, nil
 }

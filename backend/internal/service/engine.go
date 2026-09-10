@@ -61,6 +61,52 @@ func NewEngine(d EngineDeps) *Engine {
 }
 
 // ---------------------------------------------------------------------------
+// post:metadata
+// ---------------------------------------------------------------------------
+
+// FetchPostMetadata lấy metadata gốc của Bài Post (tiêu đề, mô tả, hashtag,
+// ảnh bìa, tác giả, ngày đăng) và lưu lên chính bài đó.
+//
+// Chạy ngay khi tạo Bài Post, KHÔNG tạo voice — nhờ vậy bảng Bài Post có nội
+// dung đọc được trước cả khi bấm tạo Voice, và "chạy Voice" đúng nghĩa là chỉ
+// tạo voice. Áp dụng cho cả mode A, B, C vì nó không phụ thuộc mode.
+//
+// Lỗi ở đây KHÔNG đặt status = failed: bài vẫn chạy voice được, chỉ là thiếu
+// phần điền sẵn. Chỉ ghi last_error để người dùng biết vì sao bảng trống.
+func (e *Engine) FetchPostMetadata(ctx context.Context, postID uuid.UUID) error {
+	post, err := e.q.GetSourcePost(ctx, postID)
+	if err != nil {
+		return fmt.Errorf("đọc source_post %s: %w", postID, err)
+	}
+
+	adapter, err := e.platforms.Get(domain.Platform(post.Platform))
+	if err != nil {
+		return domain.Permanent(err)
+	}
+
+	meta, err := adapter.FetchMetadata(ctx, domain.PostRef{
+		URL:    post.SourceUrl,
+		PostID: deref(post.PostIDExtracted),
+	})
+	if err != nil {
+		msg := domain.UserMessage(err)
+		e.log.WarnContext(ctx, "không lấy được metadata bài post",
+			"error", err, "source_post_id", postID)
+		if _, serr := e.q.SetSourcePostStatus(ctx, repository.SetSourcePostStatusParams{
+			ID:        post.ID,
+			Status:    post.Status,
+			LastError: &msg,
+		}); serr != nil {
+			e.log.ErrorContext(ctx, "không ghi được last_error", "error", serr, "source_post_id", postID)
+		}
+		return err
+	}
+
+	e.saveMetadata(ctx, post, meta)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // voice:process
 // ---------------------------------------------------------------------------
 
@@ -69,7 +115,10 @@ func NewEngine(d EngineDeps) *Engine {
 //	A -> tải audio gốc
 //	B -> text (caption/transcript, fallback STT) -> TTS
 //	C -> text -> LLM theo Prompt mẫu -> TTS
-func (e *Engine) ProcessSourcePost(ctx context.Context, postID, actor uuid.UUID) error {
+//
+// voiceID là record voice `processing` đã tạo sẵn lúc enqueue; uuid.Nil nghĩa
+// là task cũ chưa có record, engine tự tạo như trước.
+func (e *Engine) ProcessSourcePost(ctx context.Context, postID, actor, voiceID uuid.UUID) error {
 	// Claim để idempotent khi Asynq retry hoặc 2 worker cùng nhận task.
 	post, err := e.q.ClaimSourcePostForProcessing(ctx, postID)
 	if err != nil {
@@ -81,15 +130,30 @@ func (e *Engine) ProcessSourcePost(ctx context.Context, postID, actor uuid.UUID)
 		return fmt.Errorf("claim source_post %s: %w", postID, err)
 	}
 
-	voice, err := e.buildVoice(ctx, post, actor)
+	voice, err := e.buildVoice(ctx, post, actor, voiceID)
 	if err != nil {
-		msg := err.Error()
+		// last_error là thứ người dùng đọc trên UI -> chỉ lưu câu ngắn;
+		// nguyên văn lỗi (stderr yt-dlp, exit code) đi vào log.
+		msg := domain.UserMessage(err)
+		e.log.ErrorContext(ctx, "voice:process thất bại",
+			"error", err, "source_post_id", post.ID, "voice_id", voiceID)
 		if _, serr := e.q.SetSourcePostStatus(ctx, repository.SetSourcePostStatusParams{
 			ID:        post.ID,
 			Status:    domain.PostStatusFailed,
 			LastError: &msg,
 		}); serr != nil {
 			e.log.ErrorContext(ctx, "không cập nhật được status failed", "error", serr, "source_post_id", post.ID)
+		}
+		// Record processing phải chuyển sang failed, không thì nó treo ở "đang
+		// xử lý" mãi và người dùng không biết đã lỗi.
+		if voiceID != uuid.Nil {
+			if _, serr := e.q.SetVoicePublishStatus(ctx, repository.SetVoicePublishStatusParams{
+				ID:            voiceID,
+				PublishStatus: domain.PublishFailed,
+				LastError:     &msg,
+			}); serr != nil {
+				e.log.ErrorContext(ctx, "không cập nhật được voice failed", "error", serr, "voice_id", voiceID)
+			}
 		}
 		return err
 	}
@@ -120,7 +184,11 @@ func (e *Engine) ProcessSourcePost(ctx context.Context, postID, actor uuid.UUID)
 	return nil
 }
 
-func (e *Engine) buildVoice(ctx context.Context, post repository.SourcePost, actor uuid.UUID) (repository.Voice, error) {
+func (e *Engine) buildVoice(
+	ctx context.Context,
+	post repository.SourcePost,
+	actor, voiceID uuid.UUID,
+) (repository.Voice, error) {
 	mode := domain.CollectMode(post.CollectMode)
 	if !mode.Valid() {
 		return repository.Voice{}, domain.Permanent(
@@ -144,9 +212,9 @@ func (e *Engine) buildVoice(ctx context.Context, post repository.SourcePost, act
 		return repository.Voice{}, fmt.Errorf("fetch nội dung từ %s: %w", post.Platform, err)
 	}
 
-	// Lưu metadata gốc lên Bài Post trước khi tạo Voice: đây là nguồn auto-fill
-	// cho form đăng bài, và giữ lại được kể cả khi Voice bị xoá/chạy lại.
-	post = e.saveMetadata(ctx, post, fetched.Meta)
+	// KHÔNG ghi metadata lên Bài Post ở đây: việc đó thuộc task post:metadata
+	// chạy lúc tạo bài (một nơi ghi duy nhất). "Chạy Voice" chỉ tạo Voice.
+	// Metadata vừa fetch vẫn dùng để điền cho chính Voice bên dưới.
 
 	// Ngôn ngữ: 'auto' nghĩa là lấy theo nền tảng khai báo, không đoán bừa.
 	// Nền tảng không nói gì thì giữ 'auto' để multime.ai tự nhận diện từ audio.
@@ -161,27 +229,30 @@ func (e *Engine) buildVoice(ctx context.Context, post repository.SourcePost, act
 	var (
 		audio    []byte
 		engineID *uuid.UUID
-		title    *string
-		// spokenText là nội dung TTS đọc ra: mode B là text gốc, mode C là bản
-		// LLM đã viết lại. Lưu vào voice.description để biết voice nói gì.
-		spokenText *string
+		// Tiêu đề Voice lấy từ tiêu đề Bài Post (= toàn bộ nội dung bài, trừ
+		// hashtag), gộp về 1 dòng và cắt theo giới hạn của multime. Metadata vừa
+		// fetch được ưu tiên hơn bản đã lưu vì nó mới hơn.
+		title *string
 	)
 
 	if mode == domain.ModeExtract {
-		// Mode A: không qua TTS. Tiêu đề/mô tả lấy nguyên từ bài gốc.
+		// Mode A: không qua TTS -> text dự phòng là caption/transcript nền
+		// tảng trả về, hoặc text đã lưu từ lần chạy trước.
 		audio, err = e.audioFor(ctx, fetched)
 		if err != nil {
 			return repository.Voice{}, err
 		}
-		title = nilIfEmpty(firstLine(fetched.Meta.Title, fetched.Text, deref(post.ExtractedText)))
-		spokenText = nilIfEmpty(fetched.Meta.Description)
+		title = nilIfEmpty(domain.VoiceTitle(firstNonEmpty(
+			fetched.Meta.Title, deref(post.Title), fetched.Text, deref(post.ExtractedText))))
 	} else {
 		sourceText, spoken, err := e.textFor(ctx, post, mode, fetched)
 		if err != nil {
 			return repository.Voice{}, err
 		}
-		spokenText = &spoken
-		title = nilIfEmpty(firstLine(fetched.Meta.Title, spoken))
+		// Mode B/C: text dự phòng là nội dung TTS đọc ra (mode B là text gốc,
+		// mode C là bản LLM đã viết lại).
+		title = nilIfEmpty(domain.VoiceTitle(firstNonEmpty(
+			fetched.Meta.Title, deref(post.Title), spoken)))
 
 		// Lưu text NGUỒN (không phải bản LLM viết lại) để chạy lại Voice khác
 		// với prompt khác mà không cần fetch URL lần nữa.
@@ -238,14 +309,44 @@ func (e *Engine) buildVoice(ctx context.Context, post repository.SourcePost, act
 		return repository.Voice{}, fmt.Errorf("lưu file voice lên storage: %w", err)
 	}
 
+	hashtag := nilIfEmpty(strings.Join(fetched.Meta.Hashtags, " "))
+	image := nilIfEmpty(fetched.Meta.ThumbnailURL)
+
+	// Có record `processing` tạo sẵn lúc enqueue -> điền vào đúng record đó để
+	// người dùng thấy voice chuyển trạng thái tại chỗ, không nhân thêm dòng.
+	if voiceID != uuid.Nil {
+		voice, err := e.q.FinishVoice(ctx, repository.FinishVoiceParams{
+			ID:              voiceID,
+			AiEngineID:      engineID,
+			VoiceFileUrl:    &fileURL,
+			DurationSeconds: nilIfZero(int32(info.DurationSeconds)),
+			Title:           title,
+			Hashtag:         hashtag,
+			ImageUrl:        image,
+			Language:        language,
+			MimeType:        nilIfEmpty(info.MimeType),
+			SizeBytes:       ptr(info.SizeBytes),
+			SampleRate:      nilIfZero(int32(info.SampleRate)),
+		})
+		if err != nil {
+			e.cleanupOrphan(ctx, key)
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Người dùng đã xoá voice trong lúc worker đang chạy.
+				return repository.Voice{}, domain.Permanent(fmt.Errorf(
+					"%w: voice %s đã bị xoá trong lúc xử lý", domain.ErrNotFound, voiceID))
+			}
+			return repository.Voice{}, fmt.Errorf("cập nhật voice: %w", err)
+		}
+		return voice, nil
+	}
+
 	voice, err := e.q.CreateVoice(ctx, repository.CreateVoiceParams{
 		SourcePostID:    post.ID,
 		AiEngineID:      engineID,
 		VoiceFileUrl:    &fileURL,
 		DurationSeconds: nilIfZero(int32(info.DurationSeconds)),
-		Description:     spokenText,
-		Hashtag:         nilIfEmpty(strings.Join(fetched.Meta.Hashtags, " ")),
-		ImageUrl:        nilIfEmpty(fetched.Meta.ThumbnailURL),
+		Hashtag:         hashtag,
+		ImageUrl:        image,
 		Language:        language,
 		PublishStatus:   domain.PublishDraft,
 		Title:           title,
@@ -255,30 +356,34 @@ func (e *Engine) buildVoice(ctx context.Context, post repository.SourcePost, act
 		CreatedBy:       actor,
 	})
 	if err != nil {
-		// Dọn file nếu không ghi được record, tránh rác trên storage.
-		if delErr := e.storage.Delete(ctx, key); delErr != nil {
-			e.log.WarnContext(ctx, "không dọn được file voice mồ côi", "error", delErr, "key", key)
-		}
+		e.cleanupOrphan(ctx, key)
 		return repository.Voice{}, fmt.Errorf("tạo voice: %w", err)
 	}
 	return voice, nil
 }
 
-// saveMetadata ghi metadata gốc của bài (tiêu đề, mô tả, hashtag, ảnh bìa, tác
-// giả, ngày đăng) lên Bài Post. Không ghi được thì chỉ mất phần auto-fill, không
-// chặn việc tạo Voice.
+// cleanupOrphan dọn file vừa upload khi không ghi được record — tránh rác trên
+// storage mà không có gì trong DB trỏ tới.
+func (e *Engine) cleanupOrphan(ctx context.Context, key string) {
+	if err := e.storage.Delete(ctx, key); err != nil {
+		e.log.WarnContext(ctx, "không dọn được file voice mồ côi", "error", err, "key", key)
+	}
+}
+
+// saveMetadata ghi metadata gốc của bài (tiêu đề = nội dung bài, hashtag, ảnh
+// bìa, tác giả, ngày đăng) lên Bài Post. Không ghi được thì chỉ mất phần
+// auto-fill, không chặn việc tạo Voice.
 func (e *Engine) saveMetadata(
 	ctx context.Context,
 	post repository.SourcePost,
 	meta domain.PostMetadata,
 ) repository.SourcePost {
-	if meta.Title == "" && meta.Description == "" && meta.ThumbnailURL == "" && len(meta.Hashtags) == 0 {
+	if meta.Title == "" && meta.ThumbnailURL == "" && len(meta.Hashtags) == 0 {
 		return post
 	}
 	updated, err := e.q.UpdateSourcePostMetadata(ctx, repository.UpdateSourcePostMetadataParams{
 		ID:           post.ID,
 		Title:        nilIfEmpty(meta.Title),
-		Description:  nilIfEmpty(meta.Description),
 		Hashtags:     meta.Hashtags,
 		ThumbnailUrl: nilIfEmpty(meta.ThumbnailURL),
 		AuthorName:   nilIfEmpty(meta.AuthorName),
@@ -465,7 +570,6 @@ func (e *Engine) publish(ctx context.Context, voice repository.Voice) error {
 		FileName: filepath.Base(key),
 		MimeType: deref(voice.MimeType),
 		Title:    publishTitle(voice),
-		Caption:  deref(voice.Description),
 		// Language rỗng thì multime tự nhận diện từ audio — không đoán bừa.
 		Language:        lang,
 		SourceLang:      lang,
@@ -535,15 +639,13 @@ func (e *Engine) publishAs(
 // maxImageBytes chặn ảnh bìa quá lớn khi tải từ URL người dùng nhập.
 const maxImageBytes = 8 << 20
 
-// publishTitle: multime bắt buộc có title. Voice sinh tự động có thể chưa có
-// title (mode A không có text) -> lấy dòng đầu của mô tả, cuối cùng mới dùng id.
+// publishTitle: multime bắt buộc có title, và đó là toàn bộ phần chữ của bài
+// đăng — luôn phải có giá trị, 1 dòng, trong giới hạn ký tự.
 func publishTitle(voice repository.Voice) string {
-	if t := strings.TrimSpace(deref(voice.Title)); t != "" {
+	if t := domain.VoiceTitle(deref(voice.Title)); t != "" {
 		return t
 	}
-	if t := firstLine(deref(voice.Description)); t != "" {
-		return t
-	}
+	// Bài không có tiêu đề nào dùng được -> đặt tên theo id để vẫn đăng được.
 	return "Voice " + voice.ID.String()[:8]
 }
 

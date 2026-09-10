@@ -175,7 +175,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		}),
 		User: service.NewUser(queries, log),
 		SourcePost: service.NewSourcePost(
-			queries, platforms, enqueuer, audit, cfg.DefaultLanguage, enabledModes),
+			queries, platforms, enqueuer, audit, log, cfg.DefaultLanguage, enabledModes),
 		Voice: service.NewVoice(queries, store, enqueuer, audit),
 		List: service.NewList(
 			queries, platforms, enqueuer, audit, cfg.DefaultLanguage, scanDefaults, enabledModes),

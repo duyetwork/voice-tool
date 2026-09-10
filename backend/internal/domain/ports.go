@@ -17,12 +17,16 @@ type PlatformAdapter interface {
 	// ExtractID: parse loại nội dung + ID bài đăng từ URL (specs 1.3).
 	ExtractID(url string) (contentType string, postID string, err error)
 	// FetchContent: lấy nội dung theo mode (A -> audio, B/C -> text) kèm toàn
-	// bộ metadata gốc của bài (tiêu đề, mô tả, hashtag, ảnh bìa) để Voice sinh
+	// bộ metadata gốc của bài (nội dung, hashtag, ảnh bìa) để Voice sinh
 	// ra được điền sẵn.
 	//
 	// Nhận cả URL lẫn ID vì nhiều nền tảng (TikTok, Facebook, Instagram) không
 	// dựng lại được URL chuẩn chỉ từ ID.
 	FetchContent(ctx context.Context, ref PostRef, mode CollectMode) (FetchedContent, error)
+	// FetchMetadata chỉ lấy metadata gốc (nội dung, ảnh bìa, tác giả),
+	// không tải audio và không lấy phụ đề. Chạy ngay khi TẠO Bài Post để bảng
+	// hiện được nội dung trước cả khi tạo Voice.
+	FetchMetadata(ctx context.Context, ref PostRef) (PostMetadata, error)
 	// FetchLatestPosts: liệt kê bài mới của 1 kênh — dùng cho breaking/scheduled scan.
 	FetchLatestPosts(ctx context.Context, channelURL string, limit int) ([]RemotePost, error)
 }
@@ -45,10 +49,12 @@ type FetchedContent struct {
 }
 
 // PostMetadata gom mọi thứ cần để đăng lại 1 bài lên multime.ai mà không phải
-// gõ tay: tiêu đề, mô tả, hashtag, ảnh bìa.
+// gõ tay: nội dung bài, hashtag, ảnh bìa.
+//
+// Không có trường mô tả riêng: multime chỉ hiển thị `title`, nên Title mang
+// TOÀN BỘ nội dung bài (trừ hashtag) — xem platform.PostContent.
 type PostMetadata struct {
 	Title        string
-	Description  string
 	Hashtags     []string
 	ThumbnailURL string
 	AuthorName   string
@@ -139,9 +145,9 @@ type VoicePostInput struct {
 	FileName string
 	MimeType string
 
-	// Title bắt buộc — API từ chối nếu rỗng.
-	Title   string
-	Caption string
+	// Title bắt buộc — API từ chối nếu rỗng — và là TOÀN BỘ phần chữ của bài
+	// đăng: 1 dòng, tối đa MaxVoiceTitleRunes ký tự (xem VoiceTitle).
+	Title string
 
 	// Language map sang field `lang`. Để rỗng thì multime tự nhận diện từ audio
 	// và tự điền, nên không nên đoán rồi gửi bừa.
@@ -198,7 +204,11 @@ type Storage interface {
 // Lịch quét của Danh sách Định kỳ do cmd/scheduler đọc trực tiếp từ DB, nên ở
 // đây không cần API đăng ký/huỷ lịch.
 type Enqueuer interface {
-	EnqueueVoiceProcess(ctx context.Context, sourcePostID, actorID string) error
+	EnqueueVoiceProcess(ctx context.Context, sourcePostID, actorID, voiceID string) error
+	// EnqueuePostMetadata lấy metadata gốc của Bài Post vừa tạo. Tách khỏi
+	// voice:process vì nó chạy trong worker (chỉ worker có yt-dlp) nhưng không
+	// được để API phải chờ.
+	EnqueuePostMetadata(ctx context.Context, sourcePostID string) error
 	EnqueueVoicePublish(ctx context.Context, voiceID, actorID string) error
 	EnqueueBreakingScan(ctx context.Context, listID string) error
 }

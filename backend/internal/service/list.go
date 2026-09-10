@@ -148,24 +148,45 @@ type ChannelFilter struct {
 	CreatedBy *uuid.UUID
 	Limit     int32
 	Offset    int32
+	// Sort: cột thời gian để sắp xếp — `created_at` (mặc định) hoặc
+	// `last_scanned_at`. Dir: `asc` | `desc` (mặc định).
+	Sort string
+	Dir  string
 }
 
 // ListBreaking hỗ trợ filter/search bằng regex trên source_url (chức năng B2).
-func (l *List) ListBreaking(ctx context.Context, f ChannelFilter) ([]repository.ListListBreakingsRow, error) {
+// Trả kèm tổng số bản ghi khớp bộ lọc để bảng phân trang được.
+func (l *List) ListBreaking(ctx context.Context, f ChannelFilter) ([]repository.ListListBreakingsRow, int64, error) {
 	limit, offset := clampPage(f.Limit, f.Offset)
 	if f.Search != nil {
 		if err := validator.Validate(*f.Search); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
-	return l.q.ListListBreakings(ctx, repository.ListListBreakingsParams{
+	sort, dir := normalizeSort(f.Sort, f.Dir, "created_at", "last_scanned_at")
+	items, err := l.q.ListListBreakings(ctx, repository.ListListBreakingsParams{
 		Status:    f.Status,
 		Search:    f.Search,
 		Platform:  f.Platform,
 		CreatedBy: f.CreatedBy,
+		Sort:      sort,
+		Dir:       dir,
 		Lim:       limit,
 		Off:       offset,
 	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list list_breaking: %w", err)
+	}
+	total, err := l.q.CountListBreakings(ctx, repository.CountListBreakingsParams{
+		Status:    f.Status,
+		Search:    f.Search,
+		Platform:  f.Platform,
+		CreatedBy: f.CreatedBy,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("count list_breaking: %w", err)
+	}
+	return items, total, nil
 }
 
 type BreakingUpdate struct {
@@ -342,21 +363,37 @@ func (l *List) GetScheduled(ctx context.Context, id uuid.UUID) (repository.ListS
 	return list, nil
 }
 
-func (l *List) ListScheduled(ctx context.Context, f ChannelFilter) ([]repository.ListListScheduledsRow, error) {
+func (l *List) ListScheduled(ctx context.Context, f ChannelFilter) ([]repository.ListListScheduledsRow, int64, error) {
 	limit, offset := clampPage(f.Limit, f.Offset)
 	if f.Search != nil {
 		if err := validator.Validate(*f.Search); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
-	return l.q.ListListScheduleds(ctx, repository.ListListScheduledsParams{
+	sort, dir := normalizeSort(f.Sort, f.Dir, "created_at", "last_scanned_at")
+	items, err := l.q.ListListScheduleds(ctx, repository.ListListScheduledsParams{
 		Status:    f.Status,
 		Search:    f.Search,
 		Platform:  f.Platform,
 		CreatedBy: f.CreatedBy,
+		Sort:      sort,
+		Dir:       dir,
 		Lim:       limit,
 		Off:       offset,
 	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list list_scheduled: %w", err)
+	}
+	total, err := l.q.CountListScheduleds(ctx, repository.CountListScheduledsParams{
+		Status:    f.Status,
+		Search:    f.Search,
+		Platform:  f.Platform,
+		CreatedBy: f.CreatedBy,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("count list_scheduled: %w", err)
+	}
+	return items, total, nil
 }
 
 type ScheduledUpdate struct {
@@ -451,7 +488,7 @@ func (l *List) DeleteScheduled(ctx context.Context, actor, id uuid.UUID) error {
 
 // detect nhận diện nền tảng từ URL; không nhận ra thì báo lỗi, không đoán mò.
 func (l *List) detect(rawURL string) (platform, contentType string, err error) {
-	rawURL = strings.TrimSpace(rawURL)
+	rawURL = domain.NormalizeSourceURL(rawURL)
 	if rawURL == "" {
 		return "", "", fmt.Errorf("%w: source_url là bắt buộc", domain.ErrInvalidInput)
 	}

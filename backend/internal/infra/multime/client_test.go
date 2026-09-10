@@ -323,7 +323,6 @@ func TestPublishVoiceSendsExpectedForm(t *testing.T) {
 		domain.VoicePostInput{
 			FileName:        "voice.mp3",
 			Title:           "Bản tin sáng",
-			Caption:         "mô tả",
 			Language:        "vi",
 			SourceLang:      "vi",
 			Hashtags:        []string{"tinnong", "vietnam"},
@@ -353,7 +352,6 @@ func TestPublishVoiceSendsExpectedForm(t *testing.T) {
 		// author_id phải là của user sở hữu voice, không phải tài khoản hệ thống.
 		"author_id":          "4242",
 		"title":              "Bản tin sáng",
-		"caption":            "mô tả",
 		"source_lang":        "vi",
 		"lang":               "vi",
 		"visibility":         "public",

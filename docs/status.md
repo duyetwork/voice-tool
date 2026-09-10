@@ -64,7 +64,7 @@ Quy mô hiện tại: **10.4k dòng Go** (+886 dòng test), **3.0k dòng TypeScr
 | 6 | Tối ưu worker | api 1 / worker 2 / scheduler 1 (bắt buộc 1) |
 | 7 | Nơi lưu file + backup | S3 dùng chung bucket, prefix `voice-tool/`; RDS backup 7 ngày; Redis không cần backup |
 | 8 | Dọn `skipped_log` | Giữ 7 ngày, job chạy 03:15 hằng ngày |
-| 9 | Role admin/user/viewer | ✅ (xem 1.5) |
+| 9 | Role admin/editor/user | ✅ (xem 1.5) |
 | 10 | Không signup, chỉ signin + cấp quyền | ✅ (xem 1.5) |
 
 ### 1.5 Đăng nhập SSO + phân quyền (yêu cầu mới nhất)
@@ -89,9 +89,12 @@ refresh cũng thất bại thì trả lỗi vĩnh viễn yêu cầu user đăng 
 
 | Role | Xem | Tạo/sửa/chạy/**đăng voice** | Xoá | Cấp quyền |
 |---|---|---|---|---|
-| `viewer` | ✅ tất cả | ❌ | ❌ | ❌ |
 | `user` | ✅ tất cả | ✅ | ❌ | ❌ |
+| `editor` | ✅ tất cả | ✅ | ✅ | ❌ |
 | `admin` | ✅ tất cả | ✅ | ✅ | ✅ |
+
+Không có vai trò chỉ-xem: đăng nhập được bằng tài khoản multime nghĩa là dùng
+được. `editor` chỉ khác `admin` ở quyền cấp quyền.
 
 Router chia 4 nhóm (`authed` / `writer` / `remover` / `admin`) thay vì kiểm tra
 role rải rác trong handler. Tài khoản đăng nhập lần đầu nhận `DEFAULT_USER_ROLE`
@@ -151,8 +154,8 @@ Chạy: `make test`. Không có test nào cần Postgres/Redis.
 |---|---|
 | Kênh nguồn Facebook/TikTok/Instagram/X là **kênh của mình** hay **kênh người khác**? | Quyết định được hay không làm adapter — xem 4.2 |
 | Voice do worker tự tạo (F2/F3) đăng dưới tài khoản nào? | Hiện là tài khoản người **tạo danh sách kênh**. Xem 3.1 |
-| Có cho `viewer` xem `/audit-log` không? | Hiện có. Nếu coi là dữ liệu vận hành thì nên giới hạn admin |
-| `DEFAULT_USER_ROLE` = `user` hay `viewer`? | Hiện `user` (đăng nhập được là đăng voice được). Đổi sang `viewer` nếu muốn admin duyệt từng người |
+| Có cho `user` xem `/audit-log` không? | Hiện có. Nếu coi là dữ liệu vận hành thì nên giới hạn admin |
+| `DEFAULT_USER_ROLE` = `user` hay `editor`? | Hiện `user` (đăng nhập được là đăng voice được, nhưng không xoá được). Đổi sang `editor` nếu muốn ai cũng xoá được |
 
 ---
 
@@ -261,7 +264,7 @@ thành công. 8 điểm rời rạc phát hiện khi dùng đã được nối l
 
 | # | Yêu cầu | Cách làm |
 |---|---|---|
-| 1 | Lấy đủ metadata bài gốc, auto-fill vào form tạo voice | `source_post` thêm `title`, `description`, `hashtags[]`, `thumbnail_url`, `author_name`, `posted_at`; worker ghi khi fetch, Voice sinh ra điền sẵn tiêu đề/mô tả/hashtag/ảnh bìa |
+| 1 | Lấy đủ metadata bài gốc, auto-fill vào form tạo voice | `source_post` thêm `title` (= toàn bộ nội dung bài, trừ hashtag), `hashtags[]`, `thumbnail_url`, `author_name`, `posted_at`; worker ghi khi fetch, Voice sinh ra điền sẵn tiêu đề/hashtag/ảnh bìa |
 | 2 | Nghe thử + tải voice trước khi đăng | `GET /voices/:id/audio` (`?download=1`) stream từ storage qua API — bucket riêng tư, `minio:9000` không mở được từ trình duyệt |
 | 3 | Metadata "Nền tảng" + hỗ trợ nền tảng khác | Cột nền tảng hiện ở cả 3 bảng, ô chọn tuỳ chọn ở form F1; thêm adapter Facebook, TikTok, Instagram, X dùng chung `ytdlpCore` |
 | 4 | Bảng có cột người tạo | 4 query danh sách JOIN `app_user` trả kèm `created_by_email` |
@@ -277,7 +280,7 @@ thành công. 8 điểm rời rạc phát hiện khi dùng đã được nối l
 ### 4.1 Ưu tiên 1 — chạy thật luồng Mode A + publish
 
 1. `make gen-key` → điền `TOKEN_ENCRYPTION_KEY`, `BOOTSTRAP_ADMIN_EMAIL`.
-2. `docker compose up -d --build` → kiểm tra 3 migration apply sạch.
+2. `docker compose up -d --build` → kiểm tra toàn bộ migration apply sạch.
 3. Đăng nhập bằng tài khoản multime thật → xác nhận `app_user` được tạo với
    `strongbody_user_id` đúng.
 4. `/on-demand`: dán 1 URL YouTube, Mode A → xác nhận có file voice nghe được.

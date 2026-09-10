@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/strongbody/voice-tool/backend/internal/pkg/httpx"
+	"github.com/strongbody/voice-tool/backend/internal/repository"
 	"github.com/strongbody/voice-tool/backend/internal/service"
 	"github.com/strongbody/voice-tool/backend/internal/transport/http/middleware"
 )
@@ -39,12 +40,15 @@ func (h *Catalog) CreatePrompt(c *gin.Context) {
 
 func (h *Catalog) ListPrompts(c *gin.Context) {
 	limit, offset := pagination(c)
-	items, err := h.svc.ListPrompts(c.Request.Context(), limit, offset)
+	_, dir := sorting(c)
+	items, total, err := h.svc.ListPrompts(c.Request.Context(), limit, offset, dir)
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	httpx.OK(c, gin.H{"items": items, "limit": limit, "offset": offset})
+	httpx.OK(c, httpx.Page[repository.Prompt]{
+		Items: items, Total: total, Limit: limit, Offset: offset,
+	})
 }
 
 func (h *Catalog) GetPrompt(c *gin.Context) {

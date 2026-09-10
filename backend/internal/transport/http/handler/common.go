@@ -77,6 +77,12 @@ func queryTime(c *gin.Context, name string, endOfDay bool) (*time.Time, error) {
 	return &t, nil
 }
 
+// sorting đọc tham số sắp xếp của bảng: `sort` là cột, `dir` là chiều.
+// Service whitelist lại tên cột, handler không cần biết bảng nào có cột gì.
+func sorting(c *gin.Context) (sort, dir string) {
+	return c.Query("sort"), c.Query("dir")
+}
+
 // pagination đọc limit/offset; service sẽ clamp lại giá trị.
 func pagination(c *gin.Context) (limit, offset int32) {
 	limit = int32(atoiDefault(c.Query("limit"), 20))
@@ -110,4 +116,14 @@ func parseDuration(raw string) (time.Duration, error) {
 			domain.ErrInvalidInput, raw)
 	}
 	return d, nil
+}
+
+// derefOr trả giá trị con trỏ, rỗng nếu nil — dùng khi map cột nullable của
+// sqlc sang response JSON.
+func derefOr[T any](p *T) T {
+	if p == nil {
+		var zero T
+		return zero
+	}
+	return *p
 }
