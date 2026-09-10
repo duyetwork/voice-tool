@@ -33,6 +33,9 @@ import (
 type App struct {
 	Config *config.Config
 	Logger *slog.Logger
+	// Modes: hình thức thu thập nào đang dùng được + vì sao cái còn lại không.
+	// Router trả nguyên cái này cho FE qua /meta/collect-modes.
+	Modes service.ModeGate
 
 	Pool    *pgxpool.Pool
 	Queries *repository.Queries
@@ -59,6 +62,7 @@ type App struct {
 	Voice        *service.Voice
 	List         *service.List
 	Catalog      *service.Catalog
+	AIEngine     *service.AIEngineService
 	Engine       *service.Engine
 	Scan         *service.Scan
 	Maintenance  *service.Maintenance
@@ -110,9 +114,16 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	)
 	prober := audio.NewProber(runner, "")
 
+	// Provider TTS dự phòng: có thể là nil (không đặt key chung) — lúc đó user
+	// nào chưa khai API key riêng thì báo lỗi kèm hướng dẫn thay vì chạy nhờ.
 	ttsProvider, err := tts.New(cfg)
 	if err != nil {
 		return fail(err)
+	}
+	if ttsProvider == nil {
+		log.Info("chưa có API key TTS chung — mỗi user phải tự khai key ở mục AI Engine")
+	} else if ttsProvider.Name() == "mock" {
+		log.Warn("TTS_PROVIDER=mock — voice mode B/C sẽ là audio im lặng, chỉ dùng khi dev")
 	}
 	sttProvider, err := stt.New(cfg)
 	if err != nil {
@@ -147,7 +158,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	audit := service.NewAudit(queries, log)
 	multimeCreds := service.NewMultimeCreds(queries, multimeAuth, box, log)
 
-	enabledModes := cfg.EnabledCollectModes()
+	// Hình thức C viết lại nội dung bằng LLM. Provider còn là mock thì không có
+	// gì viết lại được — tắt hẳn mode C thay vì để nó chạy và cho ra voice đọc
+	// sai (bản mock trước đây đọc to cả prompt).
+	modes := service.ModeGate{Enabled: cfg.EnabledCollectModes()}
+	if llmProvider.Name() == "mock" {
+		modes = disablePromptMode(modes, log)
+	}
 
 	scanDefaults := service.ScanDefaults{
 		Interval:       cfg.BreakingScanInterval,
@@ -156,7 +173,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 
 	app := &App{
-		Config: cfg, Logger: log,
+		Config: cfg, Logger: log, Modes: modes,
 		Pool: pool, Queries: queries,
 		Redis: redisOpt, AsynqClient: asynqClient,
 		Platforms: platforms, Storage: store, Prober: prober,
@@ -175,24 +192,29 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		}),
 		User: service.NewUser(queries, log),
 		SourcePost: service.NewSourcePost(
-			queries, platforms, enqueuer, audit, log, cfg.DefaultLanguage, enabledModes),
-		Voice: service.NewVoice(queries, store, enqueuer, audit),
+			queries, platforms, enqueuer, audit, log, cfg.DefaultLanguage, modes),
+		Voice: service.NewVoice(queries, store, enqueuer, audit, cfg.DefaultLanguage, modes),
 		List: service.NewList(
-			queries, platforms, enqueuer, audit, cfg.DefaultLanguage, scanDefaults, enabledModes),
-		Catalog: service.NewCatalog(queries),
+			queries, platforms, enqueuer, audit, cfg.DefaultLanguage, scanDefaults, modes),
+		Catalog:  service.NewCatalog(queries),
+		AIEngine: service.NewAIEngineService(queries, box),
 		Engine: service.NewEngine(service.EngineDeps{
 			Queries:   queries,
 			Platforms: platforms,
-			TTS:       ttsProvider,
-			STT:       sttProvider,
-			LLM:       llmProvider,
-			Storage:   store,
-			Prober:    prober,
-			Multime:   multimeClient,
-			Creds:     multimeCreds,
-			Enqueuer:  enqueuer,
-			Audit:     audit,
-			Logger:    log,
+			// TTS trong .env chỉ là dự phòng cho dev; đường chính là API key
+			// của từng user (bảng ai_engine) qua TTSFactory.
+			TTS:        ttsProvider,
+			TTSFactory: tts.NewFactory(cfg),
+			Secret:     box,
+			STT:        sttProvider,
+			LLM:        llmProvider,
+			Storage:    store,
+			Prober:     prober,
+			Multime:    multimeClient,
+			Creds:      multimeCreds,
+			Enqueuer:   enqueuer,
+			Audit:      audit,
+			Logger:     log,
 		}),
 		Scan:         service.NewScan(queries, platforms, enqueuer, log),
 		Maintenance:  service.NewMaintenance(queries, log, cfg.SkippedLogRetention),
@@ -205,7 +227,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		"stt", sttProvider.Name(),
 		"llm", llmProvider.Name(),
 		"platforms", platforms.Supported(),
-		"collect_modes", enabledModes,
+		"collect_modes", modes.Enabled,
 		"scan_interval", cfg.BreakingScanInterval.String(),
 		"scan_limit", cfg.ScanLimitDefault,
 	)
@@ -226,4 +248,31 @@ func (a *App) Close() error {
 		return errs[0]
 	}
 	return nil
+}
+
+// disablePromptMode gỡ hình thức C khỏi danh sách đang bật.
+//
+// Mode C = "text nguồn -> LLM viết lại theo Prompt mẫu -> TTS đọc bản viết
+// lại". Không có LLM thật thì bước giữa không tồn tại; để mode C chạy tiếp
+// nghĩa là TTS đọc một thứ không ai viết lại — trước đây là đọc to cả prompt.
+// Thà tắt và nói rõ thiếu gì.
+func disablePromptMode(gate service.ModeGate, log *slog.Logger) service.ModeGate {
+	const reason = "cần LLM thật để viết lại nội dung — đặt LLM_PROVIDER=anthropic " +
+		"và ANTHROPIC_API_KEY trong .env rồi khởi động lại"
+
+	enabled := make([]domain.CollectMode, 0, len(gate.Enabled))
+	for _, m := range gate.Enabled {
+		if m != domain.ModePromptToVoice {
+			enabled = append(enabled, m)
+		}
+	}
+	log.Warn("tắt hình thức C: "+reason, "llm", "mock")
+
+	reasons := map[domain.CollectMode]string{domain.ModePromptToVoice: reason}
+	for k, v := range gate.Reason {
+		if _, taken := reasons[k]; !taken {
+			reasons[k] = v
+		}
+	}
+	return service.ModeGate{Enabled: enabled, Reason: reasons}
 }

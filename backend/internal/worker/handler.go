@@ -61,6 +61,7 @@ func NewHandler(d HandlerDeps) *Handler {
 func (h *Handler) Mux() *asynq.ServeMux {
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(task.TypeVoiceProcess, h.voiceProcess)
+	mux.HandleFunc(task.TypeVoiceText, h.voiceText)
 	mux.HandleFunc(task.TypePostMetadata, h.postMetadata)
 	mux.HandleFunc(task.TypeVoicePublish, h.voicePublish)
 	mux.HandleFunc(task.TypeBreakingDispatch, h.breakingDispatch)
@@ -94,6 +95,24 @@ func (h *Handler) voiceProcess(ctx context.Context, t *asynq.Task) error {
 
 	h.log.InfoContext(ctx, "voice:process bắt đầu", "source_post_id", postID, "voice_id", voiceID)
 	if err := h.engine.ProcessSourcePost(ctx, postID, actor, voiceID); err != nil {
+		return skipIfPermanent(err)
+	}
+	return nil
+}
+
+// voiceText đọc đoạn text gõ tay -> Voice, không qua Bài Post.
+func (h *Handler) voiceText(ctx context.Context, t *asynq.Task) error {
+	p, err := task.Decode[task.VoiceTextPayload](t)
+	if err != nil {
+		return err
+	}
+	voiceID, actor, err := parseIDs(p.VoiceID, p.ActorID)
+	if err != nil {
+		return err
+	}
+
+	h.log.InfoContext(ctx, "voice:text bắt đầu", "voice_id", voiceID)
+	if err := h.engine.ProcessTextVoice(ctx, voiceID, actor); err != nil {
 		return skipIfPermanent(err)
 	}
 	return nil

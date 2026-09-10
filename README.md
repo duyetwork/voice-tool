@@ -20,8 +20,8 @@ Danh sách (List) → Bài Post (SourcePost) → Voice → multime.ai
 | Mã | Tên | Cơ chế |
 |---|---|---|
 | **A** | Extract từ URL | Tải video/audio gốc, tách trực tiếp track giọng nói |
-| **B** | Text → TTS → Voice | Lấy caption/transcript → TTS đọc nguyên văn — *chưa bật* |
-| **C** | Text + Prompt → TTS → Voice | Text gốc → LLM viết lại theo Prompt mẫu → TTS — *chưa bật* |
+| **B** | Text → TTS → Voice | Lấy caption/transcript (hoặc text gõ tay) → TTS đọc nguyên văn |
+| **C** | Text + Prompt → TTS → Voice | Text gốc → LLM viết lại theo Prompt mẫu → TTS |
 
 Nền tảng nguồn: YouTube, Facebook, TikTok, Instagram, X — hệ thống tự nhận diện
 từ URL. Metadata bài gốc (nội dung bài, hashtag, ảnh bìa) được lấy về và điền
@@ -29,8 +29,16 @@ sẵn vào Voice, nên thường chỉ cần nghe thử rồi bấm Đăng. Khô
 multime chỉ hiển thị tiêu đề, nên tiêu đề Bài Post mang trọn nội dung bài (trừ
 hashtag) và tiêu đề Voice là 200 ký tự đầu của nó — đúng giới hạn multime nhận.
 
-Mode B/C bật bằng `ENABLED_COLLECT_MODES` trong `.env` khi đã cấu hình TTS/LLM
-thật; trước đó UI hiển thị mờ và API từ chối.
+Hình thức B/C đọc bằng TTS **3voices**: mỗi người tự khai API key của mình ở
+mục **AI Engine** (key mã hoá trong DB, không bao giờ hiện lại), worker đọc
+bằng key của chính người tạo voice nên quota/chi phí về đúng người đó. Admin
+xem và quản lý được key của tất cả mọi người.
+
+Nguồn cho B/C có 2 kiểu: **URL** (hệ thống tự lấy caption/transcript) hoặc
+**gõ thẳng text** ở màn F1 — text nhập tay không có audio gốc nên chỉ dùng
+được B/C. Mode C cần thêm LLM (`ANTHROPIC_API_KEY`). Muốn tắt bớt hình thức
+nào thì sửa `ENABLED_COLLECT_MODES` trong `.env` (mặc định `A,B,C`) — UI hiển
+thị mờ và API từ chối hình thức đã tắt.
 
 **Tech stack:** Go 1.26 (3 binary `api` / `worker` / `scheduler`, Gin, pgx +
 sqlc, Asynq) · PostgreSQL 16 · Redis · S3-compatible (MinIO dev / S3 prod) ·
@@ -166,6 +174,28 @@ email trong `BOOTSTRAP_ADMIN_EMAIL` luôn là `admin`. Chi tiết phân quyền:
 5. Vào **Voice** — bấm **▶ Nghe thử** (hoặc **⤓ Tải về**) để kiểm tra file.
 6. Tiêu đề/hashtag/ảnh bìa đã điền sẵn từ bài gốc — bấm **Sửa metadata**
    nếu muốn đổi, rồi bấm **Đăng**.
+
+### Thử Mode B/C (TTS đọc text)
+
+1. Vào **AI Engine** → **Thêm API key**, dán key 3voices của bạn (dạng
+   `sk-ov-…`). Key được mã hoá trước khi lưu và không hiển thị lại — bảng chỉ
+   còn 4 ký tự cuối. Chưa có key thì job TTS dừng kèm câu nhắc khai key.
+   Admin thấy key của mọi người và gán được 1 key cho nhiều tài khoản cùng lúc
+   (ô **Người dùng** trong form thêm key).
+2. Vào **F1 — Theo yêu cầu** (hoặc bấm **+ Tạo Voice** ở màn **Voice** — cùng
+   một form), chọn tab **Nhập text** rồi gõ/dán nội dung, hoặc để tab **Từ URL**
+   nếu muốn hệ thống tự lấy nội dung.
+3. `Hình thức thu thập` = **B** (đọc nguyên văn) hoặc **C** (LLM viết lại theo
+   Prompt mẫu trước khi đọc — cần chọn prompt và có `ANTHROPIC_API_KEY`).
+4. Bấm nút tạo — xong là màn hình nhảy sang **Voice**, dòng voice mới hiện ở
+   trạng thái *Đang xử lý* rồi chuyển sang *Nháp* khi worker đọc xong.
+
+Nhập bằng **text** thì KHÔNG sinh Bài Post: text gõ tay không có bài gốc nào để
+truy vết nên Voice được tạo thẳng. Nhập bằng **URL** thì vẫn qua Bài Post như
+luồng A.
+
+Lưu ý: multime từ chối audio ngắn hơn 15 giây, nên text quá ngắn sẽ tạo được
+voice nhưng không đăng được.
 
 Gặp lỗi: xem [docs/troubleshooting.md](docs/troubleshooting.md).
 

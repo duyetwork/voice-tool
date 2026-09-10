@@ -15,6 +15,11 @@ import (
 type Querier interface {
 	// Chỉ 1 worker được xử lý 1 bài tại 1 thời điểm (idempotent khi Asynq retry).
 	ClaimSourcePostForProcessing(ctx context.Context, id uuid.UUID) (SourcePost, error)
+	// Nhận Voice về để đọc. Chỉ nhận khi voice đang `processing` hoặc đã `failed`:
+	// Asynq retry lần sau vẫn nhặt lại được, còn voice đã ra file (draft/ready) thì
+	// không đọc đè lên — muốn đọc lại phải đi qua SetVoiceContent, nơi người dùng
+	// chốt lại lời đọc. Voice đã publish thì không bao giờ đụng vào.
+	ClaimVoiceForProcessing(ctx context.Context, id uuid.UUID) (Voice, error)
 	// Token hết hiệu lực và refresh cũng thất bại -> buộc user đăng nhập lại.
 	ClearUserMultimeToken(ctx context.Context, id uuid.UUID) error
 	CountAdmins(ctx context.Context) (int64, error)
@@ -30,6 +35,8 @@ type Querier interface {
 	CountSourcePosts(ctx context.Context, arg CountSourcePostsParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CountVoices(ctx context.Context, arg CountVoicesParams) (int64, error)
+	// user_id là CHỦ SỞ HỮU key (worker chạy TTS của người đó bằng key này),
+	// created_by là người bấm nút — khác nhau khi admin khai hộ.
 	CreateAIEngine(ctx context.Context, arg CreateAIEngineParams) (AiEngine, error)
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) (AuditLog, error)
 	CreateListBreaking(ctx context.Context, arg CreateListBreakingParams) (ListBreaking, error)
@@ -37,6 +44,10 @@ type Querier interface {
 	CreatePrompt(ctx context.Context, arg CreatePromptParams) (Prompt, error)
 	CreateSkippedLog(ctx context.Context, arg CreateSkippedLogParams) error
 	CreateSourcePost(ctx context.Context, arg CreateSourcePostParams) (SourcePost, error)
+	// Voice gõ tay: không có Bài Post nào đứng sau, nội dung nằm thẳng trên Voice.
+	// Tạo ở trạng thái `processing` để người dùng thấy ngay dòng voice đang chạy,
+	// worker điền file + metadata vào đúng dòng đó (FinishVoice).
+	CreateTextVoice(ctx context.Context, arg CreateTextVoiceParams) (Voice, error)
 	CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice, error)
 	DeleteAIEngine(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteListBreaking(ctx context.Context, id uuid.UUID) (int64, error)
@@ -53,8 +64,10 @@ type Querier interface {
 	// Metadata dùng COALESCE: fetch không ra tiêu đề thì giữ nguyên phần đã điền
 	// sẵn từ Bài Post, không xoá trắng.
 	FinishVoice(ctx context.Context, arg FinishVoiceParams) (Voice, error)
-	GetAIEngine(ctx context.Context, id uuid.UUID) (AiEngine, error)
-	GetDefaultAIEngine(ctx context.Context) (AiEngine, error)
+	GetAIEngine(ctx context.Context, id uuid.UUID) (GetAIEngineRow, error)
+	// Key mà worker dùng khi chạy TTS cho voice của user này: key mới khai nhất
+	// (thay key thì key mới thắng ngay, không phải xoá key cũ trước).
+	GetAIEngineForUser(ctx context.Context, userID uuid.UUID) (AiEngine, error)
 	GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaking, error)
 	GetListScheduled(ctx context.Context, id uuid.UUID) (ListScheduled, error)
 	GetPrompt(ctx context.Context, id uuid.UUID) (Prompt, error)
@@ -62,7 +75,9 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (AppUser, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (AppUser, error)
 	GetVoice(ctx context.Context, id uuid.UUID) (Voice, error)
-	ListAIEngines(ctx context.Context, onlyActive *bool) ([]AiEngine, error)
+	// `owner` NULL = xem tất cả (admin). User thường luôn được service ép owner =
+	// chính mình, nên không đọc được key của người khác dù gọi thẳng API.
+	ListAIEngines(ctx context.Context, owner *uuid.UUID) ([]ListAIEnginesRow, error)
 	ListActiveListBreakings(ctx context.Context) ([]ListBreaking, error)
 	ListActiveListScheduleds(ctx context.Context) ([]ListScheduled, error)
 	// Kèm email người thao tác để bảng nhật ký hiện được "ai làm" mà không phải
@@ -88,7 +103,7 @@ type Querier interface {
 	// chọn, các nhánh còn lại toàn NULL nên không ảnh hưởng thứ tự. Dòng cuối là
 	// mặc định (mới nhất trước) và cũng là nhánh sort=created_at + dir=desc.
 	ListVoices(ctx context.Context, arg ListVoicesParams) ([]ListVoicesRow, error)
-	ListVoicesBySourcePost(ctx context.Context, sourcePostID uuid.UUID) ([]Voice, error)
+	ListVoicesBySourcePost(ctx context.Context, sourcePostID *uuid.UUID) ([]Voice, error)
 	// Business rule #2: publish thành công -> xoá file S3 và set voice_file_url = NULL,
 	// chỉ giữ multime_post_url làm nguồn tham chiếu duy nhất.
 	MarkVoicePublished(ctx context.Context, arg MarkVoicePublishedParams) (Voice, error)
@@ -98,9 +113,20 @@ type Querier interface {
 	// Cập nhật access token sau khi refresh với strongbody.
 	SetUserMultimeToken(ctx context.Context, arg SetUserMultimeTokenParams) error
 	SetUserRole(ctx context.Context, arg SetUserRoleParams) (AppUser, error)
+	// Chốt lời đọc mới cho 1 Voice rồi đưa lại vào hàng đợi.
+	//
+	// Đặt luôn publish_status='processing' trong cùng câu lệnh: người dùng bấm
+	// "Tạo lại" là thấy dòng voice chuyển sang đang xử lý ngay, không có khoảng
+	// giữa mà bảng vẫn hiện voice cũ như chưa có gì xảy ra.
+	SetVoiceContent(ctx context.Context, arg SetVoiceContentParams) (Voice, error)
 	SetVoicePublishStatus(ctx context.Context, arg SetVoicePublishStatusParams) (Voice, error)
+	// Đóng dấu thời điểm key thật sự đọc ra audio. Chỉ gọi sau khi TTS thành công:
+	// cột này để người dùng biết key nào còn sống, key nào khai xong bỏ đó.
+	TouchAIEngineUsed(ctx context.Context, id uuid.UUID) error
 	TouchListBreakingScanned(ctx context.Context, id uuid.UUID) error
 	TouchListScheduledScanned(ctx context.Context, id uuid.UUID) error
+	// api_key_encrypted dùng COALESCE: bỏ trống ô API key ở form nghĩa là "giữ key
+	// cũ" — key thật không bao giờ gửi về trình duyệt nên không có gì để gửi lại.
 	UpdateAIEngine(ctx context.Context, arg UpdateAIEngineParams) (AiEngine, error)
 	UpdateListBreaking(ctx context.Context, arg UpdateListBreakingParams) (ListBreaking, error)
 	UpdateListScheduled(ctx context.Context, arg UpdateListScheduledParams) (ListScheduled, error)

@@ -8,6 +8,44 @@ INSERT INTO voice (
 )
 RETURNING *;
 
+-- name: CreateTextVoice :one
+-- Voice gõ tay: không có Bài Post nào đứng sau, nội dung nằm thẳng trên Voice.
+-- Tạo ở trạng thái `processing` để người dùng thấy ngay dòng voice đang chạy,
+-- worker điền file + metadata vào đúng dòng đó (FinishVoice).
+INSERT INTO voice (
+  input_text, collect_mode, prompt_id, language, publish_status, title, created_by
+) VALUES (
+  sqlc.arg('input_text'), sqlc.arg('collect_mode'), sqlc.narg('prompt_id'),
+  sqlc.arg('language'), 'processing', sqlc.narg('title'), sqlc.arg('created_by')
+)
+RETURNING *;
+
+-- name: SetVoiceContent :one
+-- Chốt lời đọc mới cho 1 Voice rồi đưa lại vào hàng đợi.
+--
+-- Đặt luôn publish_status='processing' trong cùng câu lệnh: người dùng bấm
+-- "Tạo lại" là thấy dòng voice chuyển sang đang xử lý ngay, không có khoảng
+-- giữa mà bảng vẫn hiện voice cũ như chưa có gì xảy ra.
+UPDATE voice
+SET input_text     = sqlc.arg('input_text'),
+    collect_mode   = sqlc.arg('collect_mode'),
+    prompt_id      = sqlc.narg('prompt_id'),
+    language       = COALESCE(sqlc.narg('language'), language),
+    publish_status = 'processing',
+    last_error     = NULL
+WHERE id = sqlc.arg('id') AND publish_status <> 'published'
+RETURNING *;
+
+-- name: ClaimVoiceForProcessing :one
+-- Nhận Voice về để đọc. Chỉ nhận khi voice đang `processing` hoặc đã `failed`:
+-- Asynq retry lần sau vẫn nhặt lại được, còn voice đã ra file (draft/ready) thì
+-- không đọc đè lên — muốn đọc lại phải đi qua SetVoiceContent, nơi người dùng
+-- chốt lại lời đọc. Voice đã publish thì không bao giờ đụng vào.
+UPDATE voice
+SET publish_status = 'processing', last_error = NULL
+WHERE id = $1 AND publish_status IN ('processing', 'failed')
+RETURNING *;
+
 -- name: GetVoice :one
 SELECT * FROM voice WHERE id = $1;
 
@@ -15,12 +53,14 @@ SELECT * FROM voice WHERE id = $1;
 -- Trả kèm nền tảng nguồn + email người tạo để bảng Voice hiển thị và lọc được
 -- mà không phải gọi thêm API (prompt.md mục 3, 4, 8).
 SELECT v.*,
-       sp.platform    AS platform,
-       sp.source_url  AS source_url,
-       sp.title       AS source_title,
-       u.email        AS created_by_email
+       sp.platform     AS platform,
+       sp.source_url   AS source_url,
+       sp.title        AS source_title,
+       sp.collect_mode AS source_collect_mode,
+       sp.prompt_id    AS source_prompt_id,
+       u.email         AS created_by_email
 FROM voice v
-JOIN source_post sp ON sp.id = v.source_post_id
+LEFT JOIN source_post sp ON sp.id = v.source_post_id
 JOIN app_user u     ON u.id = v.created_by
 WHERE (sqlc.narg('publish_status')::varchar IS NULL OR v.publish_status = sqlc.narg('publish_status'))
   AND (sqlc.narg('source_post_id')::uuid    IS NULL OR v.source_post_id = sqlc.narg('source_post_id'))
@@ -47,7 +87,7 @@ LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 -- name: CountVoices :one
 SELECT COUNT(*)
 FROM voice v
-JOIN source_post sp ON sp.id = v.source_post_id
+LEFT JOIN source_post sp ON sp.id = v.source_post_id
 WHERE (sqlc.narg('publish_status')::varchar IS NULL OR v.publish_status = sqlc.narg('publish_status'))
   AND (sqlc.narg('source_post_id')::uuid    IS NULL OR v.source_post_id = sqlc.narg('source_post_id'))
   AND (sqlc.narg('platform')::varchar       IS NULL OR sp.platform      = sqlc.narg('platform'))

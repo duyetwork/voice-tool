@@ -13,6 +13,9 @@ import (
 // Tên task.
 const (
 	TypeVoiceProcess = "voice:process"
+	// TypeVoiceText đọc thẳng đoạn text người dùng gõ, không có Bài Post nào
+	// đứng sau (xem migration 000011).
+	TypeVoiceText = "voice:text"
 	// TypePostMetadata lấy metadata gốc của Bài Post vừa tạo (không tạo voice).
 	TypePostMetadata = "post:metadata"
 	TypeVoicePublish = "voice:publish"
@@ -55,6 +58,13 @@ type VoiceProcessPayload struct {
 	VoiceID string `json:"voice_id,omitempty"`
 }
 
+// VoiceTextPayload: mọi thứ cần để đọc đã nằm trên chính record voice
+// (input_text, collect_mode, prompt_id), nên payload chỉ cần trỏ tới nó.
+type VoiceTextPayload struct {
+	VoiceID string `json:"voice_id"`
+	ActorID string `json:"actor_id"`
+}
+
 type PostMetadataPayload struct {
 	SourcePostID string `json:"source_post_id"`
 }
@@ -78,6 +88,10 @@ type MaintenanceCleanupPayload struct{}
 
 func NewVoiceProcess(p VoiceProcessPayload) (*asynq.Task, error) {
 	return newTask(TypeVoiceProcess, p, QueueDefault)
+}
+
+func NewVoiceText(p VoiceTextPayload) (*asynq.Task, error) {
+	return newTask(TypeVoiceText, p, QueueDefault)
 }
 
 func NewPostMetadata(p PostMetadataPayload) (*asynq.Task, error) {

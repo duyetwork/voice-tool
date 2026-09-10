@@ -13,13 +13,13 @@ import type { User } from "@/types/api";
 const NAV = [
   {
     group: "Tạo voice",
-    items: [{ href: "/on-demand", label: "F1 — Theo yêu cầu" }],
+    items: [{ href: "/on-demand", label: "Tạo voice" }],
   },
   {
     group: "Danh sách kênh",
     items: [
-      { href: "/lists/breaking", label: "F2 — Breaking" },
-      { href: "/lists/scheduled", label: "F3 — Định kỳ" },
+      { href: "/lists/breaking", label: "Danh sách kênh Breaking" },
+      { href: "/lists/scheduled", label: "Danh sách kênh Định kỳ" },
     ],
   },
   {
@@ -70,7 +70,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen">
       <aside className="w-64 shrink-0 border-r border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-5 py-4">
-          <p className="text-sm font-semibold text-slate-900">Voice Automation</p>
+          <p className="text-lg font-semibold text-slate-900">Voice Automation</p>
           <p className="text-xs text-slate-500">Danh sách → Bài Post → Voice</p>
         </div>
 

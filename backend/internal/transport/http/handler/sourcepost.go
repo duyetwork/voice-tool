@@ -22,6 +22,8 @@ type SourcePost struct {
 func NewSourcePost(svc *service.SourcePost) *SourcePost { return &SourcePost{svc: svc} }
 
 type createSourcePostRequest struct {
+	// Text gõ tay KHÔNG đi qua đây mà đi thẳng `POST /voices`: nó không có bài
+	// gốc nào để Bài Post truy vết về.
 	SourceURL   string     `json:"source_url" binding:"required,url"`
 	CollectMode string     `json:"collect_mode" binding:"required,oneof=A B C"`
 	PromptID    *uuid.UUID `json:"prompt_id"`

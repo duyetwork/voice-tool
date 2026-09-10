@@ -100,7 +100,7 @@ Không có `POST /auth/register`. Lỗi đăng nhập:
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| POST | `/source-posts` | Luồng F1. Body: `source_url`, `collect_mode` (A/B/C), `prompt_id?`, `language?` (mặc định `auto`), `platform?` (bỏ trống = tự nhận diện từ URL), `auto_process?` (mặc định `true`). Tự enqueue `post:metadata` để lấy nội dung/hashtag/ảnh bìa |
+| POST | `/source-posts` | Luồng F1 từ URL. Body: `source_url`, `collect_mode` (A/B/C), `prompt_id?`, `language?` (mặc định `auto`), `platform?` (bỏ trống = tự nhận diện từ URL), `auto_process?` (mặc định `true`). Tự enqueue `post:metadata` để lấy nội dung/hashtag/ảnh bìa. **Text gõ tay không đi đường này** — xem `POST /voices` |
 | GET | `/source-posts` | Query: `source_type`, `status`, `platform`, `collect_mode`, `language`, `created_by`, `created_from`, `created_to` (`YYYY-MM-DD`), `list_breaking_id`, `list_scheduled_id`, `limit`, `offset`. Mỗi item kèm `created_by_email` |
 | GET | `/source-posts/:id` | |
 | PATCH | `/source-posts/:id` | Sửa `collect_mode`, `prompt_id`, `language` — chỉ khi chưa `processing` |
@@ -130,6 +130,20 @@ curl -X POST http://localhost:8080/api/v1/source-posts \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"source_url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","collect_mode":"B","language":"vi"}'
 ```
+
+### Hai kiểu nhập liệu đi hai đường khác nhau
+
+| Nhập | Endpoint | Ra cái gì | Hình thức dùng được |
+|---|---|---|---|
+| URL bài đăng | `POST /source-posts` | **Bài Post** (rồi Voice nếu `auto_process`) | A, B, C |
+| Text gõ tay | `POST /voices` | **Voice thẳng**, không có Bài Post | B, C — không có audio gốc để tách nên không dùng được A |
+
+Text gõ tay **không** tạo Bài Post (khác với bản trước). Business rule #1 vẫn
+đúng ở chỗ nó có ý nghĩa: Voice lấy từ một URL luôn phải đi qua Bài Post để
+truy vết về bài gốc và để chạy lại với mode/prompt khác mà không fetch lại.
+Text gõ tay không có URL, không có bài gốc, không có gì để fetch lại — Bài Post
+sinh ra chỉ là bản ghi rỗng làm bẩn màn duyệt Bài Post (nơi để duyệt trước khi
+tốn tiền AI). Xem migration `000011`, ràng buộc `ck_voice_origin`.
 
 ### Metadata lấy khi TẠO bài, không phải khi chạy Voice
 
@@ -190,14 +204,28 @@ giải thích thay vì HTTP 400 khó hiểu.
 - `caption` của API tồn tại nhưng hệ thống **không gửi**: giao diện multime chỉ
   đọc `title`, form đăng của chính họ luôn gửi caption rỗng.
 
-### `last_error` là câu ngắn, không phải stderr
+### `last_error` nói rõ cái gì hỏng và phải làm gì
 
-`last_error` của Bài Post và Voice luôn là 1 câu tiếng Việt, ví dụ *"Bài này bị
-nền tảng chặn, phải đăng nhập mới xem được — cần cấu hình cookies cho yt-dlp"*
-hoặc *"Link này không có video/audio để tách — dùng hình thức B hoặc C để đọc
-phần text"*. Nguyên văn lỗi (stderr yt-dlp, exit code, URL) chỉ đi vào log của
-worker. Lỗi thuộc loại retry vô nghĩa (bài bị xoá, riêng tư, không có media)
-được đánh dấu `PermanentError` nên Asynq không thử lại.
+`last_error` của Bài Post và Voice là 1 câu tiếng Việt chỉ ra nguyên nhân cụ
+thể và hành động tiếp theo, ví dụ:
+
+| Tình huống | `last_error` |
+|---|---|
+| Bài bị nền tảng chặn | *"Bài này bị nền tảng chặn, phải đăng nhập mới xem được — cần cấu hình cookies cho yt-dlp"* |
+| API key TTS sai | *"API key 3voices không hợp lệ hoặc đã bị thu hồi — khai lại key ở mục AI Engine (3voices: Invalid API key)"* |
+| Hết credit 3voices | *"Tài khoản 3voices hết credit — nạp thêm rồi chạy lại"* |
+| Vượt rate limit | *"3voices báo vượt giới hạn số request — hệ thống sẽ tự thử lại sau"* |
+| Bài không có chữ nào | *"Bài này không có phụ đề lẫn nội dung text để đọc"* |
+
+Nguyên văn lỗi (stderr yt-dlp, exit code, body của nhà cung cấp) chỉ đi vào log
+của worker. Lỗi không khớp trường hợp nào ở trên thì trả **nguyên văn dòng đầu
+đã cắt ngắn** chứ không nuốt thành câu chung chung kiểu "lỗi hệ thống, xem log":
+người dùng không đọc được log của server, và một câu như thế biến mọi sự cố
+khác nhau thành cùng một chữ.
+
+Lỗi thuộc loại retry vô nghĩa (bài bị xoá, key sai, hết credit, text quá dài)
+được đánh dấu `PermanentError` nên Asynq không thử lại; lỗi mạng, 429 và 5xx thì
+có retry (3 lần, backoff 30s/60s/120s).
 
 ### Chống trùng theo ID bài đăng
 
@@ -256,10 +284,12 @@ path và yt-dlp là bên quyết định tải được hay không.
 
 | Method | Path | Ghi chú |
 |---|---|---|
+| POST | `/voices` | **Chỉ nhận text gõ tay.** Body: `text` (bắt buộc, tối đa 20.000 ký tự), `collect_mode` (`B` hoặc `C`), `prompt_id?` (bắt buộc với C), `language?`. Trả về Voice ở trạng thái `processing` rồi enqueue `voice:text` — không tạo Bài Post nào. Voice từ URL vẫn đi qua `/source-posts` |
 | GET | `/voices` | Query: `publish_status`, `source_post_id`, `platform`, `language`, `created_by`, `created_from`, `created_to`, `published_from`, `published_to`, `limit`, `offset`. Mỗi item kèm `platform`, `source_url`, `source_title`, `created_by_email` |
 | GET | `/voices/:id` | |
 | GET | `/voices/:id/audio` | Trả file voice để nghe thử; `?download=1` để tải về. Nhận token qua header **hoặc** `?token=` — thẻ `<audio>` không gắn được header `Authorization`. `400` nếu voice đã publish (file đã bị xoá theo business rule #2) |
 | PATCH | `/voices/:id` | Sửa `title`, `hashtag`, `language`, `image_url`. `409` nếu đã publish, `400` nếu còn `processing` hoặc `title` quá 200 ký tự |
+| POST | `/voices/:id/regenerate` | **Sửa lời đọc rồi đọc lại chính voice đó** (ghi đè file cũ). Body: `text` (bắt buộc), `collect_mode` (`B`/`C`), `prompt_id?`, `language?` → `202` + voice ở trạng thái `processing`. `409` nếu đã publish, `400` nếu đang `processing` |
 | POST | `/voices/:id/ready` | `draft` → `ready` (đã duyệt, chờ đăng) |
 | POST | `/voices/:id/publish` | → `202`. Enqueue `voice:publish` |
 | DELETE | `/voices/:id` | Xoá cả file trên storage nếu còn. **Chỉ admin** |
@@ -341,10 +371,57 @@ Post tạo ra trong 1 vòng quét — chặn nổ chi phí AI khi kênh đăng �
 |---|---|
 | POST / GET / PATCH | `/prompts`, `/prompts/:id` |
 | DELETE | `/prompts/:id` — **chỉ admin** |
-| POST / GET / PATCH | `/ai-engines`, `/ai-engines/:id` |
-| DELETE | `/ai-engines/:id` — **chỉ admin** |
+| POST / GET / PATCH / DELETE | `/ai-engines`, `/ai-engines/:id` |
 
-`GET /ai-engines?only_active=true` để lọc engine đang bật.
+### AI Engine = API key TTS của từng người
+
+Chỉ còn 1 nhà cung cấp TTS (3voices) nên `/ai-engines` không dùng để *chọn*
+engine nữa, mà để mỗi người khai **API key của chính mình**: worker chạy TTS
+bằng key của người tạo voice, nên quota và hoá đơn về đúng người đó.
+
+Bản ghi chỉ còn 4 thông tin: key, **chủ sở hữu** (`user_id` — voice của người
+này đọc bằng key này), **người khai** (`created_by` — khác chủ khi admin khai
+hộ) và `last_used_at`. Tên gọi / provider / danh sách ngôn ngữ đã bỏ ở
+migration `000010`: chỉ có 1 nhà cung cấp thì không có gì để đặt tên, còn danh
+sách ngôn ngữ hỏi thẳng provider chính xác hơn là khai tay.
+
+- `POST` body: `api_key` (bắt buộc), `user_ids?`.
+  **Trả về mảng** `{"items": [...]}` — admin gán 1 key cho nhiều người thì mỗi
+  người là một bản ghi riêng, nên sau này đổi/thu hồi key của từng người mà
+  không đụng người còn lại. `user_ids` rỗng = key của chính mình.
+- `PATCH` body: `api_key?`, `user_id?` (chuyển key sang người khác).
+- **API key không bao giờ được trả về.** Response chỉ có `api_key_masked`
+  (4 ký tự cuối); key lưu trong DB đã mã hoá AES-256-GCM bằng
+  `TOKEN_ENCRYPTION_KEY`, cùng cơ chế với token multime.
+- **`api_key` bỏ trống khi `PATCH` = giữ key cũ**, không phải xoá key — form
+  không hiển thị key thật nên không có gì để gửi lại.
+- **Quyền theo chủ sở hữu, không theo route:** admin xem/sửa/xoá key của mọi
+  người và gán được key cho người khác (`user_ids` / `user_id`); các vai trò
+  khác — kể cả `editor` — chỉ thấy và sửa key của chính mình, và `user_ids`
+  gửi lên bị bỏ qua chứ không phải báo lỗi. Đụng vào key người khác trả `403`.
+  Vì vậy `DELETE /ai-engines/:id` nằm ở nhóm "write" chứ không phải "chỉ
+  admin" như các `DELETE` khác: key là của chính người dùng.
+- `GET /ai-engines?user_id=<uuid>` lọc theo chủ sở hữu — chỉ có tác dụng với
+  admin.
+- `last_used_at` chỉ được đóng dấu khi TTS chạy **thành công**: key sai mà vẫn
+  hiện "vừa dùng" thì người dùng tưởng key còn sống.
+
+Voice chạy hình thức B/C mà chủ nhân chưa khai key thì job dừng với câu
+*"Bạn chưa khai API key TTS — vào mục AI Engine thêm key 3voices rồi chạy lại"*
+(trừ khi `.env` có key chung `THREEVOICES_API_KEY` làm dự phòng).
+
+### Sửa lời đọc rồi tạo lại voice
+
+`POST /voices/:id/regenerate` dùng cho cả Voice gõ tay lẫn Voice sinh từ Bài
+Post. Thứ được sửa là **lời đọc** (`voice.input_text`), KHÔNG phải bài gốc trên
+nền tảng — bài đó là dữ liệu của người khác.
+
+- Có `input_text` thì worker đọc đúng nó và **không fetch lại nguồn**; nhờ vậy
+  sửa xong là ra đúng lời mình chốt, không bị caption mới đè lên.
+- Ghi đè lên chính bản ghi cũ (không tạo dòng mới): tiêu đề/hashtag/ảnh bìa đã
+  điền vẫn giữ, và bảng không mọc thêm voice rác. File audio cũ bị xoá khỏi
+  storage **sau khi** file mới ghi xong.
+- Voice đã publish thì từ chối (`409`): bài bên multime đã có người nghe.
 
 ## Nhật ký thao tác
 
@@ -369,4 +446,4 @@ Append-only — không có endpoint sửa/xoá.
 |---|---|---|
 | GET | `/healthz` | Không cần auth |
 | GET | `/meta/platforms` | Danh sách nền tảng đang được tích hợp |
-| GET | `/meta/collect-modes` | `[{mode, enabled}]` — hình thức thu thập nào đang bật (`ENABLED_COLLECT_MODES`) |
+| GET | `/meta/collect-modes` | `[{mode, enabled, reason?}]` — hình thức nào đang bật. `reason` chỉ có khi tắt và nói rõ vì sao: người vận hành tự tắt trong `ENABLED_COLLECT_MODES`, hoặc thiếu provider (mode C mà `LLM_PROVIDER=mock` thì không có gì viết lại nội dung) |

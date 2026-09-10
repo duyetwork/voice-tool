@@ -400,7 +400,7 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
       onClose={onClose}
     >
       <form onSubmit={submit} className="space-y-4">
-        <Field label="URL kênh nguồn">
+        <Field label="URL kênh nguồn" required>
           <Input
             type="url"
             placeholder="https://www.youtube.com/@kenh"
@@ -453,7 +453,7 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label="Hình thức thu thập"
-            hint="B và C cần TTS/LLM thật nên chưa mở — hiện chỉ dùng được A."
+            hint="B và C đọc bằng TTS 3voices — cần API key khai ở mục AI Engine (C cần thêm Prompt mẫu)."
           >
             <Select
               value={collectMode}
@@ -483,7 +483,7 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         {needsPrompt ? (
-          <Field label="Prompt mẫu">
+          <Field label="Prompt mẫu" required>
             <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
               <option value="">— Chọn prompt —</option>
               {prompts.data?.items.map((p) => (

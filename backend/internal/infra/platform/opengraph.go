@@ -124,7 +124,7 @@ func parseOpenGraph(page string) domain.PostMetadata {
 
 	return domain.PostMetadata{
 		Title:        content,
-		Hashtags:     ExtractHashtags(title+"\n"+description, nil),
+		Hashtags:     domain.ExtractHashtags(title+"\n"+description, nil),
 		ThumbnailURL: pick("og:image", "og:image:secure_url", "twitter:image"),
 		AuthorName:   pick("og:site_name", "author", "article:author"),
 		PostedAt:     parseOGTime(pick("article:published_time", "og:updated_time")),

@@ -47,7 +47,7 @@ export default function PromptsPage() {
             <CardHeader title="Thêm prompt" />
             <CardBody>
               <form onSubmit={submit} className="space-y-4">
-                <Field label="Tên">
+                <Field label="Tên" required>
                   <Input
                     value={name}
                     onChange={(e) => setName(e.target.value)}

@@ -8,8 +8,8 @@ INSERT INTO source_post (
   sqlc.arg('source_type'), sqlc.narg('list_breaking_id'), sqlc.narg('list_scheduled_id'),
   sqlc.arg('source_url'), sqlc.arg('platform'), sqlc.narg('content_type'),
   sqlc.narg('post_id_extracted'), sqlc.narg('extracted_text'), sqlc.arg('collect_mode'),
-  sqlc.narg('prompt_id'), sqlc.arg('language'), sqlc.arg('status'), sqlc.arg('created_by'),
-  sqlc.narg('title'),
+  sqlc.narg('prompt_id'), sqlc.arg('language'), sqlc.arg('status'),
+  sqlc.arg('created_by'), sqlc.narg('title'),
   COALESCE(sqlc.narg('hashtags')::text[], '{}'),
   sqlc.narg('thumbnail_url'), sqlc.narg('author_name'), sqlc.narg('posted_at')
 )

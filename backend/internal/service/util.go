@@ -110,7 +110,7 @@ func enqueueVoiceProcess(
 	actor uuid.UUID,
 ) (repository.Voice, error) {
 	voice, err := q.CreateVoice(ctx, repository.CreateVoiceParams{
-		SourcePostID:  post.ID,
+		SourcePostID:  &post.ID,
 		Language:      post.Language,
 		PublishStatus: domain.PublishProcessing,
 		Title:         nilIfEmpty(domain.VoiceTitle(deref(post.Title))),

@@ -1,6 +1,9 @@
 package domain
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 var (
 	ErrNotFound         = errors.New("not found")
@@ -12,7 +15,10 @@ var (
 	ErrNoVoiceFile      = errors.New("voice không còn file (đã publish)")
 	ErrAlreadyPublished = errors.New("voice đã được publish")
 	ErrUnauthorized     = errors.New("unauthorized")
-	ErrRegexInvalid     = errors.New("regex pattern không hợp lệ")
+	// ErrForbidden: đã đăng nhập nhưng không được đụng vào dữ liệu của người
+	// khác (ví dụ API key TTS của user khác).
+	ErrForbidden    = errors.New("forbidden")
+	ErrRegexInvalid = errors.New("regex pattern không hợp lệ")
 	// ErrDuplicate: đã có Bài Post cho đúng ID bài đăng này (dedup theo
 	// (platform, post_id_extracted), không theo URL).
 	ErrDuplicate       = errors.New("bài đăng đã có trong hệ thống")
@@ -85,23 +91,49 @@ var userMessages = []struct {
 	{ErrDuplicate, "Bài đăng này đã có trong hệ thống"},
 }
 
+// maxUserMessageRunes giới hạn độ dài câu lỗi hiện lên UI. Đủ để đọc được nhà
+// cung cấp nào nói gì, không đủ để nguyên trang stderr của yt-dlp tràn ra bảng.
+const maxUserMessageRunes = 300
+
 // UserMessage rút ra câu ngắn để lưu vào `last_error` và hiện lên UI.
 //
-// Ưu tiên UserError gần nhất trong chuỗi lỗi; không có thì map theo sentinel;
-// cuối cùng mới trả câu chung chung — thà nói "xem log" còn hơn dội cả stderr
-// của yt-dlp vào mặt người dùng.
+// Ưu tiên UserError gần nhất trong chuỗi lỗi (câu đã viết sẵn cho người dùng);
+// không có thì map theo sentinel; cuối cùng mới dùng chính nội dung lỗi.
+//
+// KHÔNG trả câu chung chung kiểu "lỗi hệ thống, xem log": người dùng không đọc
+// được log của server, và một dòng như thế biến mọi sự cố khác nhau — key sai,
+// hết credit, bài không có text — thành cùng một chữ. Thà đưa nguyên văn lỗi
+// kỹ thuật đã cắt ngắn còn hơn, vì ít nhất nó nói được cái gì hỏng.
 func UserMessage(err error) string {
 	if err == nil {
 		return ""
 	}
 	var ue *UserError
 	if errors.As(err, &ue) {
-		return ue.Msg
+		return truncateMessage(ue.Msg)
 	}
 	for _, m := range userMessages {
 		if errors.Is(err, m.target) {
 			return m.msg
 		}
 	}
-	return "Xử lý thất bại do lỗi hệ thống — xem log để biết chi tiết"
+	return truncateMessage(firstLine(err.Error()))
+}
+
+// firstLine lấy dòng đầu của lỗi: stderr nhiều dòng thì dòng đầu là nguyên
+// nhân, phần sau là stack/tham số chỉ có ích trong log.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "\r\n"); i > 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
+}
+
+func truncateMessage(s string) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= maxUserMessageRunes {
+		return string(r)
+	}
+	return string(r[:maxUserMessageRunes]) + "…"
 }

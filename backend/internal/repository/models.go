@@ -12,12 +12,14 @@ import (
 )
 
 type AiEngine struct {
-	ID                 uuid.UUID `json:"id"`
-	Name               string    `json:"name"`
-	Provider           string    `json:"provider"`
-	SupportedLanguages []string  `json:"supported_languages"`
-	IsActive           bool      `json:"is_active"`
-	CreatedAt          time.Time `json:"created_at"`
+	ID              uuid.UUID  `json:"id"`
+	Provider        string     `json:"provider"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ApiKeyEncrypted string     `json:"api_key_encrypted"`
+	VoiceID         *string    `json:"voice_id"`
+	CreatedBy       uuid.UUID  `json:"created_by"`
+	UserID          uuid.UUID  `json:"user_id"`
+	LastUsedAt      *time.Time `json:"last_used_at"`
 }
 
 type AppUser struct {
@@ -127,7 +129,7 @@ type SourcePost struct {
 
 type Voice struct {
 	ID              uuid.UUID  `json:"id"`
-	SourcePostID    uuid.UUID  `json:"source_post_id"`
+	SourcePostID    *uuid.UUID `json:"source_post_id"`
 	AiEngineID      *uuid.UUID `json:"ai_engine_id"`
 	VoiceFileUrl    *string    `json:"voice_file_url"`
 	DurationSeconds *int32     `json:"duration_seconds"`
@@ -144,4 +146,7 @@ type Voice struct {
 	MimeType        *string    `json:"mime_type"`
 	SizeBytes       *int64     `json:"size_bytes"`
 	SampleRate      *int32     `json:"sample_rate"`
+	InputText       *string    `json:"input_text"`
+	CollectMode     *string    `json:"collect_mode"`
+	PromptID        *uuid.UUID `json:"prompt_id"`
 }

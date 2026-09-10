@@ -17,6 +17,7 @@ import (
 
 	"github.com/strongbody/voice-tool/backend/internal/config"
 	"github.com/strongbody/voice-tool/backend/internal/domain"
+	"github.com/strongbody/voice-tool/backend/internal/pkg/secret"
 	"github.com/strongbody/voice-tool/backend/internal/repository"
 )
 
@@ -25,36 +26,44 @@ import (
 type Engine struct {
 	q         *repository.Queries
 	platforms domain.PlatformRegistry
-	tts       domain.TTSProvider
-	stt       domain.STTProvider
-	llm       domain.LLMProvider
-	storage   domain.Storage
-	prober    domain.AudioProber
-	multime   domain.MultimeClient
-	creds     *MultimeCreds
-	enq       domain.Enqueuer
-	audit     *Audit
-	log       *slog.Logger
+	// tts là provider dự phòng cấu hình trong .env (mock khi dev). Đường chính
+	// là API key của từng user ở bảng ai_engine — xem ttsFor.
+	tts        domain.TTSProvider
+	ttsFactory domain.TTSFactory
+	box        *secret.Box
+	stt        domain.STTProvider
+	llm        domain.LLMProvider
+	storage    domain.Storage
+	prober     domain.AudioProber
+	multime    domain.MultimeClient
+	creds      *MultimeCreds
+	enq        domain.Enqueuer
+	audit      *Audit
+	log        *slog.Logger
 }
 
 type EngineDeps struct {
 	Queries   *repository.Queries
 	Platforms domain.PlatformRegistry
 	TTS       domain.TTSProvider
-	STT       domain.STTProvider
-	LLM       domain.LLMProvider
-	Storage   domain.Storage
-	Prober    domain.AudioProber
-	Multime   domain.MultimeClient
-	Creds     *MultimeCreds
-	Enqueuer  domain.Enqueuer
-	Audit     *Audit
-	Logger    *slog.Logger
+	// TTSFactory dựng provider từ API key của user (bảng ai_engine).
+	TTSFactory domain.TTSFactory
+	Secret     *secret.Box
+	STT        domain.STTProvider
+	LLM        domain.LLMProvider
+	Storage    domain.Storage
+	Prober     domain.AudioProber
+	Multime    domain.MultimeClient
+	Creds      *MultimeCreds
+	Enqueuer   domain.Enqueuer
+	Audit      *Audit
+	Logger     *slog.Logger
 }
 
 func NewEngine(d EngineDeps) *Engine {
 	return &Engine{
-		q: d.Queries, platforms: d.Platforms, tts: d.TTS, stt: d.STT, llm: d.LLM,
+		q: d.Queries, platforms: d.Platforms, tts: d.TTS, ttsFactory: d.TTSFactory,
+		box: d.Secret, stt: d.STT, llm: d.LLM,
 		storage: d.Storage, prober: d.Prober, multime: d.Multime, creds: d.Creds,
 		enq: d.Enqueuer, audit: d.Audit, log: d.Logger,
 	}
@@ -77,6 +86,12 @@ func (e *Engine) FetchPostMetadata(ctx context.Context, postID uuid.UUID) error 
 	post, err := e.q.GetSourcePost(ctx, postID)
 	if err != nil {
 		return fmt.Errorf("đọc source_post %s: %w", postID, err)
+	}
+
+	// Bài nhập tay bằng text không có URL để fetch: metadata (tiêu đề, hashtag)
+	// đã dựng ngay lúc tạo bài từ chính text đó.
+	if isTextPost(post) {
+		return nil
 	}
 
 	adapter, err := e.platforms.Get(domain.Platform(post.Platform))
@@ -195,21 +210,37 @@ func (e *Engine) buildVoice(
 			fmt.Errorf("%w: collect_mode %q", domain.ErrInvalidInput, post.CollectMode))
 	}
 
-	adapter, err := e.platforms.Get(domain.Platform(post.Platform))
-	if err != nil {
-		return repository.Voice{}, domain.Permanent(err)
-	}
-
+	// Bài nhập tay bằng text đi đường riêng: không có URL, không có adapter,
+	// nội dung chính là text người dùng đã gõ.
 	postID := deref(post.PostIDExtracted)
-	if postID == "" {
-		return repository.Voice{}, domain.Permanent(
-			fmt.Errorf("%w: bài post chưa có post_id_extracted", domain.ErrInvalidInput))
-	}
-
-	fetched, err := adapter.FetchContent(ctx,
-		domain.PostRef{URL: post.SourceUrl, PostID: postID}, mode)
-	if err != nil {
-		return repository.Voice{}, fmt.Errorf("fetch nội dung từ %s: %w", post.Platform, err)
+	var (
+		fetched domain.FetchedContent
+		err     error
+	)
+	if isTextPost(post) {
+		if mode == domain.ModeExtract {
+			return repository.Voice{}, domain.Permanent(fmt.Errorf(
+				"%w: bài nhập bằng text không có audio gốc để tách, dùng hình thức B hoặc C",
+				domain.ErrInvalidInput))
+		}
+		fetched, err = textContent(post)
+		if err != nil {
+			return repository.Voice{}, err
+		}
+	} else {
+		adapter, aerr := e.platforms.Get(domain.Platform(post.Platform))
+		if aerr != nil {
+			return repository.Voice{}, domain.Permanent(aerr)
+		}
+		if postID == "" {
+			return repository.Voice{}, domain.Permanent(
+				fmt.Errorf("%w: bài post chưa có post_id_extracted", domain.ErrInvalidInput))
+		}
+		fetched, err = adapter.FetchContent(ctx,
+			domain.PostRef{URL: post.SourceUrl, PostID: postID}, mode)
+		if err != nil {
+			return repository.Voice{}, fmt.Errorf("fetch nội dung từ %s: %w", post.Platform, err)
+		}
 	}
 
 	// KHÔNG ghi metadata lên Bài Post ở đây: việc đó thuộc task post:metadata
@@ -263,7 +294,7 @@ func (e *Engine) buildVoice(
 			e.log.WarnContext(ctx, "không lưu được extracted_text", "error", err, "source_post_id", post.ID)
 		}
 
-		engine, err := e.pickEngine(ctx, language)
+		provider, engine, err := e.ttsFor(ctx, actor, language)
 		if err != nil {
 			return repository.Voice{}, err
 		}
@@ -277,9 +308,19 @@ func (e *Engine) buildVoice(
 		if domain.IsAutoLanguage(ttsLang) {
 			ttsLang = ""
 		}
-		audio, err = e.tts.Synthesize(ctx, spoken, ttsLang)
+		audio, err = provider.Synthesize(ctx, spoken, ttsLang)
 		if err != nil {
-			return repository.Voice{}, fmt.Errorf("TTS (%s): %w", e.tts.Name(), err)
+			return repository.Voice{}, fmt.Errorf("TTS (%s): %w", provider.Name(), err)
+		}
+
+		// Đóng dấu key vừa đọc xong — cột "dùng gần đây" ở màn AI Engine. Chỉ
+		// đánh dấu khi TTS THÀNH CÔNG: key sai mà vẫn hiện "vừa dùng" thì người
+		// dùng tưởng key còn sống. Ghi hỏng cũng không ảnh hưởng voice.
+		if engineID != nil {
+			if err := e.q.TouchAIEngineUsed(ctx, *engineID); err != nil {
+				e.log.WarnContext(ctx, "không ghi được last_used_at của API key",
+					"error", err, "ai_engine_id", *engineID)
+			}
 		}
 	}
 
@@ -287,21 +328,7 @@ func (e *Engine) buildVoice(
 		return repository.Voice{}, fmt.Errorf("không tạo được dữ liệu audio")
 	}
 
-	// Đo metadata kỹ thuật — multime.ai cần duration/size/mime/sample_rate để
-	// tạo audio asset. Lỗi ffprobe không chặn luồng, chỉ mất metadata.
-	info := domain.AudioInfo{SizeBytes: int64(len(audio)), MimeType: "audio/mpeg"}
-	if e.prober != nil {
-		probed, err := e.prober.Probe(ctx, audio)
-		if err != nil {
-			e.log.WarnContext(ctx, "không đo được metadata audio",
-				"error", err, "source_post_id", post.ID)
-		} else {
-			info = probed
-		}
-	}
-	if info.MimeType == "" || info.MimeType == "application/octet-stream" {
-		info.MimeType = "audio/mpeg"
-	}
+	info := e.probe(ctx, audio, voiceID)
 
 	key := fmt.Sprintf("voices/%s/%s-%d.mp3", post.ID, postID, time.Now().Unix())
 	fileURL, err := e.storage.Put(ctx, key, audio, info.MimeType)
@@ -341,7 +368,7 @@ func (e *Engine) buildVoice(
 	}
 
 	voice, err := e.q.CreateVoice(ctx, repository.CreateVoiceParams{
-		SourcePostID:    post.ID,
+		SourcePostID:    &post.ID,
 		AiEngineID:      engineID,
 		VoiceFileUrl:    &fileURL,
 		DurationSeconds: nilIfZero(int32(info.DurationSeconds)),
@@ -414,8 +441,10 @@ func (e *Engine) audioFor(ctx context.Context, fetched domain.FetchedContent) ([
 	return data, nil
 }
 
-// textFor lấy text cho Mode B/C. Ưu tiên caption/transcript từ nền tảng, không
-// có thì nghe audio qua STT; Mode C viết lại qua LLM theo Prompt mẫu.
+// textFor lấy text cho Mode B/C: caption/phụ đề nền tảng trả về, không có thì
+// nghe audio gốc qua STT, cuối cùng mới tới text đã lưu từ lần chạy trước.
+//
+// Mode C viết lại phần text lấy được qua LLM theo Prompt mẫu.
 //
 // Trả về (text nguồn, text sẽ đọc). Mode B hai giá trị bằng nhau; mode C giá
 // trị thứ hai là bản LLM đã viết lại.
@@ -442,16 +471,30 @@ func (e *Engine) textFor(
 		return "", "", domain.Permanent(domain.ErrNoTextExtracted)
 	}
 
+	return e.rewriteIfNeeded(ctx, post.PromptID, mode, sourceText)
+}
+
+// rewriteIfNeeded là bước cuối chung cho mọi nguồn text: mode B đọc nguyên
+// văn, mode C đưa qua LLM theo Prompt mẫu trước.
+//
+// Tách riêng vì text giờ tới từ 2 đường (Bài Post và Voice gõ tay) nhưng luật
+// "mode C thì viết lại" chỉ được có một bản cài đặt.
+func (e *Engine) rewriteIfNeeded(
+	ctx context.Context,
+	promptID *uuid.UUID,
+	mode domain.CollectMode,
+	sourceText string,
+) (string, string, error) {
 	if mode != domain.ModePromptToVoice {
 		return sourceText, sourceText, nil
 	}
 
-	if post.PromptID == nil {
+	if promptID == nil {
 		return "", "", domain.Permanent(domain.ErrPromptRequired)
 	}
-	prompt, err := e.q.GetPrompt(ctx, *post.PromptID)
+	prompt, err := e.q.GetPrompt(ctx, *promptID)
 	if err != nil {
-		return "", "", domain.Permanent(wrapNotFound(err, "prompt "+post.PromptID.String()))
+		return "", "", domain.Permanent(wrapNotFound(err, "prompt "+promptID.String()))
 	}
 
 	generated, err := e.llm.Generate(ctx, prompt.Content, sourceText)
@@ -465,25 +508,80 @@ func (e *Engine) textFor(
 	return sourceText, generated, nil
 }
 
-// pickEngine chọn AI Engine và validate ngôn ngữ (specs 3.3). Chưa cấu hình
-// engine nào thì bỏ qua, dùng provider mặc định trong .env.
-func (e *Engine) pickEngine(ctx context.Context, language string) (*repository.AiEngine, error) {
-	engine, err := e.q.GetDefaultAIEngine(ctx)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+// ttsFor chọn API key TTS dùng cho voice này: key của chính người tạo voice.
+//
+// Vì sao theo người tạo mà không phải một key chung: mỗi người tự khai key của
+// mình ở màn AI Engine, nên quota và hoá đơn 3voices rơi đúng vào người dùng
+// nó. Admin xem được key của mọi người nhưng vẫn chạy bằng key của mình.
+//
+// Chưa khai key thì rơi về provider cấu hình trong .env — thực tế chỉ có ở dev
+// (TTS_PROVIDER=mock). Production không đặt key chung, nên không có key nghĩa
+// là lỗi vĩnh viễn kèm câu hướng dẫn, chờ người dùng khai key rồi chạy lại.
+func (e *Engine) ttsFor(
+	ctx context.Context,
+	owner uuid.UUID,
+	language string,
+) (domain.TTSProvider, *repository.AiEngine, error) {
+	engine, err := e.q.GetAIEngineForUser(ctx, owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if e.tts == nil {
+			return nil, nil, domain.Permanent(domain.Explain(
+				"Bạn chưa khai API key TTS — vào mục AI Engine thêm key 3voices rồi chạy lại",
+				fmt.Errorf("%w: user %s chưa có ai_engine", domain.ErrInvalidInput, owner)))
 		}
-		return nil, fmt.Errorf("lấy ai_engine mặc định: %w", err)
+		e.log.WarnContext(ctx, "user chưa khai API key TTS, dùng provider mặc định trong .env",
+			"user_id", owner, "provider", e.tts.Name())
+		return e.tts, nil, nil
 	}
-	// Chưa chốt ngôn ngữ thì không có gì để validate — engine tự xử.
-	if domain.IsAutoLanguage(language) {
-		return &engine, nil
+	if err != nil {
+		return nil, nil, fmt.Errorf("lấy ai_engine của user %s: %w", owner, err)
 	}
-	if !languageSupported(language, engine.SupportedLanguages) {
-		return nil, domain.Permanent(fmt.Errorf("%w: engine %s không hỗ trợ %s",
-			domain.ErrLangUnsupported, engine.Name, language))
+
+	apiKey, err := e.box.Decrypt(engine.ApiKeyEncrypted)
+	if err != nil {
+		return nil, nil, domain.Permanent(domain.Explain(
+			"Không giải mã được API key TTS — khai lại key ở mục AI Engine",
+			fmt.Errorf("giải mã api key ai_engine %s: %w", engine.ID, err)))
 	}
-	return &engine, nil
+
+	provider, err := e.ttsFactory.For(domain.TTSCredential{
+		Provider: engine.Provider,
+		APIKey:   apiKey,
+		VoiceID:  deref(engine.VoiceID),
+	})
+	if err != nil {
+		return nil, nil, domain.Permanent(err)
+	}
+
+	// Ngôn ngữ 'auto' thì không có gì để validate — provider tự xử. Danh sách
+	// ngôn ngữ hỏi thẳng provider chứ không còn khai tay trong DB: nhà cung cấp
+	// là nơi duy nhất biết mình đọc được thứ tiếng nào.
+	if !domain.IsAutoLanguage(language) &&
+		!languageSupported(language, provider.SupportedLanguages()) {
+		return nil, nil, domain.Permanent(fmt.Errorf("%w: %s không đọc được %s",
+			domain.ErrLangUnsupported, provider.Name(), language))
+	}
+	return provider, &engine, nil
+}
+
+// isTextPost: Bài Post nhập tay bằng text (không có URL nguồn, không adapter).
+func isTextPost(post repository.SourcePost) bool {
+	return post.Platform == string(domain.PlatformText)
+}
+
+// textContent dựng nội dung cho Bài Post nhập tay: text người dùng gõ đã nằm
+// sẵn ở extracted_text từ lúc tạo bài, không phải gọi mạng lần nào.
+func textContent(post repository.SourcePost) (domain.FetchedContent, error) {
+	text := domain.NormalizeTTSText(deref(post.ExtractedText))
+	if text == "" {
+		return domain.FetchedContent{}, domain.Permanent(fmt.Errorf(
+			"%w: bài nhập tay không còn nội dung text", domain.ErrNoTextExtracted))
+	}
+	return domain.FetchedContent{
+		ContentType: domain.ContentPost,
+		Text:        text,
+		Meta:        domain.TextPostMetadata(text),
+	}, nil
 }
 
 func (e *Engine) autoPublishFor(ctx context.Context, post repository.SourcePost) (bool, error) {
@@ -504,6 +602,168 @@ func (e *Engine) autoPublishFor(ctx context.Context, post repository.SourcePost)
 		// F1: mặc định tắt — luôn qua bước preview trước khi đăng (specs -1).
 		return false, nil
 	}
+}
+
+// ---------------------------------------------------------------------------
+// voice:text
+// ---------------------------------------------------------------------------
+
+// ProcessTextVoice đọc lời đọc đã chốt trên chính record Voice (`input_text`).
+//
+// Hai trường hợp dùng nó: Voice gõ tay (không có Bài Post nào đứng sau), và
+// Voice được người dùng sửa lời đọc rồi bấm tạo lại — kể cả Voice vốn sinh ra
+// từ Bài Post. Cả hai đều không fetch gì: nội dung đã nằm sẵn, đường đi chỉ còn
+// (LLM nếu mode C) -> TTS -> storage. Mọi bước dùng chung helper với luồng Bài
+// Post, kể cả luật "mode C thì viết lại" và cách chọn API key TTS.
+func (e *Engine) ProcessTextVoice(ctx context.Context, voiceID, actor uuid.UUID) error {
+	// Claim để idempotent khi Asynq retry hoặc 2 worker cùng nhận task; voice
+	// đã ra file rồi thì không đọc đè lên.
+	voice, err := e.q.ClaimVoiceForProcessing(ctx, voiceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			e.log.InfoContext(ctx, "voice:text bỏ qua — voice không ở trạng thái chạy được",
+				"voice_id", voiceID)
+			return nil
+		}
+		return fmt.Errorf("claim voice %s: %w", voiceID, err)
+	}
+
+	if err := e.buildTextVoice(ctx, voice, actor); err != nil {
+		msg := domain.UserMessage(err)
+		e.log.ErrorContext(ctx, "voice:text thất bại", "error", err, "voice_id", voiceID)
+		if _, serr := e.q.SetVoicePublishStatus(ctx, repository.SetVoicePublishStatusParams{
+			ID:            voiceID,
+			PublishStatus: domain.PublishFailed,
+			LastError:     &msg,
+		}); serr != nil {
+			e.log.ErrorContext(ctx, "không cập nhật được voice failed", "error", serr, "voice_id", voiceID)
+		}
+		return err
+	}
+
+	e.audit.Record(ctx, actor, domain.AuditCreate, domain.ObjectVoice, voiceID, map[string]any{
+		"collect_mode": deref(voice.CollectMode),
+		"language":     voice.Language,
+		"source":       "text",
+	})
+	return nil
+}
+
+func (e *Engine) buildTextVoice(
+	ctx context.Context,
+	voice repository.Voice,
+	actor uuid.UUID,
+) error {
+	mode := domain.CollectMode(deref(voice.CollectMode))
+	if !mode.NeedsTTS() {
+		return domain.Permanent(fmt.Errorf(
+			"%w: voice đọc từ text chỉ chạy được hình thức B hoặc C (đang là %q)",
+			domain.ErrInvalidInput, deref(voice.CollectMode)))
+	}
+
+	sourceText := domain.NormalizeTTSText(deref(voice.InputText))
+	if sourceText == "" {
+		return domain.Permanent(domain.Explain(
+			"Voice này không còn nội dung text để đọc",
+			fmt.Errorf("%w: voice %s có input_text rỗng", domain.ErrNoTextExtracted, voice.ID)))
+	}
+
+	_, spoken, err := e.rewriteIfNeeded(ctx, voice.PromptID, mode, sourceText)
+	if err != nil {
+		return err
+	}
+
+	provider, engine, err := e.ttsFor(ctx, actor, voice.Language)
+	if err != nil {
+		return err
+	}
+	var engineID *uuid.UUID
+	if engine != nil {
+		engineID = &engine.ID
+	}
+
+	ttsLang := voice.Language
+	if domain.IsAutoLanguage(ttsLang) {
+		ttsLang = ""
+	}
+	audio, err := provider.Synthesize(ctx, spoken, ttsLang)
+	if err != nil {
+		return fmt.Errorf("TTS (%s): %w", provider.Name(), err)
+	}
+	if engineID != nil {
+		if err := e.q.TouchAIEngineUsed(ctx, *engineID); err != nil {
+			e.log.WarnContext(ctx, "không ghi được last_used_at của API key",
+				"error", err, "ai_engine_id", *engineID)
+		}
+	}
+
+	info := e.probe(ctx, audio, voice.ID)
+
+	key := fmt.Sprintf("voices/text/%s-%d.mp3", voice.ID, time.Now().Unix())
+	fileURL, err := e.storage.Put(ctx, key, audio, info.MimeType)
+	if err != nil {
+		return fmt.Errorf("lưu file voice lên storage: %w", err)
+	}
+
+	// Tiêu đề: chỉ đặt khi voice CHƯA có tiêu đề nào.
+	//
+	// Voice tạo lại thì tiêu đề là thứ người dùng đã sửa tay ở tab Thông tin và
+	// sẽ hiện trên multime — đọc lại lời khác không phải lý do để xoá nó đi.
+	// nil ở đây nghĩa là giữ nguyên (query FinishVoice dùng COALESCE).
+	var title *string
+	if strings.TrimSpace(deref(voice.Title)) == "" {
+		title = nilIfEmpty(domain.VoiceTitle(spoken))
+	}
+
+	if _, err := e.q.FinishVoice(ctx, repository.FinishVoiceParams{
+		ID:              voice.ID,
+		AiEngineID:      engineID,
+		VoiceFileUrl:    &fileURL,
+		DurationSeconds: nilIfZero(int32(info.DurationSeconds)),
+		Title:           title,
+		Language:        voice.Language,
+		MimeType:        nilIfEmpty(info.MimeType),
+		SizeBytes:       ptr(info.SizeBytes),
+		SampleRate:      nilIfZero(int32(info.SampleRate)),
+	}); err != nil {
+		e.cleanupOrphan(ctx, key)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Permanent(fmt.Errorf(
+				"%w: voice %s đã bị xoá trong lúc xử lý", domain.ErrNotFound, voice.ID))
+		}
+		return fmt.Errorf("cập nhật voice: %w", err)
+	}
+
+	// Tạo lại voice: file cũ không còn ai trỏ tới nữa. Xoá SAU khi DB đã ghi
+	// file mới — xoá trước mà ghi hỏng thì voice mất cả file lẫn đường quay lại.
+	if old := deref(voice.VoiceFileUrl); old != "" && old != fileURL {
+		if oldKey := e.storage.KeyFromURL(old); oldKey != "" && oldKey != key {
+			if err := e.storage.Delete(ctx, oldKey); err != nil {
+				e.log.WarnContext(ctx, "không xoá được file voice cũ sau khi tạo lại",
+					"error", err, "voice_id", voice.ID, "key", oldKey)
+			}
+		}
+	}
+	return nil
+}
+
+// probe đo metadata kỹ thuật của audio — multime.ai cần duration/size/mime/
+// sample_rate để tạo audio asset. ffprobe hỏng thì chỉ mất metadata, không
+// chặn luồng.
+func (e *Engine) probe(ctx context.Context, audio []byte, voiceID uuid.UUID) domain.AudioInfo {
+	info := domain.AudioInfo{SizeBytes: int64(len(audio)), MimeType: "audio/mpeg"}
+	if e.prober != nil {
+		probed, err := e.prober.Probe(ctx, audio)
+		if err != nil {
+			e.log.WarnContext(ctx, "không đo được metadata audio", "error", err, "voice_id", voiceID)
+		} else {
+			info = probed
+		}
+	}
+	if info.MimeType == "" || info.MimeType == "application/octet-stream" {
+		info.MimeType = "audio/mpeg"
+	}
+	return info
 }
 
 // ---------------------------------------------------------------------------

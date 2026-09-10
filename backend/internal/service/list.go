@@ -44,7 +44,7 @@ type List struct {
 	audit           *Audit
 	defaultLanguage string
 	scanDefaults    ScanDefaults
-	enabledModes    []domain.CollectMode
+	modes           ModeGate
 }
 
 func NewList(
@@ -54,12 +54,12 @@ func NewList(
 	audit *Audit,
 	defaultLanguage string,
 	scanDefaults ScanDefaults,
-	enabledModes []domain.CollectMode,
+	modes ModeGate,
 ) *List {
 	return &List{
 		q: q, platforms: platforms, enq: enq, audit: audit,
 		defaultLanguage: defaultLanguage, scanDefaults: scanDefaults,
-		enabledModes: enabledModes,
+		modes: modes,
 	}
 }
 
@@ -87,7 +87,7 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 	if err != nil {
 		return repository.ListBreaking{}, err
 	}
-	if err := ModeEnabled(in.CollectMode, l.enabledModes); err != nil {
+	if err := l.modes.Check(in.CollectMode); err != nil {
 		return repository.ListBreaking{}, err
 	}
 	if err := validateMode(in.CollectMode, in.PromptID); err != nil {
@@ -314,7 +314,7 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 	if err != nil {
 		return repository.ListScheduled{}, err
 	}
-	if err := ModeEnabled(in.CollectMode, l.enabledModes); err != nil {
+	if err := l.modes.Check(in.CollectMode); err != nil {
 		return repository.ListScheduled{}, err
 	}
 	if err := validateMode(in.CollectMode, in.PromptID); err != nil {

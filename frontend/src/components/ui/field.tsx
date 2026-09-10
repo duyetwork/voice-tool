@@ -46,15 +46,25 @@ export function Checkbox({ className, ...props }: React.InputHTMLAttributes<HTML
 export function Field({
   label,
   hint,
+  required,
   children,
 }: {
   label: React.ReactNode;
   hint?: string;
+  /** Đánh dấu * đỏ cạnh nhãn — trường bắt buộc điền. */
+  required?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <Label>{label}</Label>
+      <Label>
+        {label}
+        {required ? (
+          <span className="ml-0.5 text-red-600" aria-hidden="true">
+            *
+          </span>
+        ) : null}
+      </Label>
       {children}
       {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
     </div>

@@ -278,14 +278,19 @@ export default function SourcePostsPage() {
                     </Td>
 
                     <Td className="whitespace-nowrap">
-                      <a
-                        href={post.source_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-indigo-700 hover:underline"
-                      >
-                        {platformLabel(post.platform)}
-                      </a>
+                      {/* Bài nhập tay bằng text không có URL nguồn để mở. */}
+                      {post.source_url ? (
+                        <a
+                          href={post.source_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-indigo-700 hover:underline"
+                        >
+                          {platformLabel(post.platform)}
+                        </a>
+                      ) : (
+                        platformLabel(post.platform)
+                      )}
                     </Td>
 
                     <Td>
@@ -314,6 +319,7 @@ export default function SourcePostsPage() {
                           ))}
                         </Select>
                       </Can>
+
                     </Td>
 
                     <Td>

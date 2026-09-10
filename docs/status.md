@@ -5,7 +5,7 @@ metadata bài gốc tự điền vào Voice, nghe thử/tải voice, 5 nền t�
 ngôn ngữ auto-detect, bảng có chọn hàng loạt + bộ lọc.
 
 Quy mô hiện tại: **10.4k dòng Go** (+886 dòng test), **3.0k dòng TypeScript**,
-4 migration, 3 binary backend, 12 trang frontend.
+11 migration, 3 binary backend, 12 trang frontend.
 
 ---
 
@@ -15,7 +15,7 @@ Quy mô hiện tại: **10.4k dòng Go** (+886 dòng test), **3.0k dòng TypeScr
 
 | Thành phần | Trạng thái |
 |---|---|
-| Mô hình 3 tầng `Danh sách → Bài Post → Voice → multime.ai` | ✅ Đúng theo specs, enforce ở cả DB constraint và service |
+| Mô hình 3 tầng `Danh sách → Bài Post → Voice → multime.ai` | ✅ Đúng theo specs, enforce ở cả DB constraint và service — **trừ Voice gõ tay**: text không có bài gốc nào để truy vết nên đi thẳng ra Voice (`ck_voice_origin`) |
 | Clean architecture: `transport → service → domain ← infra` | ✅ `domain` không import package nào của dự án |
 | 3 binary: `api` (1) / `worker` (2) / `scheduler` (1) | ✅ Tách vì `asynq.PeriodicTaskManager` không chạy được 2 instance |
 | Queue Asynq: 4 task type + 1 job dọn dẹp | ✅ |
@@ -29,11 +29,15 @@ Quy mô hiện tại: **10.4k dòng Go** (+886 dòng test), **3.0k dòng TypeScr
 | **F2** Breaking (quét liên tục, nhiều regex OR) | ✅ | ✅ `/lists/breaking` |
 | **F3** Định kỳ (tần suất riêng từng kênh) | ✅ | ✅ `/lists/scheduled` |
 | **Mode A** Extract audio từ URL | ✅ yt-dlp + ffprobe | ✅ mặc định trên UI |
-| **Mode B** Text → TTS | ✅ code xong, chưa bật | ✅ |
-| **Mode C** Text + Prompt → LLM → TTS | ✅ code xong, chưa bật | ✅ |
+| **Mode B** Text → TTS | ✅ đã bật (3voices, key theo từng user) | ✅ |
+| **Mode C** Text + Prompt → LLM → TTS | ✅ (bắt buộc `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`; còn mock thì hệ thống tự tắt mode C kèm lý do) | ✅ |
+| Nguồn cho B/C: URL (qua Bài Post) **hoặc** text gõ tay (thẳng ra Voice) | ✅ | ✅ `/on-demand`, `/voices` |
 | **Publish** lên multime.ai | ✅ đúng API thật, đăng bằng tài khoản của user | ✅ `/voices` |
 | Duyệt Bài Post trước khi tốn chi phí AI | ✅ | ✅ `/source-posts` |
-| Prompt mẫu + AI Engine | ✅ | ✅ |
+| Prompt mẫu | ✅ | ✅ |
+| API key TTS theo từng người (admin xem/sửa/**gán key** cho mọi người) | ✅ mã hoá AES-256-GCM, có `last_used_at` | ✅ `/ai-engines` |
+| Voice gõ tay: text → Voice thẳng, không qua Bài Post | ✅ `POST /voices` + task `voice:text` | ✅ F1, màn Voice |
+| Sửa lời đọc rồi tạo lại chính voice đó (ghi đè file cũ) | ✅ `POST /voices/:id/regenerate` | ✅ tab **Nội dung** trong modal Sửa Voice |
 | Audit log (append-only) | ✅ | ✅ `/audit-log` |
 | Quản lý tài khoản | ✅ | ✅ `/users` (chỉ admin) |
 
@@ -41,7 +45,7 @@ Quy mô hiện tại: **10.4k dòng Go** (+886 dòng test), **3.0k dòng TypeScr
 
 | # | Rule | Enforce ở đâu |
 |---|---|---|
-| 1 | Mọi Voice phải qua `SourcePost` | Không có `POST /voices`; `ck_source_post_origin` |
+| 1 | Voice từ URL phải qua `SourcePost` | `POST /voices` chỉ nhận text gõ tay; `ck_source_post_origin` + `ck_voice_origin` |
 | 2 | Publish xong xoá file S3; publish lỗi giữ file | `MarkVoicePublished` + `ck_voice_published` |
 | 3 | Regex là cơ chế duy nhất; keyword tự chuẩn hoá về regex | `pkg/validator` + `service.normalizePatterns` |
 | 4 | Breaking quét liên tục, không cron | `breaking:dispatch` tự re-enqueue |
@@ -57,7 +61,7 @@ Quy mô hiện tại: **10.4k dòng Go** (+886 dòng test), **3.0k dòng TypeScr
 | # | Yêu cầu | Kết quả |
 |---|---|---|
 | 1 | API post voice từ multime | Tìm trong `C:\multime-ai` → `POST /v1/seller/voice-posts/upload` (1 request, không phải 2 bước) |
-| 2 | TTS 3voices.win | Adapter xong theo hợp đồng API; chưa bật vì ưu tiên Mode A |
+| 2 | TTS 3voices.win | Đã bật: adapter + API key khai theo từng người ở `/ai-engines`, worker đọc bằng key của người tạo voice |
 | 3 | Nhiều regex | `regex_patterns TEXT[]`, OR, tối đa 20/kênh, tự loại trùng |
 | 4 | Tham số quét điều chỉnh được | `scan_limit`, `scan_interval`, `max_posts_per_run` theo kênh + 6 biến `.env` |
 | 5 | Đề xuất deploy | [deployment.md](deployment.md) — 1 EC2 + compose, phương án B là ECS Fargate |
@@ -140,11 +144,11 @@ Chạy: `make test`. Không có test nào cần Postgres/Redis.
 | **`BOOTSTRAP_ADMIN_EMAIL`** | Email nào sẽ là admin đầu tiên |
 | **Sinh `TOKEN_ENCRYPTION_KEY`** | `make gen-key`. Khoá trong `.env.example` chỉ dùng cho dev |
 
-### 2.2 Cần khi bật Mode B/C (chưa gấp)
+### 2.2 Cần cho Mode B/C
 
 | Biến | Dùng cho |
 |---|---|
-| `THREEVOICES_API_KEY` (+ `THREEVOICES_VOICE_ID`) | TTS |
+| `THREEVOICES_API_KEY` (+ `THREEVOICES_VOICE_ID`) | **Tuỳ chọn** — key TTS dự phòng dùng chung. Đường chính là mỗi người tự khai key ở màn AI Engine |
 | `ANTHROPIC_API_KEY` | Mode C — LLM viết lại theo prompt |
 | `OPENAI_API_KEY` | STT, chỉ khi video không có phụ đề |
 
@@ -225,12 +229,15 @@ multime yêu cầu audio **≥ 15 giây**. TTS một caption ngắn dễ ra voic
 và bị từ chối. Hệ thống chặn trước với lỗi rõ ràng, nhưng nghĩa là Mode B/C
 chỉ dùng được với nội dung đủ dài.
 
-### 3.8 🟢 Rate limit của 3voices khi bật TTS
+### 3.8 🟡 Rate limit của 3voices
 
-3voices giới hạn 10 request/phút và 2 job đồng thời/user. `WORKER_CONCURRENCY`
-mặc định 10 × 2 worker = 20 task song song → sẽ vượt hạn mức. **Chưa có rate
-limiter.** Khi bật Mode B/C phải giảm `WORKER_CONCURRENCY` xuống 2 hoặc làm
-limiter (xem 4.1).
+3voices giới hạn 10 request/phút và 2 job đồng thời **trên mỗi API key**. Vì
+key giờ khai theo từng người, tải được chia sẵn theo người dùng — nhưng
+`WORKER_CONCURRENCY` mặc định 10 × 2 worker = 20 task song song vẫn có thể dồn
+vào cùng 1 key khi một người chạy hàng loạt. **Chưa có rate limiter**: nếu
+dùng bulk nhiều, giảm `WORKER_CONCURRENCY` hoặc làm limiter theo key (xem 4.1).
+Vượt hạn mức trả 429 và Asynq retry với backoff, nên không mất voice — chỉ
+chậm.
 
 ### 3.9 🟡 Công cụ quan sát khi dev không có bảo vệ
 
@@ -243,7 +250,7 @@ Chỉ dùng ở local hoặc qua SSH tunnel; đừng publish ra Internet
 ### 3.10 🟢 Phần đã chạy thật và phần chưa
 
 Đã chạy thật trên stack Docker đầy đủ:
-- 4 migration apply sạch lên Postgres.
+- 11 migration apply sạch lên Postgres.
 - yt-dlp lấy audio + metadata từ YouTube (video và shorts).
 - Đăng voice lên multime.ai thành công bằng tài khoản thật.
 - Nghe thử / tải file voice qua API.
@@ -252,7 +259,9 @@ Chỉ dùng ở local hoặc qua SSH tunnel; đừng publish ra Internet
 - 4 adapter Facebook / TikTok / Instagram / X: mới test phần parse URL bằng unit
   test. Các nền tảng này thường chặn tải khi không đăng nhập, nên nhiều khả năng
   cần cookie/credential — chưa biết trước cho tới khi thử.
-- Mode B/C (TTS/LLM thật) — đang tắt bằng `ENABLED_COLLECT_MODES`.
+- Mode B/C với API key 3voices thật: đã bật (`ENABLED_COLLECT_MODES=A,B,C`) và
+  chạy bằng key của từng người, nhưng chưa có lần chạy thật nào với key thật —
+  lỗi key sai/hết quota chỉ lộ ra ở lần chạy đầu tiên.
 - F2/F3 quét kênh theo lịch ở quy mô thật.
 
 ---
@@ -296,11 +305,10 @@ Bước 5 là bước kiểm chứng quan trọng nhất — nó xác nhận to�
 | Việc | Vì sao chưa làm |
 |---|---|
 | Kiểm chứng adapter Facebook / X / TikTok / Instagram bằng URL thật | Đã code và test phần parse URL; chưa chạy yt-dlp thật với 4 nền tảng này — nhiều nền tảng chặn tải nếu không đăng nhập (xem mục 2.3) |
-| Rate limiter cho TTS provider | Chỉ cần khi bật Mode B/C ở quy mô lớn |
+| Rate limiter cho TTS provider | 3voices giới hạn 10 req/phút, 2 job đồng thời **trên mỗi key** — key giờ theo từng người nên áp lực giảm hẳn; chỉ cần khi 1 người chạy hàng loạt (xem 3.8) |
 | Luồng xác minh TOTP khi login | Chỉ cần nếu tài khoản dùng voice-tool bắt buộc bật 2FA |
 | Cảnh báo khi có Voice `failed` / token hết hạn | Specs ghi rõ "không bao gồm chức năng thông báo", nhưng 3.1 cho thấy cần ít nhất 1 chỗ hiển thị số Voice lỗi |
 | Endpoint batch upload của multime (`/upload-batch`, 20 file) | Luồng hiện tại đăng từng voice; chỉ cần khi tối ưu throughput |
-| Chọn AI Engine theo từng kênh | Hiện 1 engine mặc định toàn hệ thống. Cần thêm cột `ai_engine_id` vào `list_*` |
 | Dashboard số liệu (voice/ngày, tỉ lệ lỗi, chi phí AI) | Chưa có yêu cầu, nhưng là thứ đầu tiên cần khi chạy thật ở quy mô |
 
 ### 4.3 Nợ kỹ thuật đã biết

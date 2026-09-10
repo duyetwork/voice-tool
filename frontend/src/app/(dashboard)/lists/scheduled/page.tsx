@@ -369,7 +369,7 @@ function CreateScheduledDialog({ onClose }: { onClose: () => void }) {
       onClose={onClose}
     >
       <form onSubmit={submit} className="space-y-4">
-        <Field label="URL kênh nguồn">
+        <Field label="URL kênh nguồn" required>
           <Input
             type="url"
             placeholder="https://www.youtube.com/@kenh"
@@ -381,7 +381,7 @@ function CreateScheduledDialog({ onClose }: { onClose: () => void }) {
         </Field>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Tần suất quét" hint="Tối thiểu 1 phút để tránh vượt rate-limit nền tảng.">
+          <Field label="Tần suất quét" required hint="Tối thiểu 1 phút để tránh vượt rate-limit nền tảng.">
             <Select value={frequency} onChange={(e) => setFrequency(e.target.value)}>
               {FREQUENCIES.map((f) => (
                 <option key={f.value} value={f.value}>
@@ -393,7 +393,7 @@ function CreateScheduledDialog({ onClose }: { onClose: () => void }) {
 
           <Field
             label="Hình thức thu thập"
-            hint="B và C cần TTS/LLM thật nên chưa mở — hiện chỉ dùng được A."
+            hint="B và C đọc bằng TTS 3voices — cần API key khai ở mục AI Engine (C cần thêm Prompt mẫu)."
           >
             <Select
               value={collectMode}
@@ -410,7 +410,7 @@ function CreateScheduledDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         {needsPrompt ? (
-          <Field label="Prompt mẫu">
+          <Field label="Prompt mẫu" required>
             <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
               <option value="">— Chọn prompt —</option>
               {prompts.data?.items.map((p) => (

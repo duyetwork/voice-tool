@@ -7,38 +7,37 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 const createAIEngine = `-- name: CreateAIEngine :one
-INSERT INTO ai_engine (name, provider, supported_languages, is_active)
-VALUES ($1, $2, $3, $4)
-RETURNING id, name, provider, supported_languages, is_active, created_at
+INSERT INTO ai_engine (user_id, api_key_encrypted, created_by)
+VALUES ($1, $2, $3)
+RETURNING id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at
 `
 
 type CreateAIEngineParams struct {
-	Name               string   `json:"name"`
-	Provider           string   `json:"provider"`
-	SupportedLanguages []string `json:"supported_languages"`
-	IsActive           bool     `json:"is_active"`
+	UserID          uuid.UUID `json:"user_id"`
+	ApiKeyEncrypted string    `json:"api_key_encrypted"`
+	CreatedBy       uuid.UUID `json:"created_by"`
 }
 
+// user_id là CHỦ SỞ HỮU key (worker chạy TTS của người đó bằng key này),
+// created_by là người bấm nút — khác nhau khi admin khai hộ.
 func (q *Queries) CreateAIEngine(ctx context.Context, arg CreateAIEngineParams) (AiEngine, error) {
-	row := q.db.QueryRow(ctx, createAIEngine,
-		arg.Name,
-		arg.Provider,
-		arg.SupportedLanguages,
-		arg.IsActive,
-	)
+	row := q.db.QueryRow(ctx, createAIEngine, arg.UserID, arg.ApiKeyEncrypted, arg.CreatedBy)
 	var i AiEngine
 	err := row.Scan(
 		&i.ID,
-		&i.Name,
 		&i.Provider,
-		&i.SupportedLanguages,
-		&i.IsActive,
 		&i.CreatedAt,
+		&i.ApiKeyEncrypted,
+		&i.VoiceID,
+		&i.CreatedBy,
+		&i.UserID,
+		&i.LastUsedAt,
 	)
 	return i, err
 }
@@ -56,63 +55,113 @@ func (q *Queries) DeleteAIEngine(ctx context.Context, id uuid.UUID) (int64, erro
 }
 
 const getAIEngine = `-- name: GetAIEngine :one
-SELECT id, name, provider, supported_languages, is_active, created_at FROM ai_engine WHERE id = $1
+SELECT ae.id, ae.provider, ae.created_at, ae.api_key_encrypted, ae.voice_id, ae.created_by, ae.user_id, ae.last_used_at, owner.email AS user_email, author.email AS created_by_email
+FROM ai_engine ae
+JOIN app_user owner  ON owner.id  = ae.user_id
+JOIN app_user author ON author.id = ae.created_by
+WHERE ae.id = $1
 `
 
-func (q *Queries) GetAIEngine(ctx context.Context, id uuid.UUID) (AiEngine, error) {
+type GetAIEngineRow struct {
+	ID              uuid.UUID  `json:"id"`
+	Provider        string     `json:"provider"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ApiKeyEncrypted string     `json:"api_key_encrypted"`
+	VoiceID         *string    `json:"voice_id"`
+	CreatedBy       uuid.UUID  `json:"created_by"`
+	UserID          uuid.UUID  `json:"user_id"`
+	LastUsedAt      *time.Time `json:"last_used_at"`
+	UserEmail       string     `json:"user_email"`
+	CreatedByEmail  string     `json:"created_by_email"`
+}
+
+func (q *Queries) GetAIEngine(ctx context.Context, id uuid.UUID) (GetAIEngineRow, error) {
 	row := q.db.QueryRow(ctx, getAIEngine, id)
-	var i AiEngine
+	var i GetAIEngineRow
 	err := row.Scan(
 		&i.ID,
-		&i.Name,
 		&i.Provider,
-		&i.SupportedLanguages,
-		&i.IsActive,
 		&i.CreatedAt,
+		&i.ApiKeyEncrypted,
+		&i.VoiceID,
+		&i.CreatedBy,
+		&i.UserID,
+		&i.LastUsedAt,
+		&i.UserEmail,
+		&i.CreatedByEmail,
 	)
 	return i, err
 }
 
-const getDefaultAIEngine = `-- name: GetDefaultAIEngine :one
-SELECT id, name, provider, supported_languages, is_active, created_at FROM ai_engine WHERE is_active = TRUE ORDER BY name LIMIT 1
+const getAIEngineForUser = `-- name: GetAIEngineForUser :one
+SELECT id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at FROM ai_engine
+WHERE user_id = $1
+ORDER BY created_at DESC
+LIMIT 1
 `
 
-func (q *Queries) GetDefaultAIEngine(ctx context.Context) (AiEngine, error) {
-	row := q.db.QueryRow(ctx, getDefaultAIEngine)
+// Key mà worker dùng khi chạy TTS cho voice của user này: key mới khai nhất
+// (thay key thì key mới thắng ngay, không phải xoá key cũ trước).
+func (q *Queries) GetAIEngineForUser(ctx context.Context, userID uuid.UUID) (AiEngine, error) {
+	row := q.db.QueryRow(ctx, getAIEngineForUser, userID)
 	var i AiEngine
 	err := row.Scan(
 		&i.ID,
-		&i.Name,
 		&i.Provider,
-		&i.SupportedLanguages,
-		&i.IsActive,
 		&i.CreatedAt,
+		&i.ApiKeyEncrypted,
+		&i.VoiceID,
+		&i.CreatedBy,
+		&i.UserID,
+		&i.LastUsedAt,
 	)
 	return i, err
 }
 
 const listAIEngines = `-- name: ListAIEngines :many
-SELECT id, name, provider, supported_languages, is_active, created_at FROM ai_engine
-WHERE ($1::bool IS NOT TRUE OR is_active = TRUE)
-ORDER BY name
+SELECT ae.id, ae.provider, ae.created_at, ae.api_key_encrypted, ae.voice_id, ae.created_by, ae.user_id, ae.last_used_at, owner.email AS user_email, author.email AS created_by_email
+FROM ai_engine ae
+JOIN app_user owner  ON owner.id  = ae.user_id
+JOIN app_user author ON author.id = ae.created_by
+WHERE ($1::uuid IS NULL OR ae.user_id = $1)
+ORDER BY owner.email, ae.created_at DESC
 `
 
-func (q *Queries) ListAIEngines(ctx context.Context, onlyActive *bool) ([]AiEngine, error) {
-	rows, err := q.db.Query(ctx, listAIEngines, onlyActive)
+type ListAIEnginesRow struct {
+	ID              uuid.UUID  `json:"id"`
+	Provider        string     `json:"provider"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ApiKeyEncrypted string     `json:"api_key_encrypted"`
+	VoiceID         *string    `json:"voice_id"`
+	CreatedBy       uuid.UUID  `json:"created_by"`
+	UserID          uuid.UUID  `json:"user_id"`
+	LastUsedAt      *time.Time `json:"last_used_at"`
+	UserEmail       string     `json:"user_email"`
+	CreatedByEmail  string     `json:"created_by_email"`
+}
+
+// `owner` NULL = xem tất cả (admin). User thường luôn được service ép owner =
+// chính mình, nên không đọc được key của người khác dù gọi thẳng API.
+func (q *Queries) ListAIEngines(ctx context.Context, owner *uuid.UUID) ([]ListAIEnginesRow, error) {
+	rows, err := q.db.Query(ctx, listAIEngines, owner)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AiEngine{}
+	items := []ListAIEnginesRow{}
 	for rows.Next() {
-		var i AiEngine
+		var i ListAIEnginesRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.Name,
 			&i.Provider,
-			&i.SupportedLanguages,
-			&i.IsActive,
 			&i.CreatedAt,
+			&i.ApiKeyEncrypted,
+			&i.VoiceID,
+			&i.CreatedBy,
+			&i.UserID,
+			&i.LastUsedAt,
+			&i.UserEmail,
+			&i.CreatedByEmail,
 		); err != nil {
 			return nil, err
 		}
@@ -124,40 +173,45 @@ func (q *Queries) ListAIEngines(ctx context.Context, onlyActive *bool) ([]AiEngi
 	return items, nil
 }
 
+const touchAIEngineUsed = `-- name: TouchAIEngineUsed :exec
+UPDATE ai_engine SET last_used_at = now() WHERE id = $1
+`
+
+// Đóng dấu thời điểm key thật sự đọc ra audio. Chỉ gọi sau khi TTS thành công:
+// cột này để người dùng biết key nào còn sống, key nào khai xong bỏ đó.
+func (q *Queries) TouchAIEngineUsed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, touchAIEngineUsed, id)
+	return err
+}
+
 const updateAIEngine = `-- name: UpdateAIEngine :one
 UPDATE ai_engine
-SET name                = COALESCE($1, name),
-    provider            = COALESCE($2, provider),
-    supported_languages = COALESCE($3, supported_languages),
-    is_active           = COALESCE($4, is_active)
-WHERE id = $5
-RETURNING id, name, provider, supported_languages, is_active, created_at
+SET api_key_encrypted = COALESCE($1, api_key_encrypted),
+    user_id           = COALESCE($2, user_id)
+WHERE id = $3
+RETURNING id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at
 `
 
 type UpdateAIEngineParams struct {
-	Name               *string   `json:"name"`
-	Provider           *string   `json:"provider"`
-	SupportedLanguages []string  `json:"supported_languages"`
-	IsActive           *bool     `json:"is_active"`
-	ID                 uuid.UUID `json:"id"`
+	ApiKeyEncrypted *string    `json:"api_key_encrypted"`
+	UserID          *uuid.UUID `json:"user_id"`
+	ID              uuid.UUID  `json:"id"`
 }
 
+// api_key_encrypted dùng COALESCE: bỏ trống ô API key ở form nghĩa là "giữ key
+// cũ" — key thật không bao giờ gửi về trình duyệt nên không có gì để gửi lại.
 func (q *Queries) UpdateAIEngine(ctx context.Context, arg UpdateAIEngineParams) (AiEngine, error) {
-	row := q.db.QueryRow(ctx, updateAIEngine,
-		arg.Name,
-		arg.Provider,
-		arg.SupportedLanguages,
-		arg.IsActive,
-		arg.ID,
-	)
+	row := q.db.QueryRow(ctx, updateAIEngine, arg.ApiKeyEncrypted, arg.UserID, arg.ID)
 	var i AiEngine
 	err := row.Scan(
 		&i.ID,
-		&i.Name,
 		&i.Provider,
-		&i.SupportedLanguages,
-		&i.IsActive,
 		&i.CreatedAt,
+		&i.ApiKeyEncrypted,
+		&i.VoiceID,
+		&i.CreatedBy,
+		&i.UserID,
+		&i.LastUsedAt,
 	)
 	return i, err
 }

@@ -141,11 +141,14 @@ lúc bấm, thay vì trống trơn cho tới khi job xong.
 
 ```
 ClaimSourcePostForProcessing   # new|failed → processing, idempotent khi retry
-  → adapter.FetchContent(postID, mode)
+  → platform=text (bài CŨ, trước khi text đi thẳng ra Voice):
+      nội dung lấy thẳng từ extracted_text, không gọi mạng
+    còn lại:       adapter.FetchContent(postID, mode)
   → mode A: audio gốc
     mode B: text (caption/transcript → fallback STT)
-    mode C: text → LLM(prompt) 
-  → mode B/C: lưu extracted_text (text NGUỒN, không phải bản LLM viết lại) + TTS
+    mode C: text → LLM(prompt)
+  → mode B/C: lưu extracted_text (text NGUỒN, không phải bản LLM viết lại)
+              + ttsFor(người tạo voice) → TTS bằng API key của chính họ
   → ffprobe đo duration/sample_rate/mime (multime.ai cần cho audio_asset)
   → storage.Put(voices/<post_id>/<...>.mp3)
   → FinishVoice(voice_id)        # điền file + metadata, processing → draft
@@ -163,6 +166,39 @@ của yt-dlp đi vào log. Bảng phân loại lỗi nằm ở
 Lỗi ở bất kỳ bước nào → `source_post.status = failed` + `last_error`, record
 voice chuyển `processing → failed` (không để treo ở "đang xử lý"), và task được
 Asynq retry 3 lần với backoff 30s/60s/120s (trừ lỗi `PermanentError`).
+
+### Hình thức C bắt buộc có LLM thật
+
+Mode C = *text nguồn → LLM viết lại theo Prompt mẫu → TTS đọc bản viết lại*.
+3voices chỉ có TTS/STT, không có endpoint sinh hay viết lại text, nên bước giữa
+phải là một LLM riêng (`LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`).
+
+`app.NewApp` vì thế **tắt hẳn mode C khi provider còn là mock** và kèm lý do vào
+`ModeGate` — API từ chối sớm, FE hiện đúng câu "cần LLM thật…" thay vì chữ
+"chưa hỗ trợ" chung chung. Trước đây mock ghép `prompt + text` rồi trả về, nên
+voice đọc to cả câu lệnh dành cho AI; giờ mock trả nguyên text nguồn để dù có
+lọt qua đâu đó cũng không bao giờ đọc prompt.
+
+### voice:text (Voice gõ tay và tạo lại voice)
+
+```
+POST /voices              → INSERT voice (input_text, collect_mode, prompt_id,
+                                          publish_status=processing)
+POST /voices/:id/regenerate → UPDATE voice (input_text mới, publish_status=processing)
+                          → enqueue voice:text
+voice:text
+  → GetVoice → bỏ qua nếu không còn ở trạng thái processing (idempotent)
+  → mode C: LLM(prompt, input_text)        # dùng chung rewriteIfNeeded
+  → ttsFor(người tạo) → TTS bằng API key của chính họ
+  → ffprobe → storage.Put(voices/text/<voice_id>-<ts>.mp3)
+  → FinishVoice(voice_id)                  # processing → draft
+```
+
+Luồng này không fetch gì: có `input_text` nghĩa là người dùng đã chốt lời đọc,
+kể cả với Voice vốn sinh ra từ Bài Post (sửa lời đọc rồi bấm tạo lại). Không
+dedup, không `post:metadata`. Tạo lại thì file audio cũ bị xoá **sau khi** DB đã
+ghi file mới — xoá trước mà ghi hỏng là mất cả hai. Lỗi →
+`voice.publish_status = failed` + `last_error`.
 
 ### voice:publish
 
@@ -185,6 +221,57 @@ bắt buộc, ít nhất 1 hashtag/category, audio tối thiểu 15 giây. Lỗi
 do cụ thể.
 
 Thất bại → `publish_status = failed` + `last_error`, **giữ nguyên file** để retry.
+
+### TTS chạy bằng API key của từng người
+
+`ai_engine` không còn là danh mục "chọn engine nào" — chỉ còn 1 nhà cung cấp
+(3voices) nên mỗi bản ghi là **API key của một người**: `user_id` (chủ sở hữu),
+`api_key_encrypted`, `created_by` (người khai — khác chủ khi admin khai hộ),
+`last_used_at`.
+
+```
+ttsFor(owner, language)
+  → GetAIEngineForUser(owner)     # key mới khai nhất của chủ sở hữu
+     ├ có   → box.Decrypt(api_key) → ttsFactory.For(cred) → ThreeVoices
+     │        → validate ngôn ngữ với provider.SupportedLanguages()
+     └ không→ provider dự phòng trong .env (dev: mock)
+              không có nốt → PermanentError kèm câu "vào mục AI Engine thêm key"
+  ...TTS thành công → TouchAIEngineUsed(id)   # cột "dùng gần đây"
+```
+
+Danh sách ngôn ngữ hỏi thẳng provider chứ không khai tay trong DB: nhà cung cấp
+là nơi duy nhất biết mình đọc được thứ tiếng nào, còn một bản sao trong DB thì
+lệch dần theo thời gian.
+
+Vì sao theo người tạo voice: quota và hoá đơn 3voices tính trên key, nên phải
+rơi đúng vào người bấm chạy. Cùng lý do với việc publish bằng token multime của
+`voice.created_by` — worker luôn hành động *thay mặt* một người cụ thể, không
+có tài khoản hệ thống dùng chung.
+
+Key mã hoá AES-256-GCM bằng `TOKEN_ENCRYPTION_KEY` (cùng `secret.Box` với token
+multime) và không bao giờ ra khỏi backend: API chỉ trả 4 ký tự cuối.
+
+### Voice gõ tay: text → Voice, không qua Bài Post
+
+Hình thức B/C nhận nguồn từ URL **hoặc** đoạn text người dùng gõ, và hai nguồn
+đi hai đường khác nhau:
+
+```
+URL  → POST /source-posts → source_post → voice:process → voice
+Text → POST /voices       → voice (input_text, collect_mode, prompt_id)
+                          → voice:text → TTS → cùng một record voice
+```
+
+Business rule #1 ("mọi Voice đều đi qua Bài Post") vẫn giữ ở chỗ nó có ý nghĩa:
+Voice lấy từ một URL phải truy vết được về bài gốc, và phải chạy lại được với
+mode/prompt khác mà không fetch lại URL. Text gõ tay không có URL, không có bài
+gốc, không có gì để fetch lại — `source_post` sinh ra chỉ là bản ghi rỗng đứng
+giữa, làm bẩn màn duyệt Bài Post (nơi để duyệt trước khi tốn tiền AI) mà không
+thêm thông tin nào. `ck_voice_origin` (migration 000011) giữ đúng 2 dạng Voice
+hợp lệ, không có dạng thứ ba.
+
+Hai đường gặp lại nhau ở `rewriteIfNeeded` (mode C viết lại qua LLM) và
+`ttsFor` (chọn API key TTS), nên hai luật đó chỉ có một bản cài đặt.
 
 ## 4. Các quyết định thiết kế đáng lưu ý
 
@@ -283,8 +370,10 @@ Không phải sửa service, handler hay DB.
 ## 6. Thêm 1 provider AI mới
 
 Thêm file vào `internal/infra/ai/{tts,stt,llm}/` implement interface tương ứng,
-rồi thêm 1 `case` trong hàm `New(cfg)` của package đó. Đăng ký thêm bản ghi
-`ai_engine` (qua UI) để hệ thống validate ngôn ngữ hỗ trợ.
+rồi thêm 1 `case` trong hàm `New(cfg)` của package đó. Với TTS, thêm `case`
+tương ứng trong `tts.Factory.For` và bỏ CHECK `provider = '3voices'` ở
+`ai_engine`; ngôn ngữ hỗ trợ lấy từ `SupportedLanguages()` của chính provider,
+không phải khai tay.
 
 ## 7. Cấu trúc thư mục
 

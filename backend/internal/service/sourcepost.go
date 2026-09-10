@@ -24,7 +24,7 @@ type SourcePost struct {
 	audit           *Audit
 	log             *slog.Logger
 	defaultLanguage string
-	enabledModes    []domain.CollectMode
+	modes           ModeGate
 }
 
 func NewSourcePost(
@@ -34,11 +34,11 @@ func NewSourcePost(
 	audit *Audit,
 	log *slog.Logger,
 	defaultLanguage string,
-	enabledModes []domain.CollectMode,
+	modes ModeGate,
 ) *SourcePost {
 	return &SourcePost{
 		q: q, platforms: platforms, enq: enq, audit: audit, log: log,
-		defaultLanguage: defaultLanguage, enabledModes: enabledModes,
+		defaultLanguage: defaultLanguage, modes: modes,
 	}
 }
 
@@ -57,7 +57,10 @@ func (e *DuplicatePostError) Error() string {
 
 func (e *DuplicatePostError) Unwrap() error { return domain.ErrDuplicate }
 
-// CreateInput là input tạo Bài Post thủ công (luồng F1).
+// CreateInput là input tạo Bài Post thủ công từ URL (luồng F1).
+//
+// Không có ô text ở đây: text gõ tay đi thẳng ra Voice qua
+// `Voice.CreateFromText` — nó không có bài gốc nào để Bài Post truy vết về.
 type CreateInput struct {
 	SourceURL   string
 	CollectMode domain.CollectMode
@@ -77,18 +80,18 @@ func (s *SourcePost) Create(ctx context.Context, actor uuid.UUID, in CreateInput
 	// (link share từ app mobile hay ở dạng này).
 	in.SourceURL = domain.NormalizeSourceURL(in.SourceURL)
 	if in.SourceURL == "" {
-		return repository.SourcePost{}, fmt.Errorf("%w: source_url là bắt buộc", domain.ErrInvalidInput)
+		return repository.SourcePost{}, fmt.Errorf(
+			"%w: phải có source_url", domain.ErrInvalidInput)
 	}
 	if !in.CollectMode.Valid() {
 		return repository.SourcePost{}, fmt.Errorf("%w: collect_mode phải là A, B hoặc C", domain.ErrInvalidInput)
 	}
-	if err := ModeEnabled(in.CollectMode, s.enabledModes); err != nil {
+	if err := s.modes.Check(in.CollectMode); err != nil {
 		return repository.SourcePost{}, err
 	}
 	if in.CollectMode.NeedsPrompt() && in.PromptID == nil {
 		return repository.SourcePost{}, domain.ErrPromptRequired
 	}
-
 	adapter, err := s.adapterFor(in.SourceURL, in.Platform)
 	if err != nil {
 		return repository.SourcePost{}, err
@@ -254,8 +257,13 @@ func (s *SourcePost) Update(ctx context.Context, actor, id uuid.UUID, in UpdateI
 		if !mode.Valid() {
 			return repository.SourcePost{}, fmt.Errorf("%w: collect_mode phải là A, B hoặc C", domain.ErrInvalidInput)
 		}
-		if err := ModeEnabled(mode, s.enabledModes); err != nil {
+		if err := s.modes.Check(mode); err != nil {
 			return repository.SourcePost{}, err
+		}
+		// Bài nhập tay bằng text không có audio gốc để tách -> không đổi sang A.
+		if !mode.NeedsText() && before.Platform == string(domain.PlatformText) {
+			return repository.SourcePost{}, fmt.Errorf(
+				"%w: bài nhập bằng text chỉ dùng được hình thức B hoặc C", domain.ErrInvalidInput)
 		}
 		promptID := before.PromptID
 		if in.PromptID != nil {

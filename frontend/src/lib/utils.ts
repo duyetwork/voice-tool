@@ -81,6 +81,8 @@ export const PLATFORM_LABELS: Record<string, string> = {
   tiktok: "TikTok",
   instagram: "Instagram",
   x: "X (Twitter)",
+  // Không phải nền tảng nguồn: bài do người dùng gõ thẳng text cho TTS đọc.
+  text: "Nhập text",
 };
 
 export function platformLabel(value?: string | null): string {

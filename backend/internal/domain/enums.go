@@ -83,6 +83,11 @@ const (
 	PlatformX         Platform = "x"
 )
 
+// PlatformText không phải nền tảng mạng xã hội mà là Bài Post do người dùng
+// gõ thẳng text vào (TTS đọc nguyên văn). Không có URL, không có adapter, không
+// nhận diện tự động — nên KHÔNG nằm trong AllPlatforms.
+const PlatformText Platform = "text"
+
 // AllPlatforms liệt kê nền tảng hệ thống nhận diện được.
 var AllPlatforms = []Platform{
 	PlatformYouTube, PlatformFacebook, PlatformTikTok, PlatformInstagram, PlatformX,
@@ -97,6 +102,11 @@ const (
 	ContentStory = "story"
 	ContentTweet = "tweet"
 )
+
+// ProviderThreeVoices là nhà cung cấp TTS duy nhất đang tích hợp (3voices.win).
+// Bảng ai_engine vẫn giữ cột provider để sau này thêm nhà cung cấp khác mà
+// không phải đổi schema, nhưng mọi bản ghi hiện tại đều là giá trị này.
+const ProviderThreeVoices = "3voices"
 
 // MinPublishDurationSeconds là độ dài audio tối thiểu multime.ai chấp nhận.
 const MinPublishDurationSeconds = 15

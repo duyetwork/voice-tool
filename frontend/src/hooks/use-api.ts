@@ -183,6 +183,50 @@ export function useVoices(filters: VoiceFilters = {}) {
   });
 }
 
+/**
+ * CreateTextVoiceInput — tạo Voice thẳng từ text gõ tay, KHÔNG qua Bài Post.
+ *
+ * Bài lấy từ URL vẫn đi đường cũ (`useCreateSourcePost`): chỉ khi đó Voice mới
+ * truy vết được về bài gốc. Text gõ tay không có bài gốc nào để truy vết.
+ */
+export interface CreateTextVoiceInput {
+  text: string;
+  /** Chỉ B (đọc nguyên văn) hoặc C (LLM viết lại theo Prompt rồi đọc). */
+  collect_mode: Exclude<CollectMode, "A">;
+  prompt_id?: string | null;
+  language?: string;
+}
+
+export function useCreateTextVoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateTextVoiceInput) => api.post<Voice>("/voices", input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["voices"] }),
+  });
+}
+
+/**
+ * RegenerateVoiceInput — sửa lời đọc rồi tạo lại chính voice đó.
+ *
+ * Ghi đè lên bản ghi cũ (kể cả file audio), không tạo thêm dòng mới: đây là
+ * "sửa lại cho đúng", còn tiêu đề/hashtag/ảnh bìa đã điền vẫn giữ nguyên.
+ */
+export interface RegenerateVoiceInput {
+  text: string;
+  collect_mode: Exclude<CollectMode, "A">;
+  prompt_id?: string | null;
+  language?: string;
+}
+
+export function useRegenerateVoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string } & RegenerateVoiceInput) =>
+      api.post<Voice>(`/voices/${id}/regenerate`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["voices"] }),
+  });
+}
+
 export function useUpdateVoice() {
   const qc = useQueryClient();
   return useMutation({
@@ -364,6 +408,33 @@ export function useDeletePrompt() {
   });
 }
 
+/**
+ * CreateAIEngineInput — payload thêm API key TTS.
+ *
+ * `user_ids` chỉ admin gửi (gán key cho người khác, nhiều người một lượt —
+ * mỗi người nhận 1 bản ghi riêng). Bỏ trống = key của chính mình; backend ép
+ * điều này với mọi vai trò khác, không phụ thuộc UI.
+ */
+export interface CreateAIEngineInput {
+  api_key: string;
+  user_ids?: string[];
+}
+
+/**
+ * UpdateAIEngineInput — payload sửa API key TTS.
+ *
+ * `api_key` bỏ trống nghĩa là GIỮ key cũ: form không hiển thị key thật nên
+ * không có gì để gửi lại. `user_id` là gán key sang người khác — chỉ admin.
+ */
+export interface UpdateAIEngineInput {
+  api_key?: string;
+  user_id?: string;
+}
+
+/**
+ * Danh sách key: admin nhận key của mọi người, các vai trò khác chỉ nhận key
+ * của chính mình — backend ép, không phụ thuộc tham số.
+ */
 export function useAIEngines() {
   return useQuery({
     queryKey: keys.aiEngines,
@@ -371,15 +442,12 @@ export function useAIEngines() {
   });
 }
 
+/** Trả về mảng: admin gán 1 key cho nhiều người thì mỗi người là 1 bản ghi. */
 export function useCreateAIEngine() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: {
-      name: string;
-      provider: string;
-      supported_languages: string[];
-      is_active: boolean;
-    }) => api.post<AIEngine>("/ai-engines", input),
+    mutationFn: (input: CreateAIEngineInput) =>
+      api.post<{ items: AIEngine[] }>("/ai-engines", input),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.aiEngines }),
   });
 }
@@ -387,7 +455,7 @@ export function useCreateAIEngine() {
 export function useUpdateAIEngine() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: { id: string; is_active?: boolean }) =>
+    mutationFn: ({ id, ...body }: { id: string } & UpdateAIEngineInput) =>
       api.patch<AIEngine>(`/ai-engines/${id}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.aiEngines }),
   });
@@ -447,7 +515,7 @@ export function usePublishRequirements() {
   });
 }
 
-/** Hình thức thu thập nào đang bật — B/C chưa hỗ trợ thì hiển thị mờ. */
+/** Hình thức thu thập nào đang bật (ENABLED_COLLECT_MODES) — tắt thì UI làm mờ. */
 export function useCollectModes() {
   return useQuery({
     queryKey: keys.collectModes,

@@ -47,11 +47,6 @@ Trên multime hiện không phân biệt được. Nếu cần (để thống k�
 loạt) thì chốt 1 hashtag/category riêng và đặt vào `MULTIME_DEFAULT_HASHTAGS` /
 `MULTIME_CATEGORY_IDS`.
 
-## 6. AI Engine chọn theo kênh hay 1 engine toàn hệ thống? 🟢
-
-Hiện 1 engine mặc định toàn hệ thống (engine `is_active` đầu tiên). Muốn chọn
-theo từng kênh thì thêm cột `ai_engine_id` vào `list_breaking` / `list_scheduled`.
-
 ---
 
 ## Đã chốt (không cần trả lời lại)
@@ -69,5 +64,7 @@ theo từng kênh thì thêm cột `ai_engine_id` vào `list_breaking` / `list_s
 | Đăng ký tài khoản | Không có — chỉ đăng nhập bằng SSO strongbody |
 | Auto-detect nền tảng thất bại | Báo lỗi rõ, không cho chọn tay |
 | 1 Bài Post ra nhiều Voice | Được, gọi `/run` nhiều lần |
+| AI Engine chọn thế nào | Không chọn nữa — chỉ còn 3voices. `ai_engine` giờ là **sổ API key**: mỗi bản ghi = 1 key + chủ sở hữu, voice chạy bằng key của người tạo ra nó. Admin xem/sửa/xoá key của mọi người và gán key cho từng tài khoản; bảng chỉ còn key, người dùng, người tạo, thời gian tạo, lần dùng gần nhất |
+| Nguồn cho hình thức B/C | URL (hệ thống fetch caption/transcript) → Bài Post → Voice; hoặc text gõ tay → **Voice thẳng**, không sinh Bài Post (text không có bài gốc nào để truy vết về) |
 | Cùng 1 bài ở cả 2 danh sách | Chỉ vào hệ thống 1 lần — dedup theo `(platform, post_id_extracted)` toàn hệ thống |
 | Có giữ trường mô tả không | **Không.** multime chỉ hiển thị `title` (form đăng của họ luôn gửi `caption` rỗng) nên mô tả là dữ liệu chết. Tiêu đề Bài Post = toàn bộ nội dung bài trừ hashtag; tiêu đề Voice = nội dung đó gộp 1 dòng, cắt 200 ký tự |

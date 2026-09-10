@@ -47,9 +47,11 @@ func run() error {
 		Voice:      application.Voice,
 		List:       application.List,
 		Catalog:    application.Catalog,
+		AIEngine:   application.AIEngine,
 		Audit:      application.Audit,
 		User:       application.User,
 		Platforms:  application.Platforms,
+		Modes:      application.Modes,
 	})
 
 	srv := &http.Server{

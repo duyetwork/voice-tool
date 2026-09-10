@@ -33,6 +33,14 @@ func (e *Enqueuer) EnqueueVoiceProcess(ctx context.Context, sourcePostID, actorI
 	return e.enqueue(ctx, t)
 }
 
+func (e *Enqueuer) EnqueueVoiceText(ctx context.Context, voiceID, actorID string) error {
+	t, err := task.NewVoiceText(task.VoiceTextPayload{VoiceID: voiceID, ActorID: actorID})
+	if err != nil {
+		return err
+	}
+	return e.enqueue(ctx, t)
+}
+
 func (e *Enqueuer) EnqueuePostMetadata(ctx context.Context, sourcePostID string) error {
 	t, err := task.NewPostMetadata(task.PostMetadataPayload{SourcePostID: sourcePostID})
 	if err != nil {

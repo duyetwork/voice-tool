@@ -4,7 +4,6 @@ package http
 import (
 	"log/slog"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -27,9 +26,12 @@ type RouterDeps struct {
 	Voice      *service.Voice
 	List       *service.List
 	Catalog    *service.Catalog
+	AIEngine   *service.AIEngineService
 	Audit      *service.Audit
 	User       *service.User
 	Platforms  interface{ Supported() []domain.Platform }
+	// Modes: hình thức thu thập đang bật + lý do cái còn lại bị tắt.
+	Modes service.ModeGate
 }
 
 // NewRouter gắn toàn bộ route.
@@ -98,14 +100,16 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			"min_duration_seconds": domain.MinPublishDurationSeconds,
 		})
 	})
+	// Kèm `reason` khi mode bị tắt: FE hiện đúng lý do (thiếu ANTHROPIC_API_KEY,
+	// hay người vận hành tự tắt) thay vì mỗi chữ "chưa hỗ trợ".
 	authed.GET("/meta/collect-modes", func(c *gin.Context) {
-		enabled := d.Config.EnabledCollectModes()
 		modes := make([]gin.H, 0, len(domain.AllCollectModes))
 		for _, mode := range domain.AllCollectModes {
-			modes = append(modes, gin.H{
-				"mode":    mode,
-				"enabled": slices.Contains(enabled, mode),
-			})
+			item := gin.H{"mode": mode, "enabled": d.Modes.Allows(mode)}
+			if why := d.Modes.Why(mode); why != "" {
+				item["reason"] = why
+			}
+			modes = append(modes, item)
 		}
 		c.JSON(http.StatusOK, gin.H{"collect_modes": modes})
 	})
@@ -151,8 +155,11 @@ func registerReadOnly(g *gin.RouterGroup, d RouterDeps) {
 
 	g.GET("/prompts", catalog.ListPrompts)
 	g.GET("/prompts/:id", catalog.GetPrompt)
-	g.GET("/ai-engines", catalog.ListEngines)
-	g.GET("/ai-engines/:id", catalog.GetEngine)
+	// API key TTS: ai xem được của ai do service quyết định theo chủ sở hữu,
+	// nên route chỉ cần đăng nhập.
+	aiEngine := handler.NewAIEngine(d.AIEngine)
+	g.GET("/ai-engines", aiEngine.List)
+	g.GET("/ai-engines/:id", aiEngine.Get)
 
 	handler.NewAuditLog(d.Audit).Register(g)
 }
@@ -168,7 +175,12 @@ func registerWrite(g *gin.RouterGroup, d RouterDeps) {
 	g.PATCH("/source-posts/:id", sourcePost.Update)
 	g.POST("/source-posts/:id/run", sourcePost.Run)
 
+	// POST /voices CHỈ nhận text gõ tay — Voice từ URL vẫn phải đi qua Bài Post
+	// (business rule #1). Xem handler.createVoiceRequest.
+	g.POST("/voices", voice.Create)
 	g.PATCH("/voices/:id", voice.Update)
+	// Sửa lời đọc rồi tạo lại chính voice đó (ghi đè file cũ).
+	g.POST("/voices/:id/regenerate", voice.Regenerate)
 	g.POST("/voices/:id/ready", voice.Ready)
 	g.POST("/voices/:id/publish", voice.Publish)
 
@@ -182,8 +194,13 @@ func registerWrite(g *gin.RouterGroup, d RouterDeps) {
 	g.POST("/prompts", catalog.CreatePrompt)
 	g.PATCH("/prompts/:id", catalog.UpdatePrompt)
 
-	g.POST("/ai-engines", catalog.CreateEngine)
-	g.PATCH("/ai-engines/:id", catalog.UpdateEngine)
+	// Thêm/sửa/xoá API key nằm chung nhóm "write": key là của chính người
+	// dùng, không phải dữ liệu chung — user thường phải tự xoá được key mình
+	// đã khai (service chặn không cho đụng key của người khác).
+	aiEngine := handler.NewAIEngine(d.AIEngine)
+	g.POST("/ai-engines", aiEngine.Create)
+	g.PATCH("/ai-engines/:id", aiEngine.Update)
+	g.DELETE("/ai-engines/:id", aiEngine.Delete)
 }
 
 // registerDelete gắn các route xoá — chỉ admin.
@@ -198,5 +215,4 @@ func registerDelete(g *gin.RouterGroup, d RouterDeps) {
 	g.DELETE("/lists/breaking/:id", list.DeleteBreaking)
 	g.DELETE("/lists/scheduled/:id", list.DeleteScheduled)
 	g.DELETE("/prompts/:id", catalog.DeletePrompt)
-	g.DELETE("/ai-engines/:id", catalog.DeleteEngine)
 }

@@ -100,20 +100,20 @@ func TestExtractIDFallback(t *testing.T) {
 }
 
 func TestExtractHashtags(t *testing.T) {
-	got := ExtractHashtags("Tin nóng hôm nay #tinnong #ViệtNam #tinnong", nil)
+	got := domain.ExtractHashtags("Tin nóng hôm nay #tinnong #ViệtNam #tinnong", nil)
 	want := []string{"#tinnong", "#ViệtNam"}
 	if !slices.Equal(got, want) {
 		t.Errorf("ExtractHashtags() = %v, muốn %v (bỏ trùng, giữ thứ tự)", got, want)
 	}
 
 	// Không có hashtag trong text -> fallback tags của nền tảng.
-	got = ExtractHashtags("Video không có hashtag", []string{"tin tuc", "thoi su"})
+	got = domain.ExtractHashtags("Video không có hashtag", []string{"tin tuc", "thoi su"})
 	want = []string{"#tintuc", "#thoisu"}
 	if !slices.Equal(got, want) {
 		t.Errorf("ExtractHashtags(fallback tags) = %v, muốn %v", got, want)
 	}
 
-	if got := ExtractHashtags("", nil); len(got) != 0 {
+	if got := domain.ExtractHashtags("", nil); len(got) != 0 {
 		t.Errorf("ExtractHashtags(rỗng) = %v, muốn rỗng", got)
 	}
 }
@@ -121,17 +121,17 @@ func TestExtractHashtags(t *testing.T) {
 func TestStripHashtags(t *testing.T) {
 	in := "Tin nóng hôm nay\n\nXem thêm tại đây\n#tinnong #vietnam #24h"
 	want := "Tin nóng hôm nay\nXem thêm tại đây"
-	if got := StripHashtags(in); got != want {
+	if got := domain.StripHashtags(in); got != want {
 		t.Errorf("StripHashtags() = %q, muốn %q", got, want)
 	}
 
 	// Hashtag nằm giữa câu cũng bị bỏ, phần chữ còn lại giữ nguyên.
-	if got := StripHashtags("Bản tin #thoisu buổi sáng"); got != "Bản tin buổi sáng" {
+	if got := domain.StripHashtags("Bản tin #thoisu buổi sáng"); got != "Bản tin buổi sáng" {
 		t.Errorf("StripHashtags(giữa câu) = %q", got)
 	}
 
 	// Không có hashtag thì giữ nguyên nội dung.
-	if got := StripHashtags("Mô tả bình thường"); got != "Mô tả bình thường" {
+	if got := domain.StripHashtags("Mô tả bình thường"); got != "Mô tả bình thường" {
 		t.Errorf("StripHashtags(không có thẻ) = %q", got)
 	}
 }

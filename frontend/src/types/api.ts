@@ -51,10 +51,12 @@ export interface Me {
 /** Nền tảng nguồn hệ thống nhận diện được. */
 export type Platform = "youtube" | "facebook" | "tiktok" | "instagram" | "x";
 
-/** Hình thức thu thập kèm trạng thái bật/tắt (B, C chưa hỗ trợ). */
+/** Hình thức thu thập kèm trạng thái bật/tắt và lý do nếu đang tắt. */
 export interface CollectModeMeta {
   mode: CollectMode;
   enabled: boolean;
+  /** Chỉ có khi `enabled` = false: vì sao mode này chưa dùng được. */
+  reason?: string;
 }
 
 /** Điều kiện multime.ai đòi hỏi ở 1 bài đăng. */
@@ -112,7 +114,13 @@ export interface SourcePost {
 
 export interface Voice {
   id: string;
-  source_post_id: string;
+  /** null = Voice gõ tay (không qua Bài Post) — xem `input_text`. */
+  source_post_id: string | null;
+  /** Đoạn text người dùng gõ; chỉ có ở Voice tạo thẳng từ text. */
+  input_text: string | null;
+  /** B/C của Voice gõ tay; null với Voice sinh từ Bài Post. */
+  collect_mode: CollectMode | null;
+  prompt_id: string | null;
   ai_engine_id: string | null;
   voice_file_url: string | null;
   duration_seconds: number | null;
@@ -131,10 +139,16 @@ export interface Voice {
   created_at: string;
   published_at: string | null;
 
-  /** Các field dưới đây chỉ có trong danh sách (JOIN source_post + app_user). */
-  platform?: string;
-  source_url?: string;
+  /**
+   * Các field dưới đây chỉ có trong danh sách (JOIN source_post + app_user).
+   * Voice gõ tay không có Bài Post nên `platform`/`source_url` là null.
+   */
+  platform?: string | null;
+  source_url?: string | null;
   source_title?: string | null;
+  /** Hình thức/prompt của Bài Post nguồn — dùng làm mặc định khi tạo lại voice. */
+  source_collect_mode?: CollectMode | null;
+  source_prompt_id?: string | null;
   created_by_email?: string;
 }
 
@@ -194,12 +208,24 @@ export interface Prompt {
   created_at: string;
 }
 
+/**
+ * AIEngine thực chất là API key TTS của một người: chỉ còn 1 nhà cung cấp
+ * (3voices) nên thứ cần quản lý là key của ai, không phải chọn engine nào.
+ *
+ * API không bao giờ trả key thật — chỉ `api_key_masked` (4 ký tự cuối).
+ */
 export interface AIEngine {
   id: string;
-  name: string;
-  provider: string;
-  supported_languages: string[];
-  is_active: boolean;
+  /** Chủ sở hữu: voice của người này được đọc bằng key này. */
+  user_id: string;
+  user_email: string;
+  /** Người khai key — khác chủ sở hữu khi admin khai hộ. */
+  created_by: string;
+  created_by_email: string;
+  api_key_masked: string;
+  created_at: string;
+  /** Lần gần nhất key thật sự đọc ra audio; null = khai xong chưa dùng. */
+  last_used_at: string | null;
 }
 
 export interface AuditLog {

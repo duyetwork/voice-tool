@@ -55,8 +55,8 @@ const excerptProbeRunes = 40
 // `hashtags` riêng của API — để lại trong nội dung là lặp và ăn hết giới hạn
 // ký tự của tiêu đề Voice.
 func PostContent(title, description string) string {
-	title = StripHashtags(cleanPageTitle(title))
-	body := StripHashtags(description)
+	title = domain.StripHashtags(cleanPageTitle(title))
+	body := domain.StripHashtags(description)
 
 	switch {
 	case title == "":
@@ -78,10 +78,10 @@ func PostContent(title, description string) string {
 //
 // Chỉ khi video không có tiêu đề mới rơi về mô tả để không ra bài trắng.
 func PostContentTitled(title, description string) string {
-	if t := StripHashtags(cleanPageTitle(title)); t != "" {
+	if t := domain.StripHashtags(cleanPageTitle(title)); t != "" {
 		return domain.PostTitle(t)
 	}
-	return domain.PostTitle(StripHashtags(description))
+	return domain.PostTitle(domain.StripHashtags(description))
 }
 
 // cleanPageTitle bỏ khỏi <title> của trang những đoạn không phải nội dung: số

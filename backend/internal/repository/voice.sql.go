@@ -12,10 +12,50 @@ import (
 	"github.com/google/uuid"
 )
 
+const claimVoiceForProcessing = `-- name: ClaimVoiceForProcessing :one
+UPDATE voice
+SET publish_status = 'processing', last_error = NULL
+WHERE id = $1 AND publish_status IN ('processing', 'failed')
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id
+`
+
+// Nhận Voice về để đọc. Chỉ nhận khi voice đang `processing` hoặc đã `failed`:
+// Asynq retry lần sau vẫn nhặt lại được, còn voice đã ra file (draft/ready) thì
+// không đọc đè lên — muốn đọc lại phải đi qua SetVoiceContent, nơi người dùng
+// chốt lại lời đọc. Voice đã publish thì không bao giờ đụng vào.
+func (q *Queries) ClaimVoiceForProcessing(ctx context.Context, id uuid.UUID) (Voice, error) {
+	row := q.db.QueryRow(ctx, claimVoiceForProcessing, id)
+	var i Voice
+	err := row.Scan(
+		&i.ID,
+		&i.SourcePostID,
+		&i.AiEngineID,
+		&i.VoiceFileUrl,
+		&i.DurationSeconds,
+		&i.Hashtag,
+		&i.Language,
+		&i.ImageUrl,
+		&i.PublishStatus,
+		&i.MultimePostUrl,
+		&i.LastError,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.PublishedAt,
+		&i.Title,
+		&i.MimeType,
+		&i.SizeBytes,
+		&i.SampleRate,
+		&i.InputText,
+		&i.CollectMode,
+		&i.PromptID,
+	)
+	return i, err
+}
+
 const countVoices = `-- name: CountVoices :one
 SELECT COUNT(*)
 FROM voice v
-JOIN source_post sp ON sp.id = v.source_post_id
+LEFT JOIN source_post sp ON sp.id = v.source_post_id
 WHERE ($1::varchar IS NULL OR v.publish_status = $1)
   AND ($2::uuid    IS NULL OR v.source_post_id = $2)
   AND ($3::varchar       IS NULL OR sp.platform      = $3)
@@ -56,6 +96,64 @@ func (q *Queries) CountVoices(ctx context.Context, arg CountVoicesParams) (int64
 	return count, err
 }
 
+const createTextVoice = `-- name: CreateTextVoice :one
+INSERT INTO voice (
+  input_text, collect_mode, prompt_id, language, publish_status, title, created_by
+) VALUES (
+  $1, $2, $3,
+  $4, 'processing', $5, $6
+)
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id
+`
+
+type CreateTextVoiceParams struct {
+	InputText   *string    `json:"input_text"`
+	CollectMode *string    `json:"collect_mode"`
+	PromptID    *uuid.UUID `json:"prompt_id"`
+	Language    string     `json:"language"`
+	Title       *string    `json:"title"`
+	CreatedBy   uuid.UUID  `json:"created_by"`
+}
+
+// Voice gõ tay: không có Bài Post nào đứng sau, nội dung nằm thẳng trên Voice.
+// Tạo ở trạng thái `processing` để người dùng thấy ngay dòng voice đang chạy,
+// worker điền file + metadata vào đúng dòng đó (FinishVoice).
+func (q *Queries) CreateTextVoice(ctx context.Context, arg CreateTextVoiceParams) (Voice, error) {
+	row := q.db.QueryRow(ctx, createTextVoice,
+		arg.InputText,
+		arg.CollectMode,
+		arg.PromptID,
+		arg.Language,
+		arg.Title,
+		arg.CreatedBy,
+	)
+	var i Voice
+	err := row.Scan(
+		&i.ID,
+		&i.SourcePostID,
+		&i.AiEngineID,
+		&i.VoiceFileUrl,
+		&i.DurationSeconds,
+		&i.Hashtag,
+		&i.Language,
+		&i.ImageUrl,
+		&i.PublishStatus,
+		&i.MultimePostUrl,
+		&i.LastError,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.PublishedAt,
+		&i.Title,
+		&i.MimeType,
+		&i.SizeBytes,
+		&i.SampleRate,
+		&i.InputText,
+		&i.CollectMode,
+		&i.PromptID,
+	)
+	return i, err
+}
+
 const createVoice = `-- name: CreateVoice :one
 INSERT INTO voice (
   source_post_id, ai_engine_id, voice_file_url, duration_seconds,
@@ -64,11 +162,11 @@ INSERT INTO voice (
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id
 `
 
 type CreateVoiceParams struct {
-	SourcePostID    uuid.UUID  `json:"source_post_id"`
+	SourcePostID    *uuid.UUID `json:"source_post_id"`
 	AiEngineID      *uuid.UUID `json:"ai_engine_id"`
 	VoiceFileUrl    *string    `json:"voice_file_url"`
 	DurationSeconds *int32     `json:"duration_seconds"`
@@ -119,6 +217,9 @@ func (q *Queries) CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice
 		&i.MimeType,
 		&i.SizeBytes,
 		&i.SampleRate,
+		&i.InputText,
+		&i.CollectMode,
+		&i.PromptID,
 	)
 	return i, err
 }
@@ -150,7 +251,7 @@ SET ai_engine_id     = $1,
     publish_status   = 'draft',
     last_error       = NULL
 WHERE id = $11
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id
 `
 
 type FinishVoiceParams struct {
@@ -204,12 +305,15 @@ func (q *Queries) FinishVoice(ctx context.Context, arg FinishVoiceParams) (Voice
 		&i.MimeType,
 		&i.SizeBytes,
 		&i.SampleRate,
+		&i.InputText,
+		&i.CollectMode,
+		&i.PromptID,
 	)
 	return i, err
 }
 
 const getVoice = `-- name: GetVoice :one
-SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate FROM voice WHERE id = $1
+SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id FROM voice WHERE id = $1
 `
 
 func (q *Queries) GetVoice(ctx context.Context, id uuid.UUID) (Voice, error) {
@@ -234,18 +338,23 @@ func (q *Queries) GetVoice(ctx context.Context, id uuid.UUID) (Voice, error) {
 		&i.MimeType,
 		&i.SizeBytes,
 		&i.SampleRate,
+		&i.InputText,
+		&i.CollectMode,
+		&i.PromptID,
 	)
 	return i, err
 }
 
 const listVoices = `-- name: ListVoices :many
-SELECT v.id, v.source_post_id, v.ai_engine_id, v.voice_file_url, v.duration_seconds, v.hashtag, v.language, v.image_url, v.publish_status, v.multime_post_url, v.last_error, v.created_by, v.created_at, v.published_at, v.title, v.mime_type, v.size_bytes, v.sample_rate,
-       sp.platform    AS platform,
-       sp.source_url  AS source_url,
-       sp.title       AS source_title,
-       u.email        AS created_by_email
+SELECT v.id, v.source_post_id, v.ai_engine_id, v.voice_file_url, v.duration_seconds, v.hashtag, v.language, v.image_url, v.publish_status, v.multime_post_url, v.last_error, v.created_by, v.created_at, v.published_at, v.title, v.mime_type, v.size_bytes, v.sample_rate, v.input_text, v.collect_mode, v.prompt_id,
+       sp.platform     AS platform,
+       sp.source_url   AS source_url,
+       sp.title        AS source_title,
+       sp.collect_mode AS source_collect_mode,
+       sp.prompt_id    AS source_prompt_id,
+       u.email         AS created_by_email
 FROM voice v
-JOIN source_post sp ON sp.id = v.source_post_id
+LEFT JOIN source_post sp ON sp.id = v.source_post_id
 JOIN app_user u     ON u.id = v.created_by
 WHERE ($1::varchar IS NULL OR v.publish_status = $1)
   AND ($2::uuid    IS NULL OR v.source_post_id = $2)
@@ -284,28 +393,33 @@ type ListVoicesParams struct {
 }
 
 type ListVoicesRow struct {
-	ID              uuid.UUID  `json:"id"`
-	SourcePostID    uuid.UUID  `json:"source_post_id"`
-	AiEngineID      *uuid.UUID `json:"ai_engine_id"`
-	VoiceFileUrl    *string    `json:"voice_file_url"`
-	DurationSeconds *int32     `json:"duration_seconds"`
-	Hashtag         *string    `json:"hashtag"`
-	Language        string     `json:"language"`
-	ImageUrl        *string    `json:"image_url"`
-	PublishStatus   string     `json:"publish_status"`
-	MultimePostUrl  *string    `json:"multime_post_url"`
-	LastError       *string    `json:"last_error"`
-	CreatedBy       uuid.UUID  `json:"created_by"`
-	CreatedAt       time.Time  `json:"created_at"`
-	PublishedAt     *time.Time `json:"published_at"`
-	Title           *string    `json:"title"`
-	MimeType        *string    `json:"mime_type"`
-	SizeBytes       *int64     `json:"size_bytes"`
-	SampleRate      *int32     `json:"sample_rate"`
-	Platform        string     `json:"platform"`
-	SourceUrl       string     `json:"source_url"`
-	SourceTitle     *string    `json:"source_title"`
-	CreatedByEmail  string     `json:"created_by_email"`
+	ID                uuid.UUID  `json:"id"`
+	SourcePostID      *uuid.UUID `json:"source_post_id"`
+	AiEngineID        *uuid.UUID `json:"ai_engine_id"`
+	VoiceFileUrl      *string    `json:"voice_file_url"`
+	DurationSeconds   *int32     `json:"duration_seconds"`
+	Hashtag           *string    `json:"hashtag"`
+	Language          string     `json:"language"`
+	ImageUrl          *string    `json:"image_url"`
+	PublishStatus     string     `json:"publish_status"`
+	MultimePostUrl    *string    `json:"multime_post_url"`
+	LastError         *string    `json:"last_error"`
+	CreatedBy         uuid.UUID  `json:"created_by"`
+	CreatedAt         time.Time  `json:"created_at"`
+	PublishedAt       *time.Time `json:"published_at"`
+	Title             *string    `json:"title"`
+	MimeType          *string    `json:"mime_type"`
+	SizeBytes         *int64     `json:"size_bytes"`
+	SampleRate        *int32     `json:"sample_rate"`
+	InputText         *string    `json:"input_text"`
+	CollectMode       *string    `json:"collect_mode"`
+	PromptID          *uuid.UUID `json:"prompt_id"`
+	Platform          *string    `json:"platform"`
+	SourceUrl         *string    `json:"source_url"`
+	SourceTitle       *string    `json:"source_title"`
+	SourceCollectMode *string    `json:"source_collect_mode"`
+	SourcePromptID    *uuid.UUID `json:"source_prompt_id"`
+	CreatedByEmail    string     `json:"created_by_email"`
 }
 
 // Trả kèm nền tảng nguồn + email người tạo để bảng Voice hiển thị và lọc được
@@ -355,9 +469,14 @@ func (q *Queries) ListVoices(ctx context.Context, arg ListVoicesParams) ([]ListV
 			&i.MimeType,
 			&i.SizeBytes,
 			&i.SampleRate,
+			&i.InputText,
+			&i.CollectMode,
+			&i.PromptID,
 			&i.Platform,
 			&i.SourceUrl,
 			&i.SourceTitle,
+			&i.SourceCollectMode,
+			&i.SourcePromptID,
 			&i.CreatedByEmail,
 		); err != nil {
 			return nil, err
@@ -371,10 +490,10 @@ func (q *Queries) ListVoices(ctx context.Context, arg ListVoicesParams) ([]ListV
 }
 
 const listVoicesBySourcePost = `-- name: ListVoicesBySourcePost :many
-SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate FROM voice WHERE source_post_id = $1 ORDER BY created_at DESC
+SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id FROM voice WHERE source_post_id = $1 ORDER BY created_at DESC
 `
 
-func (q *Queries) ListVoicesBySourcePost(ctx context.Context, sourcePostID uuid.UUID) ([]Voice, error) {
+func (q *Queries) ListVoicesBySourcePost(ctx context.Context, sourcePostID *uuid.UUID) ([]Voice, error) {
 	rows, err := q.db.Query(ctx, listVoicesBySourcePost, sourcePostID)
 	if err != nil {
 		return nil, err
@@ -402,6 +521,9 @@ func (q *Queries) ListVoicesBySourcePost(ctx context.Context, sourcePostID uuid.
 			&i.MimeType,
 			&i.SizeBytes,
 			&i.SampleRate,
+			&i.InputText,
+			&i.CollectMode,
+			&i.PromptID,
 		); err != nil {
 			return nil, err
 		}
@@ -421,7 +543,7 @@ SET publish_status   = 'published',
     last_error       = NULL,
     published_at     = now()
 WHERE id = $2
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id
 `
 
 type MarkVoicePublishedParams struct {
@@ -453,6 +575,69 @@ func (q *Queries) MarkVoicePublished(ctx context.Context, arg MarkVoicePublished
 		&i.MimeType,
 		&i.SizeBytes,
 		&i.SampleRate,
+		&i.InputText,
+		&i.CollectMode,
+		&i.PromptID,
+	)
+	return i, err
+}
+
+const setVoiceContent = `-- name: SetVoiceContent :one
+UPDATE voice
+SET input_text     = $1,
+    collect_mode   = $2,
+    prompt_id      = $3,
+    language       = COALESCE($4, language),
+    publish_status = 'processing',
+    last_error     = NULL
+WHERE id = $5 AND publish_status <> 'published'
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id
+`
+
+type SetVoiceContentParams struct {
+	InputText   *string    `json:"input_text"`
+	CollectMode *string    `json:"collect_mode"`
+	PromptID    *uuid.UUID `json:"prompt_id"`
+	Language    *string    `json:"language"`
+	ID          uuid.UUID  `json:"id"`
+}
+
+// Chốt lời đọc mới cho 1 Voice rồi đưa lại vào hàng đợi.
+//
+// Đặt luôn publish_status='processing' trong cùng câu lệnh: người dùng bấm
+// "Tạo lại" là thấy dòng voice chuyển sang đang xử lý ngay, không có khoảng
+// giữa mà bảng vẫn hiện voice cũ như chưa có gì xảy ra.
+func (q *Queries) SetVoiceContent(ctx context.Context, arg SetVoiceContentParams) (Voice, error) {
+	row := q.db.QueryRow(ctx, setVoiceContent,
+		arg.InputText,
+		arg.CollectMode,
+		arg.PromptID,
+		arg.Language,
+		arg.ID,
+	)
+	var i Voice
+	err := row.Scan(
+		&i.ID,
+		&i.SourcePostID,
+		&i.AiEngineID,
+		&i.VoiceFileUrl,
+		&i.DurationSeconds,
+		&i.Hashtag,
+		&i.Language,
+		&i.ImageUrl,
+		&i.PublishStatus,
+		&i.MultimePostUrl,
+		&i.LastError,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.PublishedAt,
+		&i.Title,
+		&i.MimeType,
+		&i.SizeBytes,
+		&i.SampleRate,
+		&i.InputText,
+		&i.CollectMode,
+		&i.PromptID,
 	)
 	return i, err
 }
@@ -461,7 +646,7 @@ const setVoicePublishStatus = `-- name: SetVoicePublishStatus :one
 UPDATE voice
 SET publish_status = $1, last_error = $2
 WHERE id = $3
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id
 `
 
 type SetVoicePublishStatusParams struct {
@@ -492,6 +677,9 @@ func (q *Queries) SetVoicePublishStatus(ctx context.Context, arg SetVoicePublish
 		&i.MimeType,
 		&i.SizeBytes,
 		&i.SampleRate,
+		&i.InputText,
+		&i.CollectMode,
+		&i.PromptID,
 	)
 	return i, err
 }
@@ -503,7 +691,7 @@ SET hashtag     = COALESCE($1, hashtag),
     image_url   = COALESCE($3, image_url),
     title       = COALESCE($4, title)
 WHERE id = $5
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id
 `
 
 type UpdateVoiceMetadataParams struct {
@@ -542,6 +730,9 @@ func (q *Queries) UpdateVoiceMetadata(ctx context.Context, arg UpdateVoiceMetada
 		&i.MimeType,
 		&i.SizeBytes,
 		&i.SampleRate,
+		&i.InputText,
+		&i.CollectMode,
+		&i.PromptID,
 	)
 	return i, err
 }

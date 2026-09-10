@@ -25,7 +25,12 @@ func New(cfg *config.Config) (domain.LLMProvider, error) {
 	}
 }
 
-// Mock ghép prompt + text để chạy luồng end-to-end khi dev, không tốn API.
+// Mock cho phép chạy luồng end-to-end khi dev mà không tốn tiền API.
+//
+// Trả về ĐÚNG text nguồn, không viết lại gì và tuyệt đối không ghép prompt vào
+// kết quả: đầu ra của bước này đi thẳng vào TTS, nên nhét prompt vào đây nghĩa
+// là voice đọc to cả câu lệnh cho AI. Hình thức C thật sự cần LLM thật —
+// app.go tắt hẳn mode C khi provider còn là mock (xem ModeGate).
 type Mock struct{}
 
 var _ domain.LLMProvider = (*Mock)(nil)
@@ -34,11 +39,6 @@ func NewMock() *Mock { return &Mock{} }
 
 func (m *Mock) Name() string { return "mock" }
 
-func (m *Mock) Generate(_ context.Context, promptContent, sourceText string) (string, error) {
-	var b strings.Builder
-	b.WriteString("[mock LLM] prompt: ")
-	b.WriteString(promptContent)
-	b.WriteString("\n---\n")
-	b.WriteString(sourceText)
-	return b.String(), nil
+func (m *Mock) Generate(_ context.Context, _, sourceText string) (string, error) {
+	return strings.TrimSpace(sourceText), nil
 }

@@ -1,0 +1,25 @@
+bây giờ tôi sẽ dùng VPS để đẩy lên server, hãy lên kế hoạch cho việc deploy này, chưa sửa code, xuất kế hoạch ra 1 file tạm. Lưu ý tối ưu VPS:
+
+
+Tên miền/ Hostname
+duyetwork (cần đặt là gì)
+Tên đăng nhập
+root
+Mật khẩu
+••••••••••
+SSH Keys
+No keys added yet
+IP
+103.121.89.215, 2403:6a40:0:89:2a2e:94ff:fe30:adc8
+Uptime
+00:42:03
+Hệ điều hành.
+Ubuntu-24-x64
+Băng thông
+IN: 0 B OUT: 0 B
+Dung lượng lưu trữ
+30 GB
+RAM
+2 GB
+CPU(s)
+2 Cores

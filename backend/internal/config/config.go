@@ -41,8 +41,6 @@ type Config struct {
 	TTSProvider        string `mapstructure:"TTS_PROVIDER"`
 	STTProvider        string `mapstructure:"STT_PROVIDER"`
 	LLMProvider        string `mapstructure:"LLM_PROVIDER"`
-	ElevenLabsAPIKey   string `mapstructure:"ELEVENLABS_API_KEY"`
-	ElevenLabsVoice    string `mapstructure:"ELEVENLABS_VOICE_ID"`
 	ThreeVoicesAPIKey  string `mapstructure:"THREEVOICES_API_KEY"`
 	ThreeVoicesBaseURL string `mapstructure:"THREEVOICES_BASE_URL"`
 	ThreeVoicesVoiceID string `mapstructure:"THREEVOICES_VOICE_ID"`
@@ -169,7 +167,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("SCHEDULER_SYNC_INTERVAL", "30s")
 	v.SetDefault("SKIPPED_LOG_RETENTION", "168h") // 7 ngày
 	v.SetDefault("DEFAULT_LANGUAGE", "auto")
-	v.SetDefault("ENABLED_COLLECT_MODES", "A")
+	// B/C đã chạy được (TTS 3voices + LLM) nên bật sẵn cả 3 hình thức.
+	v.SetDefault("ENABLED_COLLECT_MODES", "A,B,C")
 
 	v.SetDefault("MULTIME_BASE_URL", "https://voice-api.strongbody.ai")
 	v.SetDefault("MULTIME_AUTH_BASE_URL", "https://api-v2.strongbody.ai")
@@ -191,7 +190,6 @@ var allKeys = []string{
 	"S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY",
 	"S3_USE_PATH_STYLE", "S3_PUBLIC_BASE_URL",
 	"TTS_PROVIDER", "STT_PROVIDER", "LLM_PROVIDER",
-	"ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID",
 	"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
 	"YTDLP_PATH", "FFMPEG_PATH", "FFPROBE_PATH",
 	"MULTIME_BASE_URL", "MULTIME_AUTH_BASE_URL", "MULTIME_SITE_URL",

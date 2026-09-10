@@ -88,6 +88,25 @@ type TTSProvider interface {
 	SupportedLanguages() []string
 }
 
+// TTSCredential là thông tin của 1 AI Engine (bản ghi ai_engine) đủ để dựng
+// provider TTS: mỗi user dùng API key của chính mình.
+type TTSCredential struct {
+	Provider string
+	APIKey   string
+	// VoiceID: giọng đã lưu bên nhà cung cấp. Rỗng = để nhà cung cấp tự sinh
+	// giọng theo mô tả mặc định.
+	VoiceID string
+}
+
+// TTSFactory dựng provider TTS từ credential của 1 engine cụ thể.
+//
+// Tồn tại vì API key không còn là hằng số trong .env mà là dữ liệu: mỗi user
+// tự khai key của mình ở màn AI Engine, và worker phải đọc bằng key của đúng
+// người sở hữu voice.
+type TTSFactory interface {
+	For(cred TTSCredential) (TTSProvider, error)
+}
+
 type STTProvider interface {
 	Name() string
 	Transcribe(ctx context.Context, audioFile []byte, language string) (text string, err error)
@@ -205,6 +224,9 @@ type Storage interface {
 // đây không cần API đăng ký/huỷ lịch.
 type Enqueuer interface {
 	EnqueueVoiceProcess(ctx context.Context, sourcePostID, actorID, voiceID string) error
+	// EnqueueVoiceText đọc đoạn text gõ tay đã lưu trên chính Voice — luồng
+	// này không có Bài Post nào để trỏ tới.
+	EnqueueVoiceText(ctx context.Context, voiceID, actorID string) error
 	// EnqueuePostMetadata lấy metadata gốc của Bài Post vừa tạo. Tách khỏi
 	// voice:process vì nó chạy trong worker (chỉ worker có yt-dlp) nhưng không
 	// được để API phải chờ.
