@@ -1,0 +1,97 @@
+# Đẩy code lên nhánh `production` -> tự build image và deploy lên VPS.
+#
+# Luồng này lặp lại ĐÚNG các bước deploy tay đã chạy được, chỉ khác là chạy trên
+# runner của GitHub:
+#
+#   1. build 4 image ở runner (KHÔNG build trên VPS: máy 2GB, riêng `next build`
+#      đã cần ~1.5-2GB nên OOM killer sẽ bắn nhầm Postgres)
+#   2. `docker save | ssh 'docker load'` sang VPS, kèm rsync migrations + config
+#   3. chạy scripts/deploy.sh trên VPS: backup DB -> migration -> khởi động lại
+#      -> kiểm tra healthy
+#
+# Toàn bộ logic nằm trong scripts/push-images.sh và scripts/deploy.sh để chạy
+# tay và chạy tự động không bao giờ lệch nhau.
+#
+# Cần khai 1 secret duy nhất: DEPLOY_SSH_KEY (private key của tài khoản deploy
+# trên VPS). Host/user/port để ở `env` bên dưới vì chúng không phải bí mật —
+# vào được hay không là do key quyết định.
+#
+# Về sau deploy nhiều lần trong ngày thì nên chuyển sang registry (GHCR) +
+# `docker compose pull`: save/load chuyển lại toàn bộ ~250MB mỗi lần, trong khi
+# registry chỉ chuyển layer thay đổi.
+
+name: Deploy production
+
+on:
+  push:
+    branches: [production]
+  # Cho phép bấm chạy tay từ tab Actions — dùng khi cần deploy lại đúng commit
+  # đang có trên nhánh mà không phải tạo commit rỗng.
+  workflow_dispatch:
+
+# Hai lần deploy chồng nhau sẽ tranh cùng thư mục và cùng database trên VPS.
+# Không cancel bản đang chạy: nó có thể đang ở giữa bước migration.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  SSH_HOST: 103.121.89.215
+  SSH_USER: deploy
+  SSH_PORT: "26266"
+  REMOTE_DIR: /opt/voice-tool
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Build ~5 phút + đẩy ~250MB sang VN. Treo quá mức này là có gì đó sai chứ
+    # không phải mạng chậm.
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Chuẩn bị SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # Ghim host key: không có bước này thì phải tắt kiểm tra host, tức là
+          # chấp nhận bị chen giữa đường.
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<EOF
+          Host deploy-target
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port $SSH_PORT
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            ServerAliveInterval 30
+          EOF
+          chmod 600 ~/.ssh/config
+          ssh deploy-target 'echo "SSH OK: $(hostname)"'
+
+      - name: Build image và đẩy sang VPS
+        env:
+          # docker-compose.prod.yml đòi 3 biến này lúc PARSE file. Chúng chỉ
+          # dùng cho runtime trên VPS (nơi có .env thật), nên ở runner điền giá
+          # trị giả cho qua bước đọc file là đủ — không giá trị nào trong số
+          # này đi vào image.
+          SITE_DOMAIN: ci-build.invalid
+          POSTGRES_PASSWORD: ci-build
+          DATABASE_URL: postgres://ci:ci-build@postgres:5432/ci?sslmode=disable
+          SSH_PORT: ${{ env.SSH_PORT }}
+          REMOTE_DIR: ${{ env.REMOTE_DIR }}
+          IMAGE_TAG: prod
+        run: ./scripts/push-images.sh deploy-target
+
+      - name: Deploy trên VPS
+        run: ssh deploy-target "cd $REMOTE_DIR && ./scripts/deploy.sh"
+
+      - name: Kiểm tra sau deploy
+        run: |
+          # Hỏi từ ngoài Internet chứ không hỏi trong máy chủ: cái người dùng
+          # thật sự chạm tới là qua Caddy.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://$SSH_HOST/healthz")
+          echo "GET /healthz -> $code"
+          [ "$code" = "200" ] || exit 1

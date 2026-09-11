@@ -304,6 +304,57 @@ thống không bắt?"), không phải audit trail, nên 7 ngày là đủ.
 
 ## CI/CD
 
+### Tự động deploy khi đẩy code lên nhánh `production`
+
+`.github/workflows/deploy-production.yml` chạy đúng các bước của lần deploy tay,
+chỉ khác là chạy trên runner của GitHub:
+
+```
+push lên nhánh production
+  -> build 4 image trên runner (KHÔNG build trên VPS: máy 2GB không đủ RAM cho
+     `next build`, xem mục Phương án A)
+  -> scripts/push-images.sh: docker save | ssh 'docker load' + rsync
+     (migrations, compose, Caddyfile, scripts) — KHÔNG đụng .env trên máy chủ
+  -> scripts/deploy.sh: backup DB -> migration -> up -d -> chờ healthy
+  -> curl http://<host>/healthz từ ngoài Internet
+```
+
+Bấm chạy tay được ở tab **Actions → Deploy production → Run workflow** (trigger
+`workflow_dispatch`), dùng khi cần deploy lại đúng commit đang có mà không phải
+tạo commit rỗng.
+
+Hai lần deploy không chạy chồng nhau (`concurrency`), và lần đang chạy KHÔNG bị
+huỷ giữa chừng — nó có thể đang ở giữa bước migration.
+
+**Secret duy nhất phải khai** trong repo (Settings → Secrets and variables →
+Actions):
+
+| Tên | Nội dung |
+|---|---|
+| `DEPLOY_SSH_KEY` | Private key ed25519 của tài khoản `deploy` trên VPS |
+
+Host/user/port nằm ở `env:` trong workflow chứ không phải secret: vào được hay
+không là do key quyết định, giấu địa chỉ IP không thêm an toàn mà chỉ làm khó
+người đọc log. Đổi máy chủ thì sửa 3 dòng đó.
+
+Tạo key mới cho CI (không dùng chung key cá nhân, để thu hồi riêng được):
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/voice-tool-gha -N "" -C "github-actions-deploy@voice-tool"
+ssh-copy-id -p 26266 -i ~/.ssh/voice-tool-gha.pub deploy@<host>   # hoặc tự nối vào authorized_keys
+# rồi dán nội dung ~/.ssh/voice-tool-gha vào secret DEPLOY_SSH_KEY
+```
+
+Thu hồi: xoá dòng key đó trong `~/.ssh/authorized_keys` của `deploy` trên VPS.
+
+Vì sao `docker save | ssh` chứ không phải registry: không cần dựng/đăng nhập
+registry nào, và mỗi tuần deploy vài lần thì chênh lệch không đáng kể. Khi
+deploy nhiều lần trong ngày thì nên chuyển sang GHCR + `docker compose pull` —
+save/load chuyển lại toàn bộ ~250MB mỗi lần, còn registry chỉ chuyển layer đã
+đổi.
+
+### AWS CodeBuild (phương án B)
+
 `buildspec.yml` ở gốc repo dùng đúng khuôn của `strongbody-api`: build image,
 tag theo branch, push ECR, xuất `imageDetail.json`. Khác biệt: repo này build
 **3 target** (`api`, `worker`, `scheduler`) từ cùng 1 Dockerfile.
