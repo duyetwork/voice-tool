@@ -1,5 +1,0 @@
-- Modal Sửa voice đảo hashtag và ngôn ngữ lên trước Author (giống Tạo voice)
-- modal "Tạo voice" cho rộng hơn (bằng size modal Sửa voice)
-- sau khi chọn xong giới tính trong modal "tạo voice" và ngoài bảng thì để giới tính và email nằm luôn trong ô, không để dưới ô. Dài hơn ô thì cắt, không thay đổi kích thức ô
-- trong modal "Sửa voice" đang tự cắt bớt text cho khớp -> giữ nguyên text ban đầu bài post (giống modal Tạo voice)
-- trong cả 2 modal: các text "Còn xx ký tự" chuyển xuống thành inline bên dưới ô, chuyển thành màu đỏ nếu vượt quá ký tự cho phép
