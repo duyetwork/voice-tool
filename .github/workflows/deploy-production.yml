@@ -56,6 +56,20 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
+
+          # Key hỏng thì ssh IM LẶNG bỏ qua nó rồi rơi sang hỏi mật khẩu, và lỗi
+          # hiện ra là "Permission denied" — không nói được gì về nguyên nhân
+          # thật. Kiểm ngay tại đây và in vân tay (vân tay KHÔNG phải bí mật) để
+          # đối chiếu với key đã cài trong authorized_keys trên VPS.
+          if ! ssh-keygen -y -f ~/.ssh/id_deploy >/dev/null 2>&1; then
+            echo "::error::secret DEPLOY_SSH_KEY không phải private key hợp lệ."
+            echo "Thường gặp: dán nhầm file .pub, hoặc dán mất xuống dòng."
+            echo "Phải là toàn bộ nội dung ~/.ssh/voice-tool-gha, gồm cả 2 dòng"
+            echo "BEGIN/END OPENSSH PRIVATE KEY."
+            exit 1
+          fi
+          echo "Vân tay key đang dùng: $(ssh-keygen -lf ~/.ssh/id_deploy | awk '{print $2}')"
+
           # Ghim host key: không có bước này thì phải tắt kiểm tra host, tức là
           # chấp nhận bị chen giữa đường.
           ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
@@ -66,6 +80,8 @@ jobs:
             Port $SSH_PORT
             IdentityFile ~/.ssh/id_deploy
             IdentitiesOnly yes
+            # BatchMode: key sai thì fail ngay, không treo ở dòng hỏi mật khẩu.
+            BatchMode yes
             ServerAliveInterval 30
           EOF
           chmod 600 ~/.ssh/config
