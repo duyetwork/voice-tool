@@ -516,7 +516,7 @@ func TestRandomUserFiltersByGenderAndPicksBeyondFirstPage(t *testing.T) {
 			{"id":77,"email":"solr@example.com","gender":"female","first_name":"Solr","last_name":"Nguyen"}]}}`)
 
 	for i := 0; i < 20; i++ {
-		user, err := c.RandomUser(context.Background(), "tok-1", domain.GenderFemale)
+		user, err := c.RandomUser(context.Background(), "tok-1", domain.GenderFemale, 0)
 		if err != nil {
 			t.Fatalf("RandomUser lỗi: %v", err)
 		}
@@ -548,7 +548,7 @@ func TestRandomUserWithoutMatchIsPermanent(t *testing.T) {
 	empty := `{"code":0,"data":{"total":0,"total_page":0,"data":[]}}`
 	c, _ := genderListServer(t, empty, empty)
 
-	_, err := c.RandomUser(context.Background(), "tok-1", domain.GenderOther)
+	_, err := c.RandomUser(context.Background(), "tok-1", domain.GenderOther, 0)
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("lỗi = %v, muốn ErrNotFound", err)
 	}
@@ -565,7 +565,7 @@ func TestRandomUserSkipsAccountsWithoutEmail(t *testing.T) {
 			{"id":1,"email":"","gender":"male"},
 			{"id":2,"email":"ok@strongbody.ai","gender":"male"}]}}`)
 
-	user, err := c.RandomUser(context.Background(), "tok-1", domain.GenderMale)
+	user, err := c.RandomUser(context.Background(), "tok-1", domain.GenderMale, 0)
 	if err != nil {
 		t.Fatalf("RandomUser lỗi: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestRandomUserSkipsAccountsWithoutEmail(t *testing.T) {
 }
 
 func TestRandomUserRejectsUnknownGender(t *testing.T) {
-	if _, err := (&Client{}).RandomUser(context.Background(), "tok", "nam"); !errors.Is(err, domain.ErrInvalidInput) {
+	if _, err := (&Client{}).RandomUser(context.Background(), "tok", "nam", 0); !errors.Is(err, domain.ErrInvalidInput) {
 		t.Errorf("lỗi = %v, muốn ErrInvalidInput", err)
 	}
 }
@@ -590,13 +590,13 @@ func TestRandomUserMapsExpiredToken(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{authBaseURL: srv.URL, http: srv.Client()}
-	if _, err := c.RandomUser(context.Background(), "tok-1", domain.GenderMale); !errors.Is(err, domain.ErrTokenExpired) {
+	if _, err := c.RandomUser(context.Background(), "tok-1", domain.GenderMale, 0); !errors.Is(err, domain.ErrTokenExpired) {
 		t.Errorf("lỗi = %v, muốn ErrTokenExpired", err)
 	}
 }
 
 func TestRandomUserRequiresToken(t *testing.T) {
-	if _, err := (&Client{}).RandomUser(context.Background(), "", domain.GenderMale); !errors.Is(err, domain.ErrReloginRequired) {
+	if _, err := (&Client{}).RandomUser(context.Background(), "", domain.GenderMale, 0); !errors.Is(err, domain.ErrReloginRequired) {
 		t.Errorf("lỗi = %v, muốn ErrReloginRequired", err)
 	}
 }

@@ -16,7 +16,7 @@ const claimVoiceForProcessing = `-- name: ClaimVoiceForProcessing :one
 UPDATE voice
 SET publish_status = 'processing', last_error = NULL
 WHERE id = $1 AND publish_status IN ('processing', 'failed')
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image
 `
 
 // Nhận Voice về để đọc. Chỉ nhận khi voice đang `processing` hoặc đã `failed`:
@@ -52,6 +52,8 @@ func (q *Queries) ClaimVoiceForProcessing(ctx context.Context, id uuid.UUID) (Vo
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }
@@ -127,7 +129,7 @@ INSERT INTO voice (
   $1, $2, $3,
   $4, 'processing', $5, $6
 )
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image
 `
 
 type CreateTextVoiceParams struct {
@@ -178,6 +180,8 @@ func (q *Queries) CreateTextVoice(ctx context.Context, arg CreateTextVoiceParams
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }
@@ -186,29 +190,42 @@ const createVoice = `-- name: CreateVoice :one
 INSERT INTO voice (
   source_post_id, ai_engine_id, voice_file_url, duration_seconds,
   hashtag, language, image_url, publish_status, title, mime_type, size_bytes,
-  sample_rate, created_by
+  sample_rate, created_by,
+  author_id, author_email, author_gender,
+  image_uploaded, no_image, publish_when_ready
 ) VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+  $14, $15, $16,
+  $17, $18, $19
 )
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image
 `
 
 type CreateVoiceParams struct {
-	SourcePostID    *uuid.UUID `json:"source_post_id"`
-	AiEngineID      *uuid.UUID `json:"ai_engine_id"`
-	VoiceFileUrl    *string    `json:"voice_file_url"`
-	DurationSeconds *int32     `json:"duration_seconds"`
-	Hashtag         *string    `json:"hashtag"`
-	Language        string     `json:"language"`
-	ImageUrl        *string    `json:"image_url"`
-	PublishStatus   string     `json:"publish_status"`
-	Title           *string    `json:"title"`
-	MimeType        *string    `json:"mime_type"`
-	SizeBytes       *int64     `json:"size_bytes"`
-	SampleRate      *int32     `json:"sample_rate"`
-	CreatedBy       uuid.UUID  `json:"created_by"`
+	SourcePostID     *uuid.UUID `json:"source_post_id"`
+	AiEngineID       *uuid.UUID `json:"ai_engine_id"`
+	VoiceFileUrl     *string    `json:"voice_file_url"`
+	DurationSeconds  *int32     `json:"duration_seconds"`
+	Hashtag          *string    `json:"hashtag"`
+	Language         string     `json:"language"`
+	ImageUrl         *string    `json:"image_url"`
+	PublishStatus    string     `json:"publish_status"`
+	Title            *string    `json:"title"`
+	MimeType         *string    `json:"mime_type"`
+	SizeBytes        *int64     `json:"size_bytes"`
+	SampleRate       *int32     `json:"sample_rate"`
+	CreatedBy        uuid.UUID  `json:"created_by"`
+	AuthorID         *int64     `json:"author_id"`
+	AuthorEmail      *string    `json:"author_email"`
+	AuthorGender     *string    `json:"author_gender"`
+	ImageUploaded    bool       `json:"image_uploaded"`
+	NoImage          bool       `json:"no_image"`
+	PublishWhenReady bool       `json:"publish_when_ready"`
 }
 
+// Metadata người dùng điền sẵn ở màn tạo Voice đi vào ngay từ đây (title,
+// hashtag, author, ảnh): worker sau đó chỉ ĐIỀN VÀO CHỖ TRỐNG chứ không ghi đè,
+// nên giá trị người dùng gõ luôn thắng giá trị lấy từ bài gốc.
 func (q *Queries) CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice, error) {
 	row := q.db.QueryRow(ctx, createVoice,
 		arg.SourcePostID,
@@ -224,6 +241,12 @@ func (q *Queries) CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice
 		arg.SizeBytes,
 		arg.SampleRate,
 		arg.CreatedBy,
+		arg.AuthorID,
+		arg.AuthorEmail,
+		arg.AuthorGender,
+		arg.ImageUploaded,
+		arg.NoImage,
+		arg.PublishWhenReady,
 	)
 	var i Voice
 	err := row.Scan(
@@ -252,6 +275,8 @@ func (q *Queries) CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }
@@ -283,7 +308,7 @@ SET ai_engine_id     = $1,
     publish_status   = 'draft',
     last_error       = NULL
 WHERE id = $11
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image
 `
 
 type FinishVoiceParams struct {
@@ -344,12 +369,14 @@ func (q *Queries) FinishVoice(ctx context.Context, arg FinishVoiceParams) (Voice
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }
 
 const getVoice = `-- name: GetVoice :one
-SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender FROM voice WHERE id = $1
+SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image FROM voice WHERE id = $1
 `
 
 func (q *Queries) GetVoice(ctx context.Context, id uuid.UUID) (Voice, error) {
@@ -381,12 +408,14 @@ func (q *Queries) GetVoice(ctx context.Context, id uuid.UUID) (Voice, error) {
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }
 
 const listVoices = `-- name: ListVoices :many
-SELECT v.id, v.source_post_id, v.ai_engine_id, v.voice_file_url, v.duration_seconds, v.hashtag, v.language, v.image_url, v.publish_status, v.multime_post_url, v.last_error, v.created_by, v.created_at, v.published_at, v.title, v.mime_type, v.size_bytes, v.sample_rate, v.input_text, v.collect_mode, v.prompt_id, v.author_id, v.author_email, v.image_uploaded, v.author_gender,
+SELECT v.id, v.source_post_id, v.ai_engine_id, v.voice_file_url, v.duration_seconds, v.hashtag, v.language, v.image_url, v.publish_status, v.multime_post_url, v.last_error, v.created_by, v.created_at, v.published_at, v.title, v.mime_type, v.size_bytes, v.sample_rate, v.input_text, v.collect_mode, v.prompt_id, v.author_id, v.author_email, v.image_uploaded, v.author_gender, v.publish_when_ready, v.no_image,
        sp.platform     AS platform,
        sp.source_url   AS source_url,
        sp.title        AS source_title,
@@ -470,6 +499,8 @@ type ListVoicesRow struct {
 	AuthorEmail         *string    `json:"author_email"`
 	ImageUploaded       bool       `json:"image_uploaded"`
 	AuthorGender        *string    `json:"author_gender"`
+	PublishWhenReady    bool       `json:"publish_when_ready"`
+	NoImage             bool       `json:"no_image"`
 	Platform            *string    `json:"platform"`
 	SourceUrl           *string    `json:"source_url"`
 	SourceTitle         *string    `json:"source_title"`
@@ -542,6 +573,8 @@ func (q *Queries) ListVoices(ctx context.Context, arg ListVoicesParams) ([]ListV
 			&i.AuthorEmail,
 			&i.ImageUploaded,
 			&i.AuthorGender,
+			&i.PublishWhenReady,
+			&i.NoImage,
 			&i.Platform,
 			&i.SourceUrl,
 			&i.SourceTitle,
@@ -561,7 +594,7 @@ func (q *Queries) ListVoices(ctx context.Context, arg ListVoicesParams) ([]ListV
 }
 
 const listVoicesBySourcePost = `-- name: ListVoicesBySourcePost :many
-SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender FROM voice WHERE source_post_id = $1 ORDER BY created_at DESC
+SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image FROM voice WHERE source_post_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListVoicesBySourcePost(ctx context.Context, sourcePostID *uuid.UUID) ([]Voice, error) {
@@ -599,6 +632,8 @@ func (q *Queries) ListVoicesBySourcePost(ctx context.Context, sourcePostID *uuid
 			&i.AuthorEmail,
 			&i.ImageUploaded,
 			&i.AuthorGender,
+			&i.PublishWhenReady,
+			&i.NoImage,
 		); err != nil {
 			return nil, err
 		}
@@ -620,7 +655,7 @@ SET publish_status   = 'published',
     last_error       = NULL,
     published_at     = now()
 WHERE id = $2
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image
 `
 
 type MarkVoicePublishedParams struct {
@@ -662,6 +697,8 @@ func (q *Queries) MarkVoicePublished(ctx context.Context, arg MarkVoicePublished
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }
@@ -675,7 +712,7 @@ SET input_text     = $1,
     publish_status = 'processing',
     last_error     = NULL
 WHERE id = $5 AND publish_status <> 'published'
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image
 `
 
 type SetVoiceContentParams struct {
@@ -726,6 +763,8 @@ func (q *Queries) SetVoiceContent(ctx context.Context, arg SetVoiceContentParams
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }
@@ -735,7 +774,7 @@ UPDATE voice
 SET image_url      = $1,
     image_uploaded = $2
 WHERE id = $3
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image
 `
 
 type SetVoiceImageParams struct {
@@ -775,6 +814,8 @@ func (q *Queries) SetVoiceImage(ctx context.Context, arg SetVoiceImageParams) (V
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }
@@ -783,7 +824,7 @@ const setVoicePublishStatus = `-- name: SetVoicePublishStatus :one
 UPDATE voice
 SET publish_status = $1, last_error = $2
 WHERE id = $3
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image
 `
 
 type SetVoicePublishStatusParams struct {
@@ -821,6 +862,8 @@ func (q *Queries) SetVoicePublishStatus(ctx context.Context, arg SetVoicePublish
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }
@@ -837,7 +880,7 @@ SET hashtag       = COALESCE($1, hashtag),
     author_gender = CASE WHEN $5::bigint IS NULL
                          THEN author_gender ELSE $7 END
 WHERE id = $8
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image
 `
 
 type UpdateVoiceMetadataParams struct {
@@ -892,6 +935,8 @@ func (q *Queries) UpdateVoiceMetadata(ctx context.Context, arg UpdateVoiceMetada
 		&i.AuthorEmail,
 		&i.ImageUploaded,
 		&i.AuthorGender,
+		&i.PublishWhenReady,
+		&i.NoImage,
 	)
 	return i, err
 }

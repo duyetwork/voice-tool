@@ -72,6 +72,10 @@ type CreateInput struct {
 	Platform string
 	// AllowDuplicate: người dùng đã xem thông báo trùng và chọn vẫn tạo mới.
 	AllowDuplicate bool
+	// Voice là metadata người dùng điền sẵn ở màn tạo Voice (tiêu đề, hashtag,
+	// author, ảnh) kèm việc có đăng luôn sau khi tạo xong hay không. Chỉ dùng
+	// khi AutoProcess.
+	Voice VoiceSeed
 }
 
 // Create tạo Bài Post từ 1 URL: tự nhận diện nền tảng + parse ID bài đăng.
@@ -151,7 +155,7 @@ func (s *SourcePost) Create(ctx context.Context, actor uuid.UUID, in CreateInput
 	}
 
 	if in.AutoProcess {
-		if err := s.Run(ctx, actor, post.ID); err != nil {
+		if err := s.Run(ctx, actor, post.ID, in.Voice); err != nil {
 			return post, err
 		}
 	}
@@ -305,7 +309,9 @@ func (s *SourcePost) Delete(ctx context.Context, actor, id uuid.UUID) error {
 
 // Run đẩy Bài Post vào queue voice:process. API không tự chạy Core Engine
 // (business rule #10).
-func (s *SourcePost) Run(ctx context.Context, actor, id uuid.UUID) error {
+// Run tạo Voice từ Bài Post. seed là metadata người dùng đã điền sẵn ở màn tạo
+// Voice; luồng chạy lại từ bảng Bài Post truyền VoiceSeed{} rỗng.
+func (s *SourcePost) Run(ctx context.Context, actor, id uuid.UUID, seed VoiceSeed) error {
 	post, err := s.Get(ctx, id)
 	if err != nil {
 		return err
@@ -314,7 +320,7 @@ func (s *SourcePost) Run(ctx context.Context, actor, id uuid.UUID) error {
 		return fmt.Errorf("%w: bài post đang được xử lý", domain.ErrInvalidInput)
 	}
 
-	if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, actor); err != nil {
+	if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, actor, seed); err != nil {
 		return err
 	}
 	s.audit.Record(ctx, actor, domain.AuditRun, domain.ObjectSourcePost, id, nil)

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/strongbody/voice-tool/backend/internal/config"
 	"github.com/strongbody/voice-tool/backend/internal/domain"
 	"github.com/strongbody/voice-tool/backend/internal/repository"
 )
@@ -41,6 +42,42 @@ func firstNonEmpty(candidates ...string) string {
 		}
 	}
 	return ""
+}
+
+// firstNonEmptyStr trả chuỗi đầu tiên có chữ.
+func firstNonEmptyStr(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// mergeHashtags gộp hashtag người dùng gõ với hashtag lấy từ bài gốc.
+//
+// Gộp chứ không thay thế: hashtag của bài là thứ giúp bài tìm lại được trên
+// multime, còn hashtag người dùng gõ là phần phân loại riêng của họ — bỏ bên
+// nào cũng mất thông tin. So khớp không phân biệt hoa thường và dấu #, vì
+// "#TinNong" với "tinnong" là cùng một thẻ.
+func mergeHashtags(userInput string, postTags []string) string {
+	out := make([]string, 0, len(postTags)+4)
+	seen := map[string]bool{}
+
+	add := func(tags []string) {
+		for _, tag := range tags {
+			key := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(tag), "#"))
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, "#"+key)
+		}
+	}
+
+	add(config.SplitHashtags(userInput))
+	add(postTags)
+	return strings.Join(out, " ")
 }
 
 func deref[T any](p *T) T {
@@ -102,21 +139,62 @@ func normalizeSort(sort, dir string, allowed ...string) (string, string) {
 // Metadata gốc của Bài Post được điền sẵn để dòng đó có nội dung đọc được ngay;
 // worker sẽ ghi đè bằng metadata fetch mới (xem query FinishVoice).
 // Enqueue lỗi thì xoá record, không để lại dòng treo ở "đang xử lý" mãi.
+// VoiceSeed là metadata người dùng điền sẵn ở màn tạo Voice, trước cả khi
+// worker chạm vào bài gốc.
+//
+// Tồn tại vì màn đó giờ là MỘT bước: người dùng điền tiêu đề/hashtag/author rồi
+// bấm Đăng, không ngồi chờ fetch xong mới điền. Giá trị ở đây luôn thắng giá
+// trị lấy từ bài gốc — worker chỉ điền vào ô còn trống (xem Engine.buildVoice).
+type VoiceSeed struct {
+	Title    string
+	Hashtag  string
+	Language string
+	ImageURL string
+	// ImageUploaded: ảnh nằm trong storage của tool -> xoá sau khi đăng.
+	ImageUploaded bool
+	// NoImage: người dùng chủ động chọn "không có ảnh". Khác với để trống, vì
+	// để trống thì worker điền ảnh bìa của bài gốc vào.
+	NoImage      bool
+	AuthorID     *int64
+	AuthorEmail  *string
+	AuthorGender *string
+	// PublishWhenReady: tạo xong audio thì đăng luôn, không cần bấm nút nữa.
+	PublishWhenReady bool
+}
+
 func enqueueVoiceProcess(
 	ctx context.Context,
 	q *repository.Queries,
 	enq domain.Enqueuer,
 	post repository.SourcePost,
 	actor uuid.UUID,
+	seed VoiceSeed,
 ) (repository.Voice, error) {
+	// Ảnh: ưu tiên ảnh người dùng đưa; họ chọn "không có ảnh" thì để trống hẳn;
+	// còn lại mới lấy ảnh bìa bài gốc.
+	image := post.ThumbnailUrl
+	switch {
+	case seed.ImageURL != "":
+		image = &seed.ImageURL
+	case seed.NoImage:
+		image = nil
+	}
+
 	voice, err := q.CreateVoice(ctx, repository.CreateVoiceParams{
 		SourcePostID:  &post.ID,
-		Language:      post.Language,
+		Language:      firstNonEmptyStr(seed.Language, post.Language),
 		PublishStatus: domain.PublishProcessing,
-		Title:         nilIfEmpty(domain.VoiceTitle(deref(post.Title))),
-		Hashtag:       nilIfEmpty(strings.Join(post.Hashtags, " ")),
-		ImageUrl:      post.ThumbnailUrl,
-		CreatedBy:     actor,
+		Title: nilIfEmpty(firstNonEmptyStr(
+			domain.VoiceTitle(seed.Title), domain.VoiceTitle(deref(post.Title)))),
+		Hashtag:          nilIfEmpty(mergeHashtags(seed.Hashtag, post.Hashtags)),
+		ImageUrl:         image,
+		CreatedBy:        actor,
+		AuthorID:         seed.AuthorID,
+		AuthorEmail:      seed.AuthorEmail,
+		AuthorGender:     seed.AuthorGender,
+		ImageUploaded:    seed.ImageURL != "" && seed.ImageUploaded,
+		NoImage:          seed.NoImage,
+		PublishWhenReady: seed.PublishWhenReady,
 	})
 	if err != nil {
 		return repository.Voice{}, fmt.Errorf("tạo voice processing: %w", err)

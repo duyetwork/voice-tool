@@ -61,6 +61,10 @@ const (
 	refreshPath = "/v1/admin/auth/refresh-token"
 	uploadPath  = "/v1/seller/voice-posts/upload"
 	usersPath   = "/v1/admin/user"
+	// Danh mục quốc gia: KHÔNG dùng /v1/admin/countries — endpoint đó trả
+	// {"code":403,"message":"unauthorized application"} với token của tài khoản
+	// thường. Bản /buyer đọc được và cùng một bảng dữ liệu.
+	countriesPath = "/v1/buyer/countries"
 
 	// minDurationSeconds: UI của multime chặn voice ngắn hơn 15 giây.
 	minDurationSeconds = 15
@@ -417,6 +421,7 @@ func (c *Client) RandomUser(
 	ctx context.Context,
 	token string,
 	gender domain.Gender,
+	countryID int64,
 ) (domain.MultimeUser, error) {
 	if token == "" {
 		return domain.MultimeUser{}, domain.ErrReloginRequired
@@ -426,7 +431,7 @@ func (c *Client) RandomUser(
 			"%w: giới tính phải là male, female hoặc other", domain.ErrInvalidInput))
 	}
 
-	probe, err := c.listUsers(ctx, token, gender, 1, 1)
+	probe, err := c.listUsers(ctx, token, gender, countryID, 1, 1)
 	if err != nil {
 		return domain.MultimeUser{}, err
 	}
@@ -436,8 +441,8 @@ func (c *Client) RandomUser(
 	}
 	if total <= 0 {
 		return domain.MultimeUser{}, domain.Permanent(fmt.Errorf(
-			"%w: Strongbody không có tài khoản nào giới tính %s",
-			domain.ErrNotFound, gender))
+			"%w: Strongbody không có tài khoản nào khớp giới tính %s%s",
+			domain.ErrNotFound, gender, countryNote(countryID)))
 	}
 
 	// Thử vài lần vì tài khoản thiếu email không dùng được (email là thứ người
@@ -445,7 +450,7 @@ func (c *Client) RandomUser(
 	// ngay thì người dùng thấy lỗi ở một danh bạ hoàn toàn bình thường.
 	for attempt := 0; attempt < randomPageAttempts; attempt++ {
 		index := rand.IntN(total)
-		listed, err := c.listUsers(ctx, token, gender, index/randomPickSize+1, randomPickSize)
+		listed, err := c.listUsers(ctx, token, gender, countryID, index/randomPickSize+1, randomPickSize)
 		if err != nil {
 			return domain.MultimeUser{}, err
 		}
@@ -456,8 +461,8 @@ func (c *Client) RandomUser(
 	}
 
 	return domain.MultimeUser{}, domain.Permanent(fmt.Errorf(
-		"%w: không có tài khoản %s nào kèm email để đứng tên bài đăng",
-		domain.ErrNotFound, gender))
+		"%w: không có tài khoản %s%s nào kèm email để đứng tên bài đăng",
+		domain.ErrNotFound, gender, countryNote(countryID)))
 }
 
 // pickUser lấy đúng dòng đã bốc trong trang; dòng đó thiếu email thì lấy dòng
@@ -492,10 +497,79 @@ func pickUser(listed userListData, want int, gender domain.Gender) (domain.Multi
 }
 
 // listUsers gọi GET /v1/admin/user với bộ lọc giới tính.
+// countryNote thêm mẩu "ở quốc gia X" vào thông báo lỗi khi có lọc quốc gia —
+// không có nó thì người dùng tưởng cả giới tính đó không còn ai.
+func countryNote(countryID int64) string {
+	if countryID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" ở quốc gia #%d", countryID)
+}
+
+// Countries lấy danh mục quốc gia để người dùng chọn khi bốc author.
+func (c *Client) Countries(ctx context.Context, token string) ([]domain.MultimeCountry, error) {
+	if token == "" {
+		return nil, domain.ErrReloginRequired
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.authBaseURL+countriesPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	q := req.URL.Query()
+	q.Set("page", "1")
+	// Danh mục quốc gia hữu hạn (~250) nên lấy một lượt, không phân trang.
+	q.Set("limit", "300")
+	req.URL.RawQuery = q.Encode()
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Scope", scopeHeader)
+
+	var data countryListData
+	if err := c.do(req, &data); err != nil {
+		if isUnauthorized(err) {
+			return nil, fmt.Errorf("%w: %v", domain.ErrTokenExpired, err)
+		}
+		return nil, fmt.Errorf("lấy danh mục quốc gia Strongbody: %w", err)
+	}
+
+	// GoFrame trả danh sách ở `data` hoặc `data.data` tuỳ endpoint — nhận cả hai
+	// để không phụ thuộc vào chi tiết đó.
+	rows := data.Data
+	if len(rows) == 0 {
+		rows = data.Items
+	}
+
+	out := make([]domain.MultimeCountry, 0, len(rows))
+	for _, r := range rows {
+		name := firstNonEmpty(r.Title, r.Name)
+		if r.ID == 0 || name == "" {
+			continue
+		}
+		out = append(out, domain.MultimeCountry{ID: r.ID, Name: name, Code: r.Code})
+	}
+	return out, nil
+}
+
+// countryRow: strongbody-api gọi tên quốc gia là `title` (internal/dto/country.
+// CountryDto), không phải `name` — đọc cả hai để khỏi phụ thuộc chi tiết đó.
+type countryRow struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+	Name  string `json:"name"`
+	Code  string `json:"code"`
+}
+
+type countryListData struct {
+	Data  []countryRow `json:"data"`
+	Items []countryRow `json:"items"`
+}
+
 func (c *Client) listUsers(
 	ctx context.Context,
 	token string,
 	gender domain.Gender,
+	countryID int64,
 	page, limit int,
 ) (userListData, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.authBaseURL+usersPath, nil)
@@ -511,6 +585,9 @@ func (c *Client) listUsers(
 	// thẳng thành `users.gender = ?` (xem dto.BuildWhere).
 	q.Set("filter_names", "gender")
 	q.Set("filter_values", string(gender))
+	if countryID > 0 {
+		q.Set("country_id", strconv.FormatInt(countryID, 10))
+	}
 	req.URL.RawQuery = q.Encode()
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)

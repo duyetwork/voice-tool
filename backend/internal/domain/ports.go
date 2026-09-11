@@ -149,12 +149,22 @@ type MultimeAuthenticator interface {
 // sách phải lấy từ Strongbody chứ không phải từ app_user của tool, vì tài
 // khoản đích có thể chưa bao giờ đăng nhập vào tool này.
 type MultimeDirectory interface {
-	// RandomUser bốc ngẫu nhiên 1 tài khoản theo giới tính.
+	// RandomUser bốc ngẫu nhiên 1 tài khoản theo giới tính, lọc thêm theo quốc
+	// gia nếu countryID > 0.
 	//
-	// Người dùng không chọn đích danh ai: họ chỉ chọn giới tính của giọng đứng
-	// tên bài, còn là ai thì để hệ thống rải đều — nên đây là "bốc" chứ không
-	// phải "tìm".
-	RandomUser(ctx context.Context, token string, gender Gender) (MultimeUser, error)
+	// Người dùng không chọn đích danh ai: họ chỉ chọn giới tính (và quốc gia)
+	// của giọng đứng tên bài, còn là ai thì để hệ thống rải đều — nên đây là
+	// "bốc" chứ không phải "tìm".
+	RandomUser(ctx context.Context, token string, gender Gender, countryID int64) (MultimeUser, error)
+	// Countries liệt kê quốc gia để người dùng chọn.
+	Countries(ctx context.Context, token string) ([]MultimeCountry, error)
+}
+
+// MultimeCountry là 1 quốc gia trong danh mục của Strongbody.
+type MultimeCountry struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Code string `json:"code,omitempty"`
 }
 
 // Gender là giới tính tài khoản Strongbody. Đúng 3 giá trị strongbody-api nhận

@@ -34,6 +34,50 @@ type createSourcePostRequest struct {
 	AutoProcess *bool `json:"auto_process"`
 	// AllowDuplicate: người dùng đã thấy thông báo trùng và chọn vẫn tạo mới.
 	AllowDuplicate bool `json:"allow_duplicate"`
+	// Voice là metadata người dùng đã điền sẵn ở màn tạo Voice. Gửi kèm ngay từ
+	// đây thay vì PATCH sau: màn đó là MỘT bước — bấm Đăng là đóng hộp thoại,
+	// worker tạo audio xong tự đăng, không còn ai ngồi đó để sửa tiếp.
+	Voice *voiceSeedRequest `json:"voice"`
+}
+
+// voiceSeedRequest — metadata điền sẵn cho Voice sắp sinh ra.
+//
+// Mọi trường đều tuỳ chọn: để trống thì hệ thống lấy từ bài gốc (tiêu đề,
+// hashtag, ảnh bìa). Riêng hashtag là GỘP chứ không thay thế.
+type voiceSeedRequest struct {
+	Title    string `json:"title"`
+	Hashtag  string `json:"hashtag"`
+	Language string `json:"language"`
+	ImageURL string `json:"image_url"`
+	// ImageUploaded: ảnh vừa tải lên storage của tool -> xoá sau khi đăng.
+	ImageUploaded bool `json:"image_uploaded"`
+	// NoImage: chủ động chọn "không có ảnh" — khác với để trống, vì để trống
+	// thì hệ thống lấy ảnh bìa của bài gốc.
+	NoImage      bool    `json:"no_image"`
+	AuthorID     *int64  `json:"author_id"`
+	AuthorEmail  *string `json:"author_email"`
+	AuthorGender *string `json:"author_gender"`
+	// PublishWhenReady: tạo xong audio thì đăng luôn lên multime.
+	PublishWhenReady bool `json:"publish_when_ready"`
+}
+
+// seed đổi request sang input của service; nil = không điền sẵn gì.
+func (r *voiceSeedRequest) seed() service.VoiceSeed {
+	if r == nil {
+		return service.VoiceSeed{}
+	}
+	return service.VoiceSeed{
+		Title:            r.Title,
+		Hashtag:          r.Hashtag,
+		Language:         r.Language,
+		ImageURL:         r.ImageURL,
+		ImageUploaded:    r.ImageUploaded,
+		NoImage:          r.NoImage,
+		AuthorID:         r.AuthorID,
+		AuthorEmail:      r.AuthorEmail,
+		AuthorGender:     r.AuthorGender,
+		PublishWhenReady: r.PublishWhenReady,
+	}
 }
 
 // duplicateBody trả kèm 409 để UI hiện được bài đã có, thay vì chỉ 1 câu báo
@@ -74,6 +118,7 @@ func (h *SourcePost) Create(c *gin.Context) {
 		AutoProcess:    autoProcess,
 		Platform:       req.Platform,
 		AllowDuplicate: req.AllowDuplicate,
+		Voice:          req.Voice.seed(),
 	})
 	if err != nil {
 		var dup *service.DuplicatePostError
@@ -218,7 +263,7 @@ func (h *SourcePost) Run(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	if err := h.svc.Run(c.Request.Context(), middleware.ActorID(c), id); err != nil {
+	if err := h.svc.Run(c.Request.Context(), middleware.ActorID(c), id, service.VoiceSeed{}); err != nil {
 		httpx.Fail(c, err)
 		return
 	}

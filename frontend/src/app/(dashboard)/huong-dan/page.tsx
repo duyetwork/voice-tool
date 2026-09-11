@@ -170,6 +170,13 @@ export default function HuongDanPage() {
                   ký tự. Không sinh Bài Post.
                 </p>
                 <p>
+                  <b>Một bước từ URL:</b> ở màn <NavLink href="/voices">Voice</NavLink> bấm{" "}
+                  <b>+ Tạo Voice</b> → tab <b>Thông tin</b>: dán URL, điền sẵn tiêu đề/hashtag/
+                  ngôn ngữ/quốc gia/author/ảnh rồi bấm <b>Đăng</b>. Hộp thoại đóng ngay, hệ thống
+                  tạo audio rồi tự đăng lên multime khi xong. Ô nào để trống thì lấy từ bài gốc;
+                  hashtag thì gộp cả hai.
+                </p>
+                <p>
                   <b>Tự động theo kênh:</b>{" "}
                   <NavLink href="/lists/breaking">Danh sách Breaking</NavLink> (quét liên tục theo
                   regex) hoặc <NavLink href="/lists/scheduled">Định kỳ</NavLink> (theo tần suất

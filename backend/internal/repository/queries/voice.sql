@@ -1,10 +1,17 @@
 -- name: CreateVoice :one
+-- Metadata người dùng điền sẵn ở màn tạo Voice đi vào ngay từ đây (title,
+-- hashtag, author, ảnh): worker sau đó chỉ ĐIỀN VÀO CHỖ TRỐNG chứ không ghi đè,
+-- nên giá trị người dùng gõ luôn thắng giá trị lấy từ bài gốc.
 INSERT INTO voice (
   source_post_id, ai_engine_id, voice_file_url, duration_seconds,
   hashtag, language, image_url, publish_status, title, mime_type, size_bytes,
-  sample_rate, created_by
+  sample_rate, created_by,
+  author_id, author_email, author_gender,
+  image_uploaded, no_image, publish_when_ready
 ) VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+  sqlc.narg('author_id'), sqlc.narg('author_email'), sqlc.narg('author_gender'),
+  sqlc.arg('image_uploaded'), sqlc.arg('no_image'), sqlc.arg('publish_when_ready')
 )
 RETURNING *;
 

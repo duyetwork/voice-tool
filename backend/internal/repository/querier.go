@@ -56,6 +56,9 @@ type Querier interface {
 	// Tạo ở trạng thái `processing` để người dùng thấy ngay dòng voice đang chạy,
 	// worker điền file + metadata vào đúng dòng đó (FinishVoice).
 	CreateTextVoice(ctx context.Context, arg CreateTextVoiceParams) (Voice, error)
+	// Metadata người dùng điền sẵn ở màn tạo Voice đi vào ngay từ đây (title,
+	// hashtag, author, ảnh): worker sau đó chỉ ĐIỀN VÀO CHỖ TRỐNG chứ không ghi đè,
+	// nên giá trị người dùng gõ luôn thắng giá trị lấy từ bài gốc.
 	CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice, error)
 	DeleteAIEngine(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteListBreaking(ctx context.Context, id uuid.UUID) (int64, error)

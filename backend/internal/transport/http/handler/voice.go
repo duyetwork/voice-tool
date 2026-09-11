@@ -256,29 +256,12 @@ func (h *Voice) UploadImage(c *gin.Context) {
 		return
 	}
 
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxImageUploadBytes)
-	header, err := c.FormFile("file")
-	if err != nil {
-		httpx.BadRequest(c, fmt.Errorf("cần file ảnh ở field `file`: %w", err))
-		return
-	}
-
-	file, err := header.Open()
-	if err != nil {
-		httpx.BadRequest(c, err)
-		return
-	}
-	defer file.Close()
-
-	data, err := io.ReadAll(io.LimitReader(file, maxImageUploadBytes))
+	data, mimeType, err := readImageUpload(c)
 	if err != nil {
 		httpx.BadRequest(c, err)
 		return
 	}
 
-	// Content-Type của trình duyệt có thể rỗng/sai (vd application/octet-stream
-	// khi kéo thả) -> tự đoán lại từ chính nội dung file.
-	mimeType := http.DetectContentType(data)
 	voice, err := h.svc.SetImage(c.Request.Context(), middleware.ActorID(c), id, service.ImageInput{
 		Data:     data,
 		MimeType: mimeType,
@@ -288,6 +271,51 @@ func (h *Voice) UploadImage(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, voice)
+}
+
+// UploadPendingImage nhận ảnh bìa cho voice CHƯA tồn tại (màn tạo Voice).
+//
+// Trả về URL để client gửi kèm khi tạo Bài Post; ảnh được gắn vào voice sinh ra
+// và bị xoá khỏi storage sau khi đăng, giống ảnh tải lên từ màn sửa.
+func (h *Voice) UploadPendingImage(c *gin.Context) {
+	data, mimeType, err := readImageUpload(c)
+	if err != nil {
+		httpx.BadRequest(c, err)
+		return
+	}
+
+	url, err := h.svc.UploadImage(c.Request.Context(), middleware.ActorID(c), service.ImageInput{
+		Data:     data,
+		MimeType: mimeType,
+	})
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.Created(c, gin.H{"image_url": url, "image_uploaded": true})
+}
+
+// readImageUpload đọc file ảnh từ request multipart (field `file`).
+func readImageUpload(c *gin.Context) ([]byte, string, error) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxImageUploadBytes)
+	header, err := c.FormFile("file")
+	if err != nil {
+		return nil, "", fmt.Errorf("cần file ảnh ở field `file`: %w", err)
+	}
+
+	file, err := header.Open()
+	if err != nil {
+		return nil, "", err
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxImageUploadBytes))
+	if err != nil {
+		return nil, "", err
+	}
+	// Content-Type của trình duyệt có thể rỗng/sai (vd application/octet-stream
+	// khi kéo thả) -> tự đoán lại từ chính nội dung file.
+	return data, http.DetectContentType(data), nil
 }
 
 // CoverImage trả ảnh bìa đã tải lên để thẻ <img> hiển thị được.

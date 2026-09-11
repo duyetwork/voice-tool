@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, api } from "@/lib/api";
 import type {
   Author,
+  Country,
   Gender,
   DuplicatePost,
   AIEngine,
@@ -100,6 +101,29 @@ export interface CreateSourcePostInput {
    * và chọn vẫn tạo mới.
    */
   allow_duplicate?: boolean;
+  /**
+   * Metadata người dùng đã điền sẵn ở màn tạo Voice. Gửi kèm ngay từ đây thay
+   * vì PATCH sau: bấm Đăng là đóng hộp thoại, worker tạo audio xong tự đăng —
+   * không còn ai ngồi đó để sửa tiếp.
+   */
+  voice?: VoiceSeedInput;
+}
+
+/** VoiceSeedInput — mọi trường đều tuỳ chọn, để trống thì lấy từ bài gốc. */
+export interface VoiceSeedInput {
+  title?: string;
+  /** Gộp với hashtag của bài gốc chứ không thay thế. */
+  hashtag?: string;
+  language?: string;
+  image_url?: string;
+  image_uploaded?: boolean;
+  /** Chủ động chọn "không có ảnh" — khác với để trống (lấy ảnh bài gốc). */
+  no_image?: boolean;
+  author_id?: number | null;
+  author_email?: string | null;
+  author_gender?: Gender | null;
+  /** Tạo xong audio thì đăng luôn lên multime. */
+  publish_when_ready?: boolean;
 }
 
 /**
@@ -173,53 +197,29 @@ export interface VoiceFilters {
 }
 
 /**
- * useVoices tự làm mới khi trong trang có voice đang xử lý — worker chạy xong
- * là bảng tự đổi trạng thái, không phải F5.
+ * useVoices tự làm mới khi trong trang còn việc đang chạy — worker xong là bảng
+ * tự đổi trạng thái, không phải bấm "Làm mới".
+ *
+ * Ba trường hợp còn việc:
+ *   - voice đang tạo audio (`processing`);
+ *   - voice đặt đăng-ngay-khi-xong mà chưa tới đích (publish_when_ready);
+ *   - voice người dùng vừa bấm Đăng — `pendingIds`, vì việc đăng KHÔNG đổi
+ *     publish_status ngay: nó vào hàng đợi rồi vài giây sau mới thành
+ *     `published`, nên nhìn vào dữ liệu hiện có thì không biết là đang có việc.
  */
-export function useVoices(filters: VoiceFilters = {}) {
+export function useVoices(filters: VoiceFilters = {}, pendingIds: string[] = []) {
+  const waiting = new Set(pendingIds);
   return useQuery({
     queryKey: keys.voices(filters),
     queryFn: () => api.get<Page<Voice>>("/voices", filters),
     refetchInterval: pollWhile((data: Page<Voice>) =>
-      data.items.some((v) => v.publish_status === "processing"),
+      data.items.some(
+        (v) =>
+          v.publish_status === "processing" ||
+          waiting.has(v.id) ||
+          (v.publish_when_ready && v.publish_status !== "published" && v.publish_status !== "failed"),
+      ),
     ),
-  });
-}
-
-/**
- * useSourcePost theo dõi metadata của 1 Bài Post.
- *
- * Metadata (tiêu đề, hashtag, ảnh bìa) do task `post:metadata` ghi và về sau
- * vài giây, trong khi audio mất lâu hơn nhiều — tách ra hỏi riêng để màn tạo
- * voice hiện được phần chữ trước, không bắt người dùng ngồi chờ audio.
- */
-export function useSourcePost(id: string | null) {
-  return useQuery({
-    queryKey: ["source-posts", id] as const,
-    queryFn: () => api.get<SourcePost>(`/source-posts/${id}`),
-    enabled: id !== null,
-    // Chưa có tiêu đề nghĩa là task metadata chưa chạy xong.
-    refetchInterval: (query) => (query.state.data?.title ? false : 2_000),
-  });
-}
-
-/**
- * useVoiceOfSourcePost theo dõi voice sinh ra từ 1 Bài Post vừa tạo.
- *
- * Hỏi lại đều đặn cho tới khi worker tạo xong: lúc mới tạo bài, dòng voice có
- * thể chưa kịp xuất hiện, nên không thể chỉ dừng ở "có dữ liệu là thôi" như
- * bảng Voice.
- */
-export function useVoiceOfSourcePost(sourcePostId: string | null) {
-  return useQuery({
-    queryKey: ["voices", "by-source-post", sourcePostId] as const,
-    queryFn: () => api.get<Page<Voice>>("/voices", { source_post_id: sourcePostId, limit: 1 }),
-    enabled: sourcePostId !== null,
-    refetchInterval: (query) => {
-      const voice = query.state.data?.items[0];
-      if (query.state.data === undefined) return 2_000;
-      return !voice || voice.publish_status === "processing" ? 2_000 : false;
-    },
   });
 }
 
@@ -566,8 +566,37 @@ export function usePlatforms() {
  */
 export function useRandomAuthor() {
   return useMutation({
-    mutationFn: (gender: Gender) =>
-      api.get<{ author: Author }>("/meta/authors/random", { gender }),
+    mutationFn: ({ gender, countryId }: { gender: Gender; countryId?: number | null }) =>
+      api.get<{ author: Author }>("/meta/authors/random", {
+        gender,
+        country_id: countryId || undefined,
+      }),
+  });
+}
+
+/**
+ * useCountries lấy danh mục quốc gia của Strongbody để lọc author.
+ *
+ * Danh mục này gần như không đổi nên giữ cache cả phiên làm việc.
+ */
+export function useCountries() {
+  return useQuery({
+    queryKey: ["meta", "countries"] as const,
+    queryFn: () => api.get<{ countries: Country[] }>("/meta/countries"),
+    staleTime: 24 * 60 * 60_000,
+  });
+}
+
+/**
+ * useUploadPendingImage tải ảnh bìa lên khi CHƯA có voice nào.
+ *
+ * Màn tạo Voice là một bước: ảnh được chọn trước cả khi Bài Post tồn tại, nên
+ * không dùng được `/voices/:id/image`. URL trả về đi kèm request tạo Bài Post.
+ */
+export function useUploadPendingImage() {
+  return useMutation({
+    mutationFn: (file: File) =>
+      api.upload<{ image_url: string; image_uploaded: boolean }>("/images", file),
   });
 }
 

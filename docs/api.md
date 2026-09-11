@@ -100,7 +100,8 @@ Không có `POST /auth/register`. Lỗi đăng nhập:
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| POST | `/source-posts` | Luồng F1 từ URL. Body: `source_url`, `collect_mode` (A/B/C), `prompt_id?`, `language?` (mặc định `auto`), `platform?` (bỏ trống = tự nhận diện từ URL), `auto_process?` (mặc định `true`). Tự enqueue `post:metadata` để lấy nội dung/hashtag/ảnh bìa. **Text gõ tay không đi đường này** — xem `POST /voices` |
+| POST | `/source-posts` | Luồng F1 từ URL. Body: `source_url`, `collect_mode` (A/B/C), `prompt_id?`, `language?` (mặc định `auto`), `platform?` (bỏ trống = tự nhận diện từ URL), `auto_process?` (mặc định `true`), `voice?` (metadata điền sẵn — xem dưới). Tự enqueue `post:metadata` để lấy nội dung/hashtag/ảnh bìa. **Text gõ tay không đi đường này** — xem `POST /voices` |
+| POST | `/images` | Tải ảnh bìa lên khi **chưa có voice nào** (màn tạo Voice điền metadata trước khi Bài Post tồn tại) — multipart, field `file`. Trả `{image_url, image_uploaded}` để gửi kèm trong `voice.image_url` |
 | GET | `/source-posts` | Query: `source_type`, `status`, `platform`, `collect_mode`, `language`, `created_by`, `created_from`, `created_to` (`YYYY-MM-DD`), `list_breaking_id`, `list_scheduled_id`, `limit`, `offset`. Mỗi item kèm `created_by_email` |
 | GET | `/source-posts/:id` | |
 | PATCH | `/source-posts/:id` | Sửa `collect_mode`, `prompt_id`, `language` — chỉ khi chưa `processing` |
@@ -169,6 +170,46 @@ Metadata lấy theo 2 đường, theo thứ tự:
 Cả hai thất bại (nền tảng dựng tường đăng nhập) → `last_error` ghi lý do, nhưng
 `status` **không** thành `failed`: bài vẫn chạy Voice được, chỉ thiếu phần điền
 sẵn.
+
+### Màn tạo Voice: điền sẵn metadata trong MỘT bước
+
+`POST /source-posts` nhận thêm khối `voice` — metadata người dùng đã điền ở màn
+tạo Voice, trước cả khi hệ thống chạm vào bài gốc:
+
+```json
+{
+  "source_url": "https://www.tiktok.com/@user/video/123",
+  "collect_mode": "A",
+  "auto_process": true,
+  "voice": {
+    "title": "Tiêu đề tự gõ",
+    "hashtag": "#tinnong",
+    "language": "vi",
+    "image_url": "https://…",
+    "image_uploaded": true,
+    "no_image": false,
+    "author_id": 91650,
+    "author_email": "a@strongbody.ai",
+    "author_gender": "female",
+    "publish_when_ready": true
+  }
+}
+```
+
+Luật duy nhất: **điền thì dùng của người dùng, bỏ trống thì lấy từ bài gốc** —
+worker chỉ điền vào ô còn trống chứ không ghi đè (`Engine.buildVoice`). Ba chỗ
+cần chú ý:
+
+| Trường | Cách xử lý |
+|---|---|
+| `hashtag` | **Gộp** hashtag người dùng gõ với hashtag của bài gốc, bỏ trùng (không phân biệt hoa thường và dấu `#`), phần người dùng gõ đứng trước |
+| `no_image` | Khác với để trống: để trống thì lấy ảnh bìa bài gốc, bật `no_image` là đăng bài **không ảnh** |
+| `language` | Người dùng chọn thì đó là chốt — quyết định luôn giọng TTS, bước tự nhận diện không ghi đè |
+
+`publish_when_ready: true` = tạo xong audio thì **tự đăng lên multime**, không
+cần bấm nút nữa (cùng đường với `auto_publish` của Danh sách nguồn). Voice thiếu
+điều kiện đăng (không author/hashtag/audio < 15s) sẽ dừng ở `failed` kèm
+`last_error` như mọi lần đăng hỏng khác.
 
 ### Các trường của API đăng bài
 
@@ -467,4 +508,5 @@ Append-only — không có endpoint sửa/xoá.
 | GET | `/meta/platforms` | Danh sách nền tảng đang được tích hợp |
 | GET | `/meta/collect-modes` | `[{mode, enabled, reason?}]` — hình thức nào đang bật. `reason` chỉ có khi tắt và nói rõ vì sao: người vận hành tự tắt trong `ENABLED_COLLECT_MODES`, hoặc thiếu provider (mode C mà `LLM_PROVIDER=mock` thì không có gì viết lại nội dung) |
 | GET | `/meta/publish` | `{category_ids, min_duration_seconds}` — điều kiện multime đòi ở 1 bài đăng |
-| GET | `/meta/authors/random` | Query: `gender` (`male`/`female`/`other`, bắt buộc). Trả `{author: {id, email, gender, full_name, avatar_url}}` — **bốc ngẫu nhiên 1 tài khoản** bên Strongbody (`GET /v1/admin/user` + `filter_names=gender`) bằng token của người đang đăng nhập; tool không giữ bản sao danh bạ. `id` chính là `author_id` khi đăng voice. Mỗi lần gọi là một lần bốc mới |
+| GET | `/meta/authors/random` | Query: `gender` (`male`/`female`/`other`, bắt buộc), `country_id` (tuỳ chọn). Trả `{author: {id, email, gender, full_name, avatar_url}}` — **bốc ngẫu nhiên 1 tài khoản** bên Strongbody (`GET /v1/admin/user` + `filter_names=gender` + `country_id`) bằng token của người đang đăng nhập; tool không giữ bản sao danh bạ. `id` chính là `author_id` khi đăng voice. Mỗi lần gọi là một lần bốc mới |
+| GET | `/meta/countries` | `{countries: [{id, name, code}]}` — danh mục quốc gia để lọc author. Đọc từ `GET /v1/buyer/countries` của Strongbody (bản `/v1/admin/countries` trả `403 unauthorized application` với token tài khoản thường) |

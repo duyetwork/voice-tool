@@ -73,6 +73,13 @@ export interface PublishRequirements {
 /** Giới tính tài khoản Strongbody — đúng 3 giá trị strongbody-api nhận. */
 export type Gender = "male" | "female" | "other";
 
+/** Quốc gia trong danh mục Strongbody — dùng để lọc author. */
+export interface Country {
+  id: number;
+  name: string;
+  code?: string;
+}
+
 /**
  * Author là tài khoản Strongbody đứng tên bài đăng trên multime.
  *
@@ -162,6 +169,10 @@ export interface Voice {
   author_email: string | null;
   /** Giới tính đã bốc ra tài khoản đó, để hiện lại "Female - a@b.com". */
   author_gender: Gender | null;
+  /** Tạo xong audio thì tự đăng — bảng dựa vào đây để biết còn việc đang chạy. */
+  publish_when_ready: boolean;
+  /** Người dùng chủ động chọn "không có ảnh" (khác với chưa có ảnh). */
+  no_image: boolean;
   publish_status: PublishStatus;
   multime_post_url: string | null;
   last_error: string | null;

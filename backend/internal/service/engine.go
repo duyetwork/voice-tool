@@ -186,11 +186,13 @@ func (e *Engine) ProcessSourcePost(ctx context.Context, postID, actor, voiceID u
 		"language":       voice.Language,
 	})
 
-	// auto_publish theo cấu hình của Danh sách nguồn (business rule #7).
+	// auto_publish theo cấu hình của Danh sách nguồn (business rule #7), hoặc
+	// người dùng đã bấm "Đăng" ngay ở màn tạo Voice (publish_when_ready).
 	autoPublish, err := e.autoPublishFor(ctx, post)
 	if err != nil {
 		e.log.WarnContext(ctx, "không đọc được auto_publish của danh sách", "error", err, "source_post_id", post.ID)
 	}
+	autoPublish = autoPublish || voice.PublishWhenReady
 	if autoPublish {
 		if err := e.enq.EnqueueVoicePublish(ctx, voice.ID.String(), actor.String()); err != nil {
 			e.log.ErrorContext(ctx, "enqueue voice:publish thất bại", "error", err, "voice_id", voice.ID)
@@ -208,6 +210,19 @@ func (e *Engine) buildVoice(
 	if !mode.Valid() {
 		return repository.Voice{}, domain.Permanent(
 			fmt.Errorf("%w: collect_mode %q", domain.ErrInvalidInput, post.CollectMode))
+	}
+
+	// Bản ghi voice `processing` mang theo metadata người dùng đã điền ở màn tạo
+	// (tiêu đề, hashtag, ngôn ngữ, ảnh, author). Đọc ngay từ đây vì ngôn ngữ họ
+	// chọn còn quyết định GIỌNG TTS ở dưới, không chỉ là thứ hiển thị.
+	var current repository.Voice
+	if voiceID != uuid.Nil {
+		if v, err := e.q.GetVoice(ctx, voiceID); err == nil {
+			current = v
+		} else {
+			e.log.WarnContext(ctx, "không đọc được voice đang xử lý để giữ metadata người dùng",
+				"error", err, "voice_id", voiceID)
+		}
 	}
 
 	// Bài nhập tay bằng text đi đường riêng: không có URL, không có adapter,
@@ -252,7 +267,9 @@ func (e *Engine) buildVoice(
 	//
 	// autoDetected ghi lại việc giá trị này do HỆ THỐNG đoán chứ không phải
 	// người dùng chọn — TTS xử lý 2 trường hợp đó khác nhau (xem speechLanguage).
-	language := post.Language
+	// Người dùng chọn ngôn ngữ ở màn tạo Voice thì đó là chốt: nhận diện tự động
+	// chỉ dành cho trường hợp họ để trống.
+	language := firstNonEmpty(nonAutoLanguage(current.Language), post.Language)
 	autoDetected := domain.IsAutoLanguage(language)
 	if autoDetected {
 		language = domain.LanguageAuto
@@ -344,6 +361,13 @@ func (e *Engine) buildVoice(
 	// Có record `processing` tạo sẵn lúc enqueue -> điền vào đúng record đó để
 	// người dùng thấy voice chuyển trạng thái tại chỗ, không nhân thêm dòng.
 	if voiceID != uuid.Nil {
+		// Metadata người dùng đã điền ở màn tạo Voice phải THẮNG thứ fetch được:
+		// họ gõ tiêu đề riêng, chọn "không có ảnh", thêm hashtag của mình rồi mới
+		// bấm Đăng — ghi đè bằng dữ liệu bài gốc là xoá đúng thứ họ vừa quyết.
+		title = keepUserValue(current.Title, title)
+		hashtag = ptrOrNil(mergeHashtags(deref(current.Hashtag), fetched.Meta.Hashtags))
+		image = coverFor(current, image)
+
 		voice, err := e.q.FinishVoice(ctx, repository.FinishVoiceParams{
 			ID:              voiceID,
 			AiEngineID:      engineID,
@@ -389,6 +413,48 @@ func (e *Engine) buildVoice(
 		return repository.Voice{}, fmt.Errorf("tạo voice: %w", err)
 	}
 	return voice, nil
+}
+
+// nonAutoLanguage trả về ngôn ngữ chỉ khi nó là lựa chọn thật của người dùng;
+// "auto" hay rỗng nghĩa là chưa chọn.
+func nonAutoLanguage(language string) string {
+	if language == "" || domain.IsAutoLanguage(language) {
+		return ""
+	}
+	return language
+}
+
+// keepUserValue giữ giá trị người dùng đã điền; chỉ dùng giá trị fetch được
+// khi họ để trống.
+func keepUserValue(userValue, fetched *string) *string {
+	if strings.TrimSpace(deref(userValue)) != "" {
+		return userValue
+	}
+	return fetched
+}
+
+// coverFor chọn ảnh bìa cho voice vừa tạo xong:
+//
+//	người dùng đã đưa ảnh        -> giữ nguyên ảnh đó
+//	người dùng chọn "không ảnh"  -> không ảnh
+//	còn lại                      -> ảnh bìa của bài gốc
+func coverFor(current repository.Voice, fetched *string) *string {
+	switch {
+	case current.ImageUrl != nil:
+		return current.ImageUrl
+	case current.NoImage:
+		return nil
+	default:
+		return fetched
+	}
+}
+
+// ptrOrNil: chuỗi rỗng -> nil, để FinishVoice không ghi đè bằng giá trị trống.
+func ptrOrNil(s string) *string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return &s
 }
 
 // cleanupOrphan dọn file vừa upload khi không ghi được record — tránh rác trên

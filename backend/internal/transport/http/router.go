@@ -104,7 +104,10 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	})
 	// Bốc ngẫu nhiên tác giả bài đăng theo giới tính. Đọc trực tiếp từ
 	// Strongbody bằng token của người đang đăng nhập — tool không giữ bản sao.
-	authed.GET("/meta/authors/random", handler.NewMultimeUsers(d.MultimeUsers).Random)
+	directory := handler.NewMultimeUsers(d.MultimeUsers)
+	authed.GET("/meta/authors/random", directory.Random)
+	// Danh mục quốc gia để lọc author theo quốc gia.
+	authed.GET("/meta/countries", directory.Countries)
 	// Kèm `reason` khi mode bị tắt: FE hiện đúng lý do (thiếu ANTHROPIC_API_KEY,
 	// hay người vận hành tự tắt) thay vì mỗi chữ "chưa hỗ trợ".
 	authed.GET("/meta/collect-modes", func(c *gin.Context) {
@@ -191,6 +194,9 @@ func registerWrite(g *gin.RouterGroup, d RouterDeps) {
 	g.POST("/voices/:id/ready", voice.Ready)
 	// Ảnh bìa tải từ máy (multipart) — xoá khỏi storage sau khi đăng.
 	g.POST("/voices/:id/image", voice.UploadImage)
+	// Ảnh bìa cho voice CHƯA tồn tại: màn tạo Voice điền metadata trước khi có
+	// bài post nào, nên phải tải ảnh lên trước rồi gửi kèm URL.
+	g.POST("/images", voice.UploadPendingImage)
 	g.POST("/voices/:id/publish", voice.Publish)
 
 	g.POST("/lists/breaking", list.CreateBreaking)

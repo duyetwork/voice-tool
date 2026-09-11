@@ -1,0 +1,18 @@
+Luồng tạo voice:
+1. Model "Tạo voice" hiển thị các trường: 
+- Hình thức tạo
+- Nhập url: Bỏ logic bấm enter url thì bắt đầu xử lý --> Bấm "Đăng" mới bắt đầu xử lý
+- Title: nếu user nhập thì dùng title của user, nếu không thì dùng title của bài post (giới hạn luôn ký tự theo ràng buộc)
+- hashtag: cho phép nhập và tổng hợp cùng hashtag tự động từ bài post -> hình như không bắt buộc nhập hashtag đâu, kiểm tra lại.
+- Ngôn ngữ: người dùng chọn: bỏ "Tự nhận diện". Nếu user không điền, extract được từ bài post thì điền không thì trống.
+- Quốc gia: người dùng chọn, bỏ tự nhận diện. Nếu user không điền, extract được từ bài post thì điền không thì trống.
+- Author: chọn gender và random user khớp với Quốc gia và Gender đã chọn
+- input file để up ảnh và dấu tick chọn không có ảnh (nếu chọn thì bài voice post lên multime không có ảnh)
+
+2. Form phải hiện luôn đủ trong 1 bước mà không chờ xử lý dữ liệu từ url xong mới hiện ra như bây giờ đang làm.
+3. Ưu tiên các giá trị nhập của user, nếu không điền thì mới lấy từ bài post
+4. Bấm "Đăng" thì tắt modal và bắt đầu chạy tạo audio, xong thì đăng luôn multime
+
+Thanh sidebar:
+- Freeze thanh sidebar, chỉ scroll nội dung ở container chính
+- cho phép đóng/mở sidebar

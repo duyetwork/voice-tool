@@ -328,7 +328,7 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 	}
 
 	if in.AutoProcess {
-		if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, in.CreatedBy); err != nil {
+		if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, in.CreatedBy, VoiceSeed{}); err != nil {
 			return true, fmt.Errorf("enqueue voice:process: %w", err)
 		}
 	}

@@ -527,6 +527,47 @@ type ImageInput struct {
 	MimeType string
 }
 
+// UploadImage lưu ảnh bìa lên storage khi CHƯA có voice nào.
+//
+// Màn tạo Voice là một bước: người dùng chọn ảnh trước cả khi Bài Post tồn tại,
+// nên không thể đi qua SetImage (cần voice id). Ảnh nằm sẵn trên storage, URL
+// của nó đi kèm request tạo Bài Post và được gắn vào voice sinh ra.
+//
+// Người dùng chọn ảnh rồi đóng hộp thoại thì file này thành rác — đổi lại là
+// không phải tạo trước một voice rỗng chỉ để có chỗ treo ảnh. Ảnh bìa vài trăm
+// KB, dọn định kỳ rẻ hơn nhiều so với dọn voice rỗng.
+func (v *Voice) UploadImage(ctx context.Context, actor uuid.UUID, in ImageInput) (string, error) {
+	data, ext, err := validateImage(in)
+	if err != nil {
+		return "", err
+	}
+
+	key := fmt.Sprintf("voice-images/pending/%s/%s%s", actor, uuid.NewString(), ext)
+	url, err := v.storage.Put(ctx, key, data, in.MimeType)
+	if err != nil {
+		return "", fmt.Errorf("lưu ảnh bìa: %w", err)
+	}
+	return url, nil
+}
+
+// validateImage kiểm tra ảnh tải lên: rỗng, quá lớn, hoặc không phải định dạng
+// multime hiển thị được.
+func validateImage(in ImageInput) ([]byte, string, error) {
+	if len(in.Data) == 0 {
+		return nil, "", fmt.Errorf("%w: file ảnh rỗng", domain.ErrInvalidInput)
+	}
+	if len(in.Data) > maxVoiceImageBytes {
+		return nil, "", fmt.Errorf("%w: ảnh lớn hơn %d MB",
+			domain.ErrInvalidInput, maxVoiceImageBytes>>20)
+	}
+	ext, ok := voiceImageTypes[strings.ToLower(strings.TrimSpace(in.MimeType))]
+	if !ok {
+		return nil, "", fmt.Errorf("%w: chỉ nhận ảnh JPG, PNG, WEBP hoặc GIF",
+			domain.ErrInvalidInput)
+	}
+	return in.Data, ext, nil
+}
+
 // SetImage lưu ảnh bìa tải từ máy vào storage rồi trỏ voice sang ảnh đó.
 //
 // Ảnh nằm trong bucket của mình nên được đánh dấu image_uploaded: sau khi đăng
@@ -544,23 +585,15 @@ func (v *Voice) SetImage(ctx context.Context, actor, id uuid.UUID, in ImageInput
 	if before.PublishStatus == domain.PublishProcessing {
 		return repository.Voice{}, errVoiceProcessing
 	}
-	if len(in.Data) == 0 {
-		return repository.Voice{}, fmt.Errorf("%w: file ảnh rỗng", domain.ErrInvalidInput)
-	}
-	if len(in.Data) > maxVoiceImageBytes {
-		return repository.Voice{}, fmt.Errorf("%w: ảnh lớn hơn %d MB",
-			domain.ErrInvalidInput, maxVoiceImageBytes>>20)
-	}
-	ext, ok := voiceImageTypes[strings.ToLower(strings.TrimSpace(in.MimeType))]
-	if !ok {
-		return repository.Voice{}, fmt.Errorf("%w: chỉ nhận ảnh JPG, PNG, WEBP hoặc GIF",
-			domain.ErrInvalidInput)
+	data, ext, err := validateImage(in)
+	if err != nil {
+		return repository.Voice{}, err
 	}
 
 	// Key có thêm đoạn ngẫu nhiên: đổi ảnh là ra URL mới, trình duyệt không
 	// hiện lại ảnh cũ trong cache.
 	key := fmt.Sprintf("voice-images/%s/%s%s", id, uuid.NewString(), ext)
-	url, err := v.storage.Put(ctx, key, in.Data, in.MimeType)
+	url, err := v.storage.Put(ctx, key, data, in.MimeType)
 	if err != nil {
 		return repository.Voice{}, fmt.Errorf("lưu ảnh bìa: %w", err)
 	}

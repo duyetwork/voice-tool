@@ -73,6 +73,7 @@ func (m *Mock) RandomUser(
 	_ context.Context,
 	token string,
 	gender domain.Gender,
+	countryID int64,
 ) (domain.MultimeUser, error) {
 	if token == "" {
 		return domain.MultimeUser{}, domain.ErrReloginRequired
@@ -85,6 +86,18 @@ func (m *Mock) RandomUser(
 	email := fmt.Sprintf("%s%d@strongbody.ai", gender, rand.IntN(1000))
 	return domain.MultimeUser{
 		ID: mockUserID(email), Email: email, Gender: string(gender), FullName: email,
+	}, nil
+}
+
+// Countries trả vài quốc gia giả để ô chọn dùng được ở dev.
+func (m *Mock) Countries(_ context.Context, token string) ([]domain.MultimeCountry, error) {
+	if token == "" {
+		return nil, domain.ErrReloginRequired
+	}
+	return []domain.MultimeCountry{
+		{ID: 1, Name: "Việt Nam", Code: "VN"},
+		{ID: 2, Name: "United States", Code: "US"},
+		{ID: 3, Name: "India", Code: "IN"},
 	}, nil
 }
 

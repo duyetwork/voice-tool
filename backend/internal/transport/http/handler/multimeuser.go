@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -30,11 +31,23 @@ func (h *MultimeUsers) Random(c *gin.Context) {
 		httpx.BadRequest(c, fmt.Errorf("gender phải là male, female hoặc other"))
 		return
 	}
+	// country_id tuỳ chọn: bỏ trống thì bốc trong toàn bộ danh bạ.
+	countryID, _ := strconv.ParseInt(strings.TrimSpace(c.Query("country_id")), 10, 64)
 
-	user, err := h.svc.Random(c.Request.Context(), middleware.ActorID(c), gender)
+	user, err := h.svc.Random(c.Request.Context(), middleware.ActorID(c), gender, countryID)
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
 	httpx.OK(c, gin.H{"author": user})
+}
+
+// Countries trả danh mục quốc gia cho ô chọn quốc gia của author.
+func (h *MultimeUsers) Countries(c *gin.Context) {
+	countries, err := h.svc.Countries(c.Request.Context(), middleware.ActorID(c))
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, gin.H{"countries": countries})
 }

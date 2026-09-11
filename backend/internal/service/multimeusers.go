@@ -32,13 +32,14 @@ func (m *MultimeUsers) Random(
 	ctx context.Context,
 	actor uuid.UUID,
 	gender domain.Gender,
+	countryID int64,
 ) (domain.MultimeUser, error) {
 	creds, err := m.creds.For(ctx, actor)
 	if err != nil {
 		return domain.MultimeUser{}, err
 	}
 
-	user, err := m.dir.RandomUser(ctx, creds.AccessToken, gender)
+	user, err := m.dir.RandomUser(ctx, creds.AccessToken, gender, countryID)
 	if err == nil {
 		return user, nil
 	}
@@ -50,5 +51,30 @@ func (m *MultimeUsers) Random(
 	if refreshErr != nil {
 		return domain.MultimeUser{}, refreshErr
 	}
-	return m.dir.RandomUser(ctx, refreshed.AccessToken, gender)
+	return m.dir.RandomUser(ctx, refreshed.AccessToken, gender, countryID)
+}
+
+// Countries liệt kê quốc gia để người dùng chọn trước khi bốc author.
+//
+// Danh mục này đổi rất chậm nên phía HTTP đặt cache dài; ở đây vẫn hỏi thẳng
+// Strongbody để không phải nuôi một bản sao thứ hai trong DB.
+func (m *MultimeUsers) Countries(ctx context.Context, actor uuid.UUID) ([]domain.MultimeCountry, error) {
+	creds, err := m.creds.For(ctx, actor)
+	if err != nil {
+		return nil, err
+	}
+
+	countries, err := m.dir.Countries(ctx, creds.AccessToken)
+	if err == nil {
+		return countries, nil
+	}
+	if !errors.Is(err, domain.ErrTokenExpired) {
+		return nil, err
+	}
+
+	refreshed, refreshErr := m.creds.Refresh(ctx, actor)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	return m.dir.Countries(ctx, refreshed.AccessToken)
 }
