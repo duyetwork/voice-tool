@@ -54,7 +54,10 @@ jobs:
       - name: Chuẩn bị SSH
         run: |
           install -d -m 700 ~/.ssh
-          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          # tr -d '\r': dán key qua trình duyệt trên Windows hay kèm CRLF, mà
+          # key OpenSSH có \r thì không parse được — lỗi hiện ra lại là
+          # "Permission denied", không ai đoán ra.
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
 
           # Key hỏng thì ssh IM LẶNG bỏ qua nó rồi rơi sang hỏi mật khẩu, và lỗi
