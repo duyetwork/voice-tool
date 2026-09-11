@@ -61,10 +61,21 @@ export const POST_STATUS_LABELS: Record<string, string> = {
   failed: "Lỗi",
 };
 
+/**
+ * Nhãn trạng thái Voice.
+ *
+ * `incomplete` KHÔNG có trong cột publish_status của DB: nó là trạng thái suy
+ * ra khi voice còn thiếu điều kiện multime đòi (chưa chọn author, chưa có
+ * hashtag/tiêu đề, audio ngắn hơn 15 giây). Tách khỏi `failed` vì hai thứ khác
+ * hẳn nhau: failed là đã gửi lên multime và hỏng, incomplete là người dùng chưa
+ * điền xong và tự sửa được. API `/voices?publish_status=incomplete` lọc theo
+ * đúng quy tắc này.
+ */
 export const PUBLISH_STATUS_LABELS: Record<string, string> = {
   processing: "Đang xử lý",
   draft: "Nháp",
   ready: "Chờ đăng",
+  incomplete: "Chưa đủ điều kiện",
   published: "Đã đăng",
   failed: "Đăng lỗi",
 };

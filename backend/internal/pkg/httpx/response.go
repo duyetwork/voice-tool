@@ -27,9 +27,14 @@ func Created(c *gin.Context, body any) { c.JSON(http.StatusCreated, body) }
 func NoContent(c *gin.Context)         { c.Status(http.StatusNoContent) }
 
 // Fail map error nghiệp vụ sang status code tương ứng.
+// Fail map lỗi sang HTTP status + câu tiếng Việt cho người dùng.
+//
+// Dùng domain.UserMessage chứ không phải err.Error(): chuỗi lỗi đầy đủ chứa cả
+// nguyên văn response của nhà cung cấp (kèm mã lỗi nội bộ của họ, đường dẫn
+// API...) — thứ đó thuộc về log, không thuộc về màn hình người dùng.
 func Fail(c *gin.Context, err error) {
 	status, code := classify(err)
-	c.AbortWithStatusJSON(status, ErrorBody{Error: code, Message: err.Error()})
+	c.AbortWithStatusJSON(status, ErrorBody{Error: code, Message: domain.UserMessage(err)})
 }
 
 // BadRequest dùng cho lỗi bind/validate payload.

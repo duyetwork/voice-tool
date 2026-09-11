@@ -12,7 +12,13 @@ import type { TokenPair, User } from "@/types/api";
  * mọi môi trường mà không cần biết trước domain. Dev chạy 2 cổng riêng thì
  * `.env.development` trỏ sang http://localhost:8080.
  */
-const BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? "/api/v1").replace(/\/$/, "");
+//
+// Dùng `||` chứ KHÔNG phải `??`: build production truyền biến này là chuỗi
+// RỖNG để nói "gọi tương đối đi". `??` chỉ rơi về mặc định khi null/undefined
+// nên chuỗi rỗng sẽ thắng, và bundle gọi `/voices` thay vì `/api/v1/voices` —
+// reverse proxy đẩy về Next và toàn bộ API trả 404. Lỗi này chỉ lộ ra sau khi
+// đã deploy, nên phải chặn ngay ở đây.
+const BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "/api/v1").replace(/\/$/, "");
 
 /** absolute dựng URL đầy đủ, chấp nhận BASE_URL tương đối lẫn tuyệt đối. */
 function absolute(path: string): string {
@@ -160,8 +166,61 @@ export function audioUrl(voiceId: string): string {
   return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 }
 
+/**
+ * coverImageUrl trả URL ảnh bìa ĐÃ TẢI LÊN để gắn vào thẻ <img>.
+ *
+ * Cùng lý do với audioUrl: bucket riêng tư và host storage chỉ tồn tại trong
+ * mạng nội bộ, nên ảnh phải đi qua API và token nằm trong URL (thẻ <img> không
+ * gắn được header Authorization).
+ *
+ * `version` là image_url đang lưu: đổi ảnh là đổi key, nên URL đổi theo và
+ * trình duyệt không hiện lại ảnh cũ trong cache.
+ */
+export function coverImageUrl(voiceId: string, version?: string | null): string {
+  const params = new URLSearchParams();
+  const token = tokenStore.access();
+  if (token) params.set("token", token);
+  if (version) params.set("v", version);
+  return `${absolute(`/voices/${voiceId}/image`)}?${params.toString()}`;
+}
+
+/**
+ * upload gửi file qua multipart. Không đi qua `request` vì hàm đó luôn
+ * JSON.stringify body; ảnh vài MB nhét vào JSON phải base64 (phình 33%) trong
+ * khi multipart là thứ trình duyệt gửi sẵn.
+ *
+ * Content-Type để trình duyệt tự đặt — tự viết tay là thiếu `boundary` và
+ * server không tách được các phần.
+ */
+async function upload<T>(path: string, file: File, retry = true): Promise<T> {
+  const body = new FormData();
+  body.append("file", file);
+
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const token = tokenStore.access();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(absolute(path), { method: "POST", headers, body, cache: "no-store" });
+
+  if (res.status === 401 && retry && tokenStore.refresh()) {
+    const refreshed = await tryRefresh();
+    if (refreshed) return upload<T>(path, file, false);
+  }
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null);
+    throw new ApiError(
+      res.status,
+      payload?.error ?? "unknown_error",
+      payload?.message ?? `Tải file thất bại (HTTP ${res.status})`,
+      payload,
+    );
+  }
+  return (await res.json()) as T;
+}
+
 export const api = {
   get: <T>(path: string, query?: RequestOptions["query"]) => request<T>(path, { query }),
+  upload,
   post: <T>(path: string, body?: unknown) => request<T>(path, { method: "POST", body }),
   patch: <T>(path: string, body?: unknown) => request<T>(path, { method: "PATCH", body }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),

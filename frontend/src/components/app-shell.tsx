@@ -43,6 +43,10 @@ const NAV = [
       { href: "/users", label: "Tài khoản", adminOnly: true },
     ],
   },
+  {
+    group: "Trợ giúp",
+    items: [{ href: "/huong-dan", label: "Hướng dẫn sử dụng" }],
+  },
 ];
 
 /** AppShell là layout dashboard + chốt đăng nhập cho mọi trang bên trong. */

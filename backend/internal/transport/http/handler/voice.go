@@ -2,6 +2,8 @@ package handler
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"time"
@@ -167,6 +169,12 @@ type updateVoiceRequest struct {
 	Hashtag  *string `json:"hashtag"`
 	Language *string `json:"language"`
 	ImageURL *string `json:"image_url"`
+	// AuthorID là tài khoản Strongbody đứng tên bài đăng (bắt buộc trước khi
+	// đăng); AuthorEmail/AuthorGender đi kèm chỉ để bảng Voice hiện lại được
+	// "Female - solr@example.com" mà không phải hỏi Strongbody từng dòng.
+	AuthorID     *int64  `json:"author_id"`
+	AuthorEmail  *string `json:"author_email"`
+	AuthorGender *string `json:"author_gender"`
 }
 
 func (h *Voice) Update(c *gin.Context) {
@@ -183,10 +191,13 @@ func (h *Voice) Update(c *gin.Context) {
 
 	voice, err := h.svc.UpdateMetadata(c.Request.Context(), middleware.ActorID(c), id,
 		service.UpdateMetadataInput{
-			Title:    req.Title,
-			Hashtag:  req.Hashtag,
-			Language: req.Language,
-			ImageURL: req.ImageURL,
+			Title:        req.Title,
+			Hashtag:      req.Hashtag,
+			Language:     req.Language,
+			ImageURL:     req.ImageURL,
+			AuthorID:     req.AuthorID,
+			AuthorEmail:  req.AuthorEmail,
+			AuthorGender: req.AuthorGender,
 		})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -228,6 +239,78 @@ func (h *Voice) Regenerate(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, voice)
+}
+
+// maxImageUploadBytes là trần của request tải ảnh bìa — hơn hẳn giới hạn ảnh
+// thật (8MB) để phần bao multipart không làm ảnh đúng cỡ bị chặn oan.
+const maxImageUploadBytes = 12 << 20
+
+// UploadImage nhận ảnh bìa tải từ máy (multipart, field `file`).
+//
+// Không dùng JSON base64: ảnh vài MB qua base64 phình thêm 33% và phải nằm gọn
+// trong bộ nhớ ở cả 2 đầu, trong khi multipart là thứ trình duyệt gửi sẵn.
+func (h *Voice) UploadImage(c *gin.Context) {
+	id, err := pathUUID(c, "id")
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxImageUploadBytes)
+	header, err := c.FormFile("file")
+	if err != nil {
+		httpx.BadRequest(c, fmt.Errorf("cần file ảnh ở field `file`: %w", err))
+		return
+	}
+
+	file, err := header.Open()
+	if err != nil {
+		httpx.BadRequest(c, err)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxImageUploadBytes))
+	if err != nil {
+		httpx.BadRequest(c, err)
+		return
+	}
+
+	// Content-Type của trình duyệt có thể rỗng/sai (vd application/octet-stream
+	// khi kéo thả) -> tự đoán lại từ chính nội dung file.
+	mimeType := http.DetectContentType(data)
+	voice, err := h.svc.SetImage(c.Request.Context(), middleware.ActorID(c), id, service.ImageInput{
+		Data:     data,
+		MimeType: mimeType,
+	})
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, voice)
+}
+
+// CoverImage trả ảnh bìa đã tải lên để thẻ <img> hiển thị được.
+//
+// Cùng lý do với Audio: bucket riêng tư và host storage chỉ tồn tại trong mạng
+// nội bộ, nên ảnh phải đi qua API. Thẻ <img> cũng không gắn được header
+// Authorization -> route này nhận token qua query param (middleware.AuthMedia).
+func (h *Voice) CoverImage(c *gin.Context) {
+	id, err := pathUUID(c, "id")
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	file, err := h.svc.CoverImage(c.Request.Context(), id)
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+
+	// Ảnh không đổi nội dung trong 1 lần tải lên (đổi ảnh là ra key mới), nên
+	// cache được — FE gắn thêm tham số phiên bản để lần tải mới hiện ngay.
+	c.Header("Cache-Control", "private, max-age=300")
+	c.Data(http.StatusOK, file.MimeType, file.Data)
 }
 
 func (h *Voice) Delete(c *gin.Context) {

@@ -29,7 +29,9 @@ type RouterDeps struct {
 	AIEngine   *service.AIEngineService
 	Audit      *service.Audit
 	User       *service.User
-	Platforms  interface{ Supported() []domain.Platform }
+	// MultimeUsers tra danh bạ tài khoản Strongbody (ô chọn tác giả).
+	MultimeUsers *service.MultimeUsers
+	Platforms    interface{ Supported() []domain.Platform }
 	// Modes: hình thức thu thập đang bật + lý do cái còn lại bị tắt.
 	Modes service.ModeGate
 }
@@ -92,14 +94,17 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"platforms": d.Platforms.Supported()})
 	})
 	// Điều kiện multime.ai đòi hỏi ở 1 bài đăng — FE dùng để biết khi nào được
-	// phép bấm Đăng (có hashtag mặc định thì voice không cần hashtag riêng).
+	// phép bấm Đăng. Không còn hashtag mặc định: mỗi voice phải có hashtag của
+	// riêng nó, bỏ trống là không đăng được.
 	authed.GET("/meta/publish", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"default_hashtags":     d.Config.MultimeDefaultHashtags(),
 			"category_ids":         d.Config.MultimeCategoryIDs(),
 			"min_duration_seconds": domain.MinPublishDurationSeconds,
 		})
 	})
+	// Bốc ngẫu nhiên tác giả bài đăng theo giới tính. Đọc trực tiếp từ
+	// Strongbody bằng token của người đang đăng nhập — tool không giữ bản sao.
+	authed.GET("/meta/authors/random", handler.NewMultimeUsers(d.MultimeUsers).Random)
 	// Kèm `reason` khi mode bị tắt: FE hiện đúng lý do (thiếu ANTHROPIC_API_KEY,
 	// hay người vận hành tự tắt) thay vì mỗi chữ "chưa hỗ trợ".
 	authed.GET("/meta/collect-modes", func(c *gin.Context) {
@@ -116,9 +121,11 @@ func NewRouter(d RouterDeps) *gin.Engine {
 
 	registerReadOnly(authed, d)
 
-	// Phát/tải file voice: token đi qua query param được vì thẻ <audio> không
-	// gắn được header Authorization.
-	api.GET("/voices/:id/audio", middleware.AuthMedia(d.Tokens), handler.NewVoice(d.Voice).Audio)
+	// Phát/tải file voice + ảnh bìa: token đi qua query param được vì thẻ
+	// <audio>/<img> không gắn được header Authorization.
+	media := handler.NewVoice(d.Voice)
+	api.GET("/voices/:id/audio", middleware.AuthMedia(d.Tokens), media.Audio)
+	api.GET("/voices/:id/image", middleware.AuthMedia(d.Tokens), media.CoverImage)
 
 	// user + admin: tạo/sửa/chạy/đăng.
 	writer := api.Group("", middleware.Auth(d.Tokens), middleware.RequireWrite())
@@ -182,6 +189,8 @@ func registerWrite(g *gin.RouterGroup, d RouterDeps) {
 	// Sửa lời đọc rồi tạo lại chính voice đó (ghi đè file cũ).
 	g.POST("/voices/:id/regenerate", voice.Regenerate)
 	g.POST("/voices/:id/ready", voice.Ready)
+	// Ảnh bìa tải từ máy (multipart) — xoá khỏi storage sau khi đăng.
+	g.POST("/voices/:id/image", voice.UploadImage)
 	g.POST("/voices/:id/publish", voice.Publish)
 
 	g.POST("/lists/breaking", list.CreateBreaking)

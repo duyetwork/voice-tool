@@ -125,6 +125,12 @@ Mỗi nền tảng gọi "nội dung" một kiểu, nên adapter dựng `title` 
 | Facebook, TikTok, Instagram, X, bài đọc qua Open Graph | Caption đầy đủ (`description` của yt-dlp / `og:description`); tiêu đề trang chỉ được ghép thêm khi nó KHÔNG phải bản cắt cụt của caption |
 | YouTube | Tiêu đề video — phần mô tả dưới video là link/timestamp nên không đăng lại |
 
+Nội dung này cũng CHÍNH LÀ thứ TTS đọc ở hình thức B/C: những gì bảng Voice
+hiển thị và ô "Nội dung đọc" điền sẵn đúng bằng những gì bạn sẽ nghe. Phụ đề
+video chỉ dùng khi bài không có chữ nào (video thuần hình ảnh), và STT chỉ dùng
+khi không có cả phụ đề. Bài chỉ gồm hashtag bị coi là không có nội dung — trước
+đây TTS đọc nguyên chuỗi "#fyp #studytok" ra thành tiếng.
+
 ```bash
 curl -X POST http://localhost:8080/api/v1/source-posts \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -172,23 +178,21 @@ tạo bài đăng trong cùng 1 request:
 | Trường | Bắt buộc | Hệ thống điền từ |
 |---|---|---|
 | `audio_file` | ✅ | file voice trên storage |
-| `author_id` | ✅ | id multime của **người tạo voice** (bài đăng dưới tên họ) |
+| `author_id` | ✅ | `voice.author_id` — tài khoản Strongbody **bốc ngẫu nhiên theo giới tính người dùng chọn** (không suy ra từ người bấm Đăng) |
 | `title` | ✅ | `voice.title` — nội dung Bài Post gộp 1 dòng, cắt ở `domain.MaxVoiceTitleRunes` (200) |
 | `caption` | — | **không gửi** — multime không dùng (form của chính họ luôn gửi rỗng) |
-| `hashtags[]` | ✅¹ | `voice.hashtag`, fallback `MULTIME_DEFAULT_HASHTAGS` |
-| `category_ids[]` | ✅¹ | `MULTIME_CATEGORY_IDS` |
-| `image` | — | tải `voice.image_url` về rồi đính kèm (API nhận file, không nhận URL) |
+| `hashtags[]` | ✅ | `voice.hashtag` — **không còn hashtag mặc định**, bỏ trống là không đăng được |
+| `category_ids[]` | — | `MULTIME_CATEGORY_IDS` |
+| `image` | — | `voice.image_url`: ảnh URL thì tải về rồi đính kèm, ảnh tải từ máy thì đọc thẳng từ storage (API nhận file, không nhận URL) |
 | `source_lang` | luôn gửi | `voice.language`; rỗng = để multime tự nhận diện |
 | `lang` | — | chỉ gửi khi ngôn ngữ khác `auto` |
 | `visibility` | — | `MULTIME_VISIBILITY`, mặc định `public` |
 | `is_public_download` | — | cấu hình |
 | `scheduled_at` | — | chưa dùng |
 
-¹ Phải có **ít nhất 1** trong `hashtags[]` / `category_ids[]`.
-
-Ngoài ra API từ chối audio ngắn hơn 15 giây. Ba điều kiện bắt buộc (`title`,
-hashtag/category, độ dài) được client chặn trước để lỗi hiện ra dưới dạng câu
-giải thích thay vì HTTP 400 khó hiểu.
+Ngoài ra API từ chối audio ngắn hơn 15 giây. Bốn điều kiện bắt buộc
+(`author_id`, `title`, hashtag, độ dài) được chặn trước ở cả API `/publish` lẫn
+client multime, để lỗi hiện ra dưới dạng câu giải thích thay vì HTTP 400 khó hiểu.
 
 **`title` là toàn bộ phần chữ của bài đăng:**
 
@@ -215,7 +219,7 @@ thể và hành động tiếp theo, ví dụ:
 | API key TTS sai | *"API key 3voices không hợp lệ hoặc đã bị thu hồi — khai lại key ở mục AI Engine (3voices: Invalid API key)"* |
 | Hết credit 3voices | *"Tài khoản 3voices hết credit — nạp thêm rồi chạy lại"* |
 | Vượt rate limit | *"3voices báo vượt giới hạn số request — hệ thống sẽ tự thử lại sau"* |
-| Bài không có chữ nào | *"Bài này không có phụ đề lẫn nội dung text để đọc"* |
+| Bài không có chữ nào | *"Bài này không có nội dung text để đọc (không có caption/tiêu đề lẫn phụ đề)"* |
 
 Nguyên văn lỗi (stderr yt-dlp, exit code, body của nhà cung cấp) chỉ đi vào log
 của worker. Lỗi không khớp trường hợp nào ở trên thì trả **nguyên văn dòng đầu
@@ -285,13 +289,15 @@ path và yt-dlp là bên quyết định tải được hay không.
 | Method | Path | Ghi chú |
 |---|---|---|
 | POST | `/voices` | **Chỉ nhận text gõ tay.** Body: `text` (bắt buộc, tối đa 20.000 ký tự), `collect_mode` (`B` hoặc `C`), `prompt_id?` (bắt buộc với C), `language?`. Trả về Voice ở trạng thái `processing` rồi enqueue `voice:text` — không tạo Bài Post nào. Voice từ URL vẫn đi qua `/source-posts` |
-| GET | `/voices` | Query: `publish_status`, `source_post_id`, `platform`, `language`, `created_by`, `created_from`, `created_to`, `published_from`, `published_to`, `limit`, `offset`. Mỗi item kèm `platform`, `source_url`, `source_title`, `created_by_email` |
+| GET | `/voices` | Query: `publish_status`, `source_post_id`, `platform`, `language`, `created_by`, `created_from`, `created_to`, `published_from`, `published_to`, `limit`, `offset`. Mỗi item kèm `platform`, `source_url`, `source_title`, `source_extracted_text` (text đã đưa cho TTS), `created_by_email`, `author_id`, `author_email`, `author_gender`. **`publish_status` lọc theo trạng thái hiển thị** — xem ghi chú bên dưới |
 | GET | `/voices/:id` | |
 | GET | `/voices/:id/audio` | Trả file voice để nghe thử; `?download=1` để tải về. Nhận token qua header **hoặc** `?token=` — thẻ `<audio>` không gắn được header `Authorization`. `400` nếu voice đã publish (file đã bị xoá theo business rule #2) |
-| PATCH | `/voices/:id` | Sửa `title`, `hashtag`, `language`, `image_url`. `409` nếu đã publish, `400` nếu còn `processing` hoặc `title` quá 200 ký tự |
+| PATCH | `/voices/:id` | Sửa `title`, `hashtag`, `language`, `image_url`, và bộ `author_id` + `author_email` + `author_gender`. `409` nếu đã publish, `400` nếu còn `processing` hoặc `title` quá 200 ký tự |
+| POST | `/voices/:id/image` | **Tải ảnh bìa từ máy** — multipart, field `file` (JPG/PNG/WEBP/GIF, tối đa 8MB). Lưu vào storage, đánh dấu `image_uploaded` và **xoá khỏi storage ngay sau khi đăng lên multime**. `409` nếu đã publish |
+| GET | `/voices/:id/image` | Ảnh bìa đã tải lên, để thẻ `<img>` hiển thị được — bucket riêng tư nên không lộ URL storage. Nhận token qua header **hoặc** `?token=`. `404` nếu voice dùng ảnh từ URL bài gốc (link công khai, trình duyệt tự tải) |
 | POST | `/voices/:id/regenerate` | **Sửa lời đọc rồi đọc lại chính voice đó** (ghi đè file cũ). Body: `text` (bắt buộc), `collect_mode` (`B`/`C`), `prompt_id?`, `language?` → `202` + voice ở trạng thái `processing`. `409` nếu đã publish, `400` nếu đang `processing` |
 | POST | `/voices/:id/ready` | `draft` → `ready` (đã duyệt, chờ đăng) |
-| POST | `/voices/:id/publish` | → `202`. Enqueue `voice:publish` |
+| POST | `/voices/:id/publish` | → `202`. Enqueue `voice:publish`. `400` nếu voice chưa chọn author hoặc chưa có hashtag |
 | DELETE | `/voices/:id` | Xoá cả file trên storage nếu còn. **Chỉ admin** |
 
 > Không có `POST /voices`: Voice chỉ sinh ra từ việc chạy Bài Post
@@ -299,18 +305,31 @@ path và yt-dlp là bên quyết định tải được hay không.
 
 `publish_status`: `processing` → `draft` → `ready` → `published`, hoặc `failed`.
 
+Ngoài 5 giá trị đó, API nhận thêm **`incomplete` — "Chưa đủ điều kiện"**: voice
+đang ở `draft`/`ready` nhưng còn thiếu thứ multime đòi (chưa chọn author, chưa
+có hashtag/tiêu đề, audio ngắn hơn 15 giây). Đây là trạng thái **suy ra lúc
+đọc**, không có trong cột `publish_status` của DB — cột đó là trạng thái quy
+trình, còn cái lọc là trạng thái người dùng nhìn thấy trên bảng.
+
+Tách khỏi `failed` vì hai thứ khác hẳn nhau: `failed` là đã gửi lên multime và
+hỏng (có `last_error`), `incomplete` là người dùng chưa điền xong và tự sửa
+được. Mỗi voice rơi vào đúng một trạng thái, nên tổng số dòng của các bộ lọc
+bằng đúng tổng số voice.
+
 `processing` là record được tạo **ngay lúc enqueue** `voice:process`, trước khi
 có file — để bảng Voice hiện dòng "đang xử lý" thay vì trống trơn cho tới lúc
 job xong. Record này chưa sửa/đăng được (`400`); worker điền file + metadata vào
 đúng nó rồi chuyển sang `draft`, hoặc chuyển `failed` + `last_error` nếu lỗi.
 
-Publish lên multime.ai yêu cầu Voice thoả 3 điều kiện, nếu không job sẽ fail với
+Publish lên multime.ai yêu cầu Voice thoả 4 điều kiện; `POST /voices/:id/publish`
+trả `400` ngay nếu thiếu author/hashtag, các điều kiện còn lại làm job fail với
 `last_error` giải thích rõ (FE cũng disable nút Đăng kèm lý do):
 
 | Điều kiện | Ghi chú |
 |---|---|
+| Có `author_id` | Tài khoản Strongbody đứng tên bài đăng — chọn giới tính rồi hệ thống bốc ngẫu nhiên (`GET /meta/authors/random`) |
 | Có `title` | Tối đa 200 ký tự (`domain.MaxTitleRunes`). Mode B/C thiếu tiêu đề thì lấy câu đầu của text đọc ra |
-| Có ít nhất 1 hashtag | Thiếu thì dùng `MULTIME_DEFAULT_HASHTAGS` |
+| Có ít nhất 1 hashtag | **Bắt buộc** — không còn hashtag mặc định trong cấu hình |
 | `duration_seconds` ≥ 15 | Giới hạn của multime.ai, không bỏ qua được |
 | Token multime của người tạo voice còn hiệu lực | Hết hạn thì tự refresh; refresh lỗi thì `last_error` = "cần đăng nhập lại multime" |
 
@@ -447,3 +466,5 @@ Append-only — không có endpoint sửa/xoá.
 | GET | `/healthz` | Không cần auth |
 | GET | `/meta/platforms` | Danh sách nền tảng đang được tích hợp |
 | GET | `/meta/collect-modes` | `[{mode, enabled, reason?}]` — hình thức nào đang bật. `reason` chỉ có khi tắt và nói rõ vì sao: người vận hành tự tắt trong `ENABLED_COLLECT_MODES`, hoặc thiếu provider (mode C mà `LLM_PROVIDER=mock` thì không có gì viết lại nội dung) |
+| GET | `/meta/publish` | `{category_ids, min_duration_seconds}` — điều kiện multime đòi ở 1 bài đăng |
+| GET | `/meta/authors/random` | Query: `gender` (`male`/`female`/`other`, bắt buộc). Trả `{author: {id, email, gender, full_name, avatar_url}}` — **bốc ngẫu nhiên 1 tài khoản** bên Strongbody (`GET /v1/admin/user` + `filter_names=gender`) bằng token của người đang đăng nhập; tool không giữ bản sao danh bạ. `id` chính là `author_id` khi đăng voice. Mỗi lần gọi là một lần bốc mới |

@@ -249,8 +249,12 @@ func (e *Engine) buildVoice(
 
 	// Ngôn ngữ: 'auto' nghĩa là lấy theo nền tảng khai báo, không đoán bừa.
 	// Nền tảng không nói gì thì giữ 'auto' để multime.ai tự nhận diện từ audio.
+	//
+	// autoDetected ghi lại việc giá trị này do HỆ THỐNG đoán chứ không phải
+	// người dùng chọn — TTS xử lý 2 trường hợp đó khác nhau (xem speechLanguage).
 	language := post.Language
-	if domain.IsAutoLanguage(language) {
+	autoDetected := domain.IsAutoLanguage(language)
+	if autoDetected {
 		language = domain.LanguageAuto
 		if detected := baseLanguage(fetched.Meta.Language); detected != "" {
 			language = detected
@@ -302,11 +306,9 @@ func (e *Engine) buildVoice(
 			engineID = &engine.ID
 		}
 
-		// TTS nhận chuỗi rỗng khi chưa chốt ngôn ngữ -> provider dùng mặc định
-		// của chính nó thay vì bị ép đọc sai giọng.
-		ttsLang := language
-		if domain.IsAutoLanguage(ttsLang) {
-			ttsLang = ""
+		ttsLang, err := e.speechLanguage(ctx, provider, language, autoDetected)
+		if err != nil {
+			return repository.Voice{}, err
 		}
 		audio, err = provider.Synthesize(ctx, spoken, ttsLang)
 		if err != nil {
@@ -553,15 +555,44 @@ func (e *Engine) ttsFor(
 		return nil, nil, domain.Permanent(err)
 	}
 
-	// Ngôn ngữ 'auto' thì không có gì để validate — provider tự xử. Danh sách
-	// ngôn ngữ hỏi thẳng provider chứ không còn khai tay trong DB: nhà cung cấp
-	// là nơi duy nhất biết mình đọc được thứ tiếng nào.
-	if !domain.IsAutoLanguage(language) &&
-		!languageSupported(language, provider.SupportedLanguages()) {
-		return nil, nil, domain.Permanent(fmt.Errorf("%w: %s không đọc được %s",
-			domain.ErrLangUnsupported, provider.Name(), language))
-	}
 	return provider, &engine, nil
+}
+
+// speechLanguage chốt mã ngôn ngữ gửi cho TTS, và quyết định khi nào thì từ
+// chối đọc.
+//
+// Điểm mấu chốt là PHÂN BIỆT ai chọn ngôn ngữ đó:
+//
+//   - Người dùng tự chọn mà provider không đọc được -> từ chối, và nói rõ
+//     tiếng gì cùng danh sách đọc được. Đọc bằng tiếng khác là làm sai ý họ.
+//   - Hệ thống TỰ nhận diện từ nền tảng (bài YouTube tiếng Nga chẳng hạn) ->
+//     KHÔNG từ chối. Người dùng chỉ yêu cầu "đọc bài này", họ không chọn tiếng
+//     Nga; chặn ở đây biến một suy đoán của hệ thống thành lỗi cứng của họ.
+//     Gửi chuỗi rỗng để 3voices tự nhận diện từ chính nội dung.
+//
+// Trả về chuỗi rỗng nghĩa là "để provider tự quyết".
+func (e *Engine) speechLanguage(
+	ctx context.Context,
+	provider domain.TTSProvider,
+	language string,
+	autoDetected bool,
+) (string, error) {
+	if domain.IsAutoLanguage(language) {
+		return "", nil
+	}
+	if languageSupported(language, provider.SupportedLanguages()) {
+		return language, nil
+	}
+	if autoDetected {
+		e.log.WarnContext(ctx, "ngôn ngữ tự nhận diện không nằm trong danh sách của TTS, để provider tự xử",
+			"language", language, "tts", provider.Name())
+		return "", nil
+	}
+	return "", domain.Permanent(domain.Explain(
+		fmt.Sprintf("%s không đọc được tiếng %q — chọn ngôn ngữ khác (%s) hoặc để Tự nhận diện",
+			provider.Name(), language, strings.Join(provider.SupportedLanguages(), ", ")),
+		fmt.Errorf("%w: %s không đọc được %s",
+			domain.ErrLangUnsupported, provider.Name(), language)))
 }
 
 // isTextPost: Bài Post nhập tay bằng text (không có URL nguồn, không adapter).
@@ -682,9 +713,11 @@ func (e *Engine) buildTextVoice(
 		engineID = &engine.ID
 	}
 
-	ttsLang := voice.Language
-	if domain.IsAutoLanguage(ttsLang) {
-		ttsLang = ""
+	// Voice gõ tay: ngôn ngữ là do người dùng chọn ở form, không phải hệ thống
+	// đoán -> chọn tiếng provider không đọc được thì báo lỗi thẳng.
+	ttsLang, err := e.speechLanguage(ctx, provider, voice.Language, false)
+	if err != nil {
+		return err
 	}
 	audio, err := provider.Synthesize(ctx, spoken, ttsLang)
 	if err != nil {
@@ -808,14 +841,14 @@ func (e *Engine) publish(ctx context.Context, voice repository.Voice) error {
 		return fmt.Errorf("đọc file voice %s: %w", key, err)
 	}
 
-	// Ảnh bìa: API nhận file, không nhận URL — phải tải về trước.
+	// Ảnh bìa: API nhận file, không nhận URL — phải có sẵn bytes trước.
 	var imageBytes []byte
 	var imageName string
 	if url := deref(voice.ImageUrl); url != "" {
-		imageBytes, imageName, err = e.fetchImage(ctx, url)
+		imageBytes, imageName, err = e.coverImage(ctx, voice)
 		if err != nil {
 			// Thiếu ảnh bìa không đáng để chặn việc đăng.
-			e.log.WarnContext(ctx, "không tải được ảnh bìa, đăng không kèm ảnh",
+			e.log.WarnContext(ctx, "không lấy được ảnh bìa, đăng không kèm ảnh",
 				"error", err, "voice_id", voice.ID, "image_url", url)
 		}
 	}
@@ -829,6 +862,9 @@ func (e *Engine) publish(ctx context.Context, voice repository.Voice) error {
 	post := domain.VoicePostInput{
 		FileName: filepath.Base(key),
 		MimeType: deref(voice.MimeType),
+		// AuthorID do người dùng chọn (bắt buộc) — bài lên multime dưới tên tài
+		// khoản đó, không phải tài khoản của người bấm nút đăng.
+		AuthorID: deref(voice.AuthorID),
 		Title:    publishTitle(voice),
 		// Language rỗng thì multime tự nhận diện từ audio — không đoán bừa.
 		Language:        lang,
@@ -856,6 +892,18 @@ func (e *Engine) publish(ctx context.Context, voice repository.Voice) error {
 	if err := e.storage.Delete(ctx, key); err != nil {
 		e.log.WarnContext(ctx, "đã publish nhưng không xoá được file voice",
 			"error", err, "voice_id", voice.ID, "key", key)
+	}
+
+	// Ảnh bìa tải từ máy: multime đã giữ một bản trong bài đăng, bản trong
+	// bucket của mình không còn ai đọc -> xoá cho đỡ tốn dung lượng (câu lệnh
+	// MarkVoicePublished ở trên đã gỡ link).
+	if voice.ImageUploaded && voice.ImageUrl != nil {
+		if imgKey := e.storage.KeyFromURL(*voice.ImageUrl); imgKey != "" {
+			if err := e.storage.Delete(ctx, imgKey); err != nil {
+				e.log.WarnContext(ctx, "đã publish nhưng không xoá được ảnh bìa",
+					"error", err, "voice_id", voice.ID, "key", imgKey)
+			}
+		}
 	}
 	return nil
 }
@@ -907,6 +955,28 @@ func publishTitle(voice repository.Voice) string {
 	}
 	// Bài không có tiêu đề nào dùng được -> đặt tên theo id để vẫn đăng được.
 	return "Voice " + voice.ID.String()[:8]
+}
+
+// coverImage lấy bytes ảnh bìa để đính kèm vào request publish.
+//
+// Hai nguồn, hai đường đọc: ảnh người dùng tải từ máy nằm trong bucket RIÊNG TƯ
+// của tool — tải qua HTTP sẽ bị từ chối, phải đọc thẳng bằng storage client.
+// Ảnh lấy từ bài gốc là URL công khai của nền tảng khác nên phải tải về.
+func (e *Engine) coverImage(ctx context.Context, voice repository.Voice) ([]byte, string, error) {
+	url := deref(voice.ImageUrl)
+	if !voice.ImageUploaded {
+		return e.fetchImage(ctx, url)
+	}
+
+	key := e.storage.KeyFromURL(url)
+	if key == "" {
+		return nil, "", fmt.Errorf("không đọc được key ảnh bìa từ %s", url)
+	}
+	data, err := e.storage.Get(ctx, key)
+	if err != nil {
+		return nil, "", fmt.Errorf("đọc ảnh bìa %s: %w", key, err)
+	}
+	return data, path.Base(key), nil
 }
 
 // fetchImage tải ảnh bìa từ URL để đính kèm vào request publish.

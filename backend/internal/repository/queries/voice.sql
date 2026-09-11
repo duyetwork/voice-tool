@@ -58,11 +58,30 @@ SELECT v.*,
        sp.title        AS source_title,
        sp.collect_mode AS source_collect_mode,
        sp.prompt_id    AS source_prompt_id,
+       sp.extracted_text AS source_extracted_text,
        u.email         AS created_by_email
 FROM voice v
 LEFT JOIN source_post sp ON sp.id = v.source_post_id
 JOIN app_user u     ON u.id = v.created_by
-WHERE (sqlc.narg('publish_status')::varchar IS NULL OR v.publish_status = sqlc.narg('publish_status'))
+-- Lọc theo trạng thái NGƯỜI DÙNG THẤY, không phải cột thô: voice còn thiếu điều
+-- kiện đăng (chưa chọn author, chưa có hashtag/tiêu đề, audio ngắn hơn mức
+-- multime nhận) hiện badge "Chưa đủ điều kiện", nên chọn trạng thái đó phải ra
+-- đúng những dòng ấy — và "Nháp"/"Chờ đăng" thì không được lẫn chúng.
+--
+-- 'incomplete' KHÔNG phải giá trị có trong cột publish_status: nó là trạng thái
+-- suy ra lúc đọc. Thiếu hashtag là việc người dùng chưa điền xong, khác hẳn
+-- 'failed' (đã gửi lên multime và bị từ chối), nên không gộp chung.
+WHERE (sqlc.narg('publish_status')::varchar IS NULL
+       OR CASE
+            WHEN v.publish_status IN ('draft', 'ready')
+             AND (v.author_id IS NULL OR v.author_id <= 0
+                  OR COALESCE(btrim(v.hashtag), '') = ''
+                  OR COALESCE(btrim(v.title), '') = ''
+                  OR (v.duration_seconds IS NOT NULL
+                      AND v.duration_seconds < sqlc.arg('min_duration')::int))
+            THEN 'incomplete'
+            ELSE v.publish_status
+          END = sqlc.narg('publish_status'))
   AND (sqlc.narg('source_post_id')::uuid    IS NULL OR v.source_post_id = sqlc.narg('source_post_id'))
   AND (sqlc.narg('platform')::varchar       IS NULL OR sp.platform      = sqlc.narg('platform'))
   AND (sqlc.narg('language')::varchar       IS NULL OR v.language       = sqlc.narg('language'))
@@ -88,7 +107,25 @@ LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 SELECT COUNT(*)
 FROM voice v
 LEFT JOIN source_post sp ON sp.id = v.source_post_id
-WHERE (sqlc.narg('publish_status')::varchar IS NULL OR v.publish_status = sqlc.narg('publish_status'))
+-- Lọc theo trạng thái NGƯỜI DÙNG THẤY, không phải cột thô: voice còn thiếu điều
+-- kiện đăng (chưa chọn author, chưa có hashtag/tiêu đề, audio ngắn hơn mức
+-- multime nhận) hiện badge "Chưa đủ điều kiện", nên chọn trạng thái đó phải ra
+-- đúng những dòng ấy — và "Nháp"/"Chờ đăng" thì không được lẫn chúng.
+--
+-- 'incomplete' KHÔNG phải giá trị có trong cột publish_status: nó là trạng thái
+-- suy ra lúc đọc. Thiếu hashtag là việc người dùng chưa điền xong, khác hẳn
+-- 'failed' (đã gửi lên multime và bị từ chối), nên không gộp chung.
+WHERE (sqlc.narg('publish_status')::varchar IS NULL
+       OR CASE
+            WHEN v.publish_status IN ('draft', 'ready')
+             AND (v.author_id IS NULL OR v.author_id <= 0
+                  OR COALESCE(btrim(v.hashtag), '') = ''
+                  OR COALESCE(btrim(v.title), '') = ''
+                  OR (v.duration_seconds IS NOT NULL
+                      AND v.duration_seconds < sqlc.arg('min_duration')::int))
+            THEN 'incomplete'
+            ELSE v.publish_status
+          END = sqlc.narg('publish_status'))
   AND (sqlc.narg('source_post_id')::uuid    IS NULL OR v.source_post_id = sqlc.narg('source_post_id'))
   AND (sqlc.narg('platform')::varchar       IS NULL OR sp.platform      = sqlc.narg('platform'))
   AND (sqlc.narg('language')::varchar       IS NULL OR v.language       = sqlc.narg('language'))
@@ -122,11 +159,28 @@ RETURNING *;
 SELECT * FROM voice WHERE source_post_id = $1 ORDER BY created_at DESC;
 
 -- name: UpdateVoiceMetadata :one
+-- author_id/author_email/author_gender đi thành một bộ: bốc tác giả là nhận cả
+-- ba, nên không COALESCE riêng lẻ để tránh trạng thái id của người này còn
+-- email/giới tính của người kia.
 UPDATE voice
-SET hashtag     = COALESCE(sqlc.narg('hashtag'), hashtag),
-    language    = COALESCE(sqlc.narg('language'), language),
-    image_url   = COALESCE(sqlc.narg('image_url'), image_url),
-    title       = COALESCE(sqlc.narg('title'), title)
+SET hashtag       = COALESCE(sqlc.narg('hashtag'), hashtag),
+    language      = COALESCE(sqlc.narg('language'), language),
+    image_url     = COALESCE(sqlc.narg('image_url'), image_url),
+    title         = COALESCE(sqlc.narg('title'), title),
+    author_id     = COALESCE(sqlc.narg('author_id'), author_id),
+    author_email  = CASE WHEN sqlc.narg('author_id')::bigint IS NULL
+                         THEN author_email ELSE sqlc.narg('author_email') END,
+    author_gender = CASE WHEN sqlc.narg('author_id')::bigint IS NULL
+                         THEN author_gender ELSE sqlc.narg('author_gender') END
+WHERE id = sqlc.arg('id')
+RETURNING *;
+
+-- name: SetVoiceImage :one
+-- Ảnh bìa tải từ máy: image_uploaded = TRUE đánh dấu file nằm trong storage của
+-- mình, để sau khi đăng lên multime thì xoá đi cho đỡ tốn dung lượng.
+UPDATE voice
+SET image_url      = sqlc.narg('image_url'),
+    image_uploaded = sqlc.arg('image_uploaded')
 WHERE id = sqlc.arg('id')
 RETURNING *;
 
@@ -139,10 +193,15 @@ RETURNING *;
 -- name: MarkVoicePublished :one
 -- Business rule #2: publish thành công -> xoá file S3 và set voice_file_url = NULL,
 -- chỉ giữ multime_post_url làm nguồn tham chiếu duy nhất.
+-- Ảnh bìa tải từ máy cũng bị xoá theo cùng lý do: multime đã giữ bản của nó,
+-- bản trong bucket của mình không còn ai đọc nữa. Ảnh lấy từ URL bài gốc không
+-- nằm trong bucket nên giữ nguyên link.
 UPDATE voice
 SET publish_status   = 'published',
     multime_post_url = sqlc.arg('multime_post_url'),
     voice_file_url   = NULL,
+    image_url        = CASE WHEN image_uploaded THEN NULL ELSE image_url END,
+    image_uploaded   = FALSE,
     last_error       = NULL,
     published_at     = now()
 WHERE id = sqlc.arg('id')

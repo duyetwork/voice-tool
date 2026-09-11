@@ -59,11 +59,34 @@ export interface CollectModeMeta {
   reason?: string;
 }
 
-/** Điều kiện multime.ai đòi hỏi ở 1 bài đăng. */
+/**
+ * Điều kiện multime.ai đòi hỏi ở 1 bài đăng.
+ *
+ * Không còn `default_hashtags`: hashtag mặc định đã bị bỏ khỏi cấu hình, mỗi
+ * voice phải có hashtag của riêng nó thì mới đăng được.
+ */
 export interface PublishRequirements {
-  default_hashtags: string[];
   category_ids: number[];
   min_duration_seconds: number;
+}
+
+/** Giới tính tài khoản Strongbody — đúng 3 giá trị strongbody-api nhận. */
+export type Gender = "male" | "female" | "other";
+
+/**
+ * Author là tài khoản Strongbody đứng tên bài đăng trên multime.
+ *
+ * Không chọn đích danh: người dùng chỉ chọn giới tính, hệ thống bốc ngẫu nhiên
+ * một tài khoản khớp (`/meta/authors/random`). Đây là tài khoản bên Strongbody,
+ * không phải tài khoản của tool — người đăng và người đứng tên bài khác nhau.
+ */
+export interface Author {
+  /** Chính là `author_id` gửi kèm khi đăng voice. */
+  id: number;
+  email: string;
+  gender: Gender;
+  full_name: string;
+  avatar_url?: string;
 }
 
 /**
@@ -132,6 +155,13 @@ export interface Voice {
   hashtag: string | null;
   language: string;
   image_url: string | null;
+  /** true = ảnh bìa nằm trong storage của tool (tải từ máy lên) và sẽ bị xoá sau khi đăng. */
+  image_uploaded: boolean;
+  /** Tài khoản Strongbody đứng tên bài đăng — bắt buộc trước khi đăng. */
+  author_id: number | null;
+  author_email: string | null;
+  /** Giới tính đã bốc ra tài khoản đó, để hiện lại "Female - a@b.com". */
+  author_gender: Gender | null;
   publish_status: PublishStatus;
   multime_post_url: string | null;
   last_error: string | null;
@@ -149,6 +179,12 @@ export interface Voice {
   /** Hình thức/prompt của Bài Post nguồn — dùng làm mặc định khi tạo lại voice. */
   source_collect_mode?: CollectMode | null;
   source_prompt_id?: string | null;
+  /**
+   * Text worker đã đưa cho TTS đọc (với hình thức C là bản gốc trước khi LLM
+   * viết lại). Là thứ điền sẵn vào ô "Nội dung đọc" — nghe thấy gì thì ô hiện
+   * đúng cái đó.
+   */
+  source_extracted_text?: string | null;
   created_by_email?: string;
 }
 

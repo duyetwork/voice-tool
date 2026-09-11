@@ -47,7 +47,7 @@ sẵn trong repo. Một tên miền phục vụ cả giao diện lẫn API:
                   │  (mạng nội bộ, không mở cổng ra ngoài)
      ┌────────┬───┴────┬──────────┬─────────────┐
      ▼        ▼        ▼          ▼             ▼
-  postgres  redis    minio    worker ×2    scheduler ×1
+  postgres  redis    minio    worker ×1    scheduler ×1
 ```
 
 **Vì sao đứng chung 1 tên miền:** không phải cấu hình CORS, chỉ cần 1 chứng chỉ
@@ -58,7 +58,8 @@ build lại image.
 
 | Cần | Ghi chú |
 |---|---|
-| 1 máy Linux, 2 vCPU / 2GB trở lên | RAM lúc rảnh chỉ ~300MB; 2 vCPU là để chạy song song 2 voice (yt-dlp + ffmpeg ăn CPU) |
+| 1 máy Linux, 2 vCPU / 2GB trở lên | RAM lúc rảnh ~620MB (có MinIO ~770MB); đỉnh lúc worker chạy Mode A vượt 1.6GB nên **bắt buộc có swap** — `scripts/bootstrap-vps.sh` tạo sẵn 4GB |
+| **Build image ở máy khác, không build trên máy chủ** | `npm run build` của Next cần ~1.5-2GB RAM. Trên máy 2GB nó bị OOM killer bắn, có khi kéo cả Postgres chết theo. Dùng `scripts/push-images.sh` |
 | Docker + Docker Compose | |
 | Cổng 80 và 443 mở ra Internet | Caddy cần cổng 80 để xin chứng chỉ Let's Encrypt |
 | 1 bản ghi DNS A | Ví dụ `voice.multime.ai` → IP máy chủ |
@@ -75,12 +76,24 @@ Name: voice        Type: A        Value: <IP máy chủ>        TTL: 300
 Thêm subdomain không ảnh hưởng gì tới `multime.ai` gốc (đang trỏ CloudFront) và
 cũng không ảnh hưởng bản ghi MX/email.
 
-**2. Trên máy chủ:**
+**2. Gia cố máy chủ** (chạy 1 lần, bằng root):
+
+```bash
+scp scripts/bootstrap-vps.sh root@<ip>:
+ssh root@<ip> 'bash bootstrap-vps.sh "'"$(cat ~/.ssh/id_ed25519.pub)"'"'
+```
+
+Script tạo swap 4GB, user `deploy` + SSH key, khoá đăng nhập bằng mật khẩu,
+tường lửa (chỉ 22/80/443, cả IPv6), fail2ban, vá bảo mật tự động, Docker kèm
+giới hạn log. Truyền SSH key vào là bắt buộc nếu muốn nó khoá SSH — không có
+key thì script cố tình bỏ qua bước đó thay vì khoá bạn ra ngoài.
+
+**3. Mã nguồn + cấu hình trên máy chủ:**
 
 ```bash
 git clone <repo> /opt/voice-tool && cd /opt/voice-tool
-cp .env.prod.example .env
-vi .env          # điền SITE_DOMAIN, POSTGRES_PASSWORD, JWT_SECRET,
+cp .env.prod.example .env && chmod 600 .env
+vi .env          # điền SITE_DOMAIN, POSTGRES_PASSWORD, DATABASE_URL, JWT_SECRET,
                  # TOKEN_ENCRYPTION_KEY, BOOTSTRAP_ADMIN_EMAIL, S3_*
 ```
 
@@ -91,15 +104,24 @@ docker run --rm alpine sh -c "head -c 32 /dev/urandom | base64"   # TOKEN_ENCRYP
 docker run --rm alpine sh -c "head -c 32 /dev/urandom | xxd -p -c 64"  # JWT_SECRET
 ```
 
-**3. Khởi động:**
+**4. Build ở máy bạn rồi đẩy image sang** (không build trên máy chủ):
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
-docker compose -f docker-compose.prod.yml logs -f caddy   # xem quá trình xin chứng chỉ
-curl -sf https://voice.multime.ai/healthz
+./scripts/push-images.sh deploy@<ip>
 ```
 
-**4. Backup hằng ngày** (Postgres chứa toàn bộ dữ liệu nghiệp vụ):
+**5. Khởi động:**
+
+```bash
+ssh deploy@<ip> 'cd /opt/voice-tool && ./scripts/deploy.sh'
+```
+
+`deploy.sh` kiểm tra `.env` (thiếu biến, `DATABASE_URL` lệch mật khẩu,
+`TOKEN_ENCRYPTION_KEY` sai độ dài) **trước** khi khởi động, backup DB trước khi
+migration chạy, chờ healthcheck, rồi xác nhận scheduler đúng 1 process và
+`schema_migrations.dirty = false`.
+
+**6. Backup hằng ngày** (Postgres chứa toàn bộ dữ liệu nghiệp vụ):
 
 ```bash
 crontab -e
@@ -337,5 +359,9 @@ toàn bộ.
       login nhưng dùng thẳng credential DB). Trên production: bỏ 3 service này
       khỏi compose, hoặc chỉ truy cập qua SSH tunnel
       (`ssh -L 8085:localhost:8085 <host>`).
-- [ ] Đặt `MULTIME_DEFAULT_HASHTAGS` — multime yêu cầu mỗi bài đăng có ít nhất
-      1 hashtag, nếu không auto-publish sẽ fail với voice chưa gắn hashtag.
+- [ ] Dặn người dùng **điền hashtag cho từng Voice** — multime yêu cầu mỗi bài
+      đăng có ít nhất 1 hashtag và hệ thống không còn hashtag mặc định, nên
+      voice bỏ trống hashtag sẽ không đăng được (kể cả auto-publish).
+- [ ] Kiểm tra tài khoản Strongbody dùng để đăng nhập **xem được danh bạ user**
+      (`GET /v1/admin/user`) — ô chọn author lấy danh sách từ đó. Không có
+      quyền thì vẫn đăng được nhưng phải điền tay `author_id`.

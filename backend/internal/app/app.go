@@ -51,6 +51,8 @@ type App struct {
 	LLM         domain.LLMProvider
 	Multime     domain.MultimeClient
 	MultimeAuth domain.MultimeAuthenticator
+	// MultimeDir tra danh bạ tài khoản Strongbody (chọn tác giả bài đăng).
+	MultimeDir domain.MultimeDirectory
 
 	Tokens *jwt.Manager
 	Secret *secret.Box
@@ -67,6 +69,7 @@ type App struct {
 	Scan         *service.Scan
 	Maintenance  *service.Maintenance
 	MultimeCreds *service.MultimeCreds
+	MultimeUsers *service.MultimeUsers
 }
 
 // New khởi tạo tất cả dependency. Fail-fast nếu Postgres/Redis/S3 chưa sẵn sàng.
@@ -138,14 +141,15 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	var (
 		multimeClient domain.MultimeClient
 		multimeAuth   domain.MultimeAuthenticator
+		multimeDir    domain.MultimeDirectory
 	)
 	if cfg.MultimeBaseURL == "" {
 		mock := multime.NewMock()
-		multimeClient, multimeAuth = mock, mock
+		multimeClient, multimeAuth, multimeDir = mock, mock, mock
 		log.Warn("MULTIME_BASE_URL chưa cấu hình — dùng mock cho đăng nhập và publish")
 	} else {
 		client := multime.New(cfg)
-		multimeClient, multimeAuth = client, client
+		multimeClient, multimeAuth, multimeDir = client, client, client
 	}
 
 	box, err := secret.NewBox(cfg.TokenEncryptionKey)
@@ -178,7 +182,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Redis: redisOpt, AsynqClient: asynqClient,
 		Platforms: platforms, Storage: store, Prober: prober,
 		TTS: ttsProvider, STT: sttProvider, LLM: llmProvider,
-		Multime: multimeClient, MultimeAuth: multimeAuth,
+		Multime: multimeClient, MultimeAuth: multimeAuth, MultimeDir: multimeDir,
 		Tokens: tokens, Secret: box,
 		Audit: audit,
 		Auth: service.NewAuth(service.AuthDeps{
@@ -219,13 +223,14 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Scan:         service.NewScan(queries, platforms, enqueuer, log),
 		Maintenance:  service.NewMaintenance(queries, log, cfg.SkippedLogRetention),
 		MultimeCreds: multimeCreds,
+		MultimeUsers: service.NewMultimeUsers(multimeDir, multimeCreds),
 	}
 
 	log.Info("khởi tạo xong",
 		"env", cfg.Env,
-		"tts", ttsProvider.Name(),
-		"stt", sttProvider.Name(),
-		"llm", llmProvider.Name(),
+		"tts", providerName(ttsProvider),
+		"stt", providerName(sttProvider),
+		"llm", providerName(llmProvider),
 		"platforms", platforms.Supported(),
 		"collect_modes", modes.Enabled,
 		"scan_interval", cfg.BreakingScanInterval.String(),
@@ -248,6 +253,19 @@ func (a *App) Close() error {
 		return errs[0]
 	}
 	return nil
+}
+
+// providerName đọc tên provider, chấp nhận cả trường hợp KHÔNG có provider.
+//
+// `tts.New` cố tình trả về nil khi không khai key TTS chung: đó là cấu hình
+// production bình thường — mỗi user tự khai key của mình ở màn AI Engine, và
+// worker báo lỗi kèm hướng dẫn cho ai chưa khai. Gọi thẳng .Name() trên nil là
+// panic ngay lúc khởi động, tức là cấu hình đúng lại làm app không chạy được.
+func providerName(p interface{ Name() string }) string {
+	if p == nil {
+		return "(chưa cấu hình)"
+	}
+	return p.Name()
 }
 
 // disablePromptMode gỡ hình thức C khỏi danh sách đang bật.

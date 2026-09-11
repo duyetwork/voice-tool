@@ -1,0 +1,270 @@
+# Bản PRODUCTION cho 1 máy chủ nhỏ (2 vCPU / 2GB RAM / 30GB).
+#
+# Khác bản dev (docker-compose.yml) ở 4 điểm cốt lõi:
+#
+#   1. Chỉ Caddy mở cổng ra Internet (80/443). Postgres, Redis, MinIO, api,
+#      frontend nói chuyện với nhau qua mạng nội bộ của docker — không có
+#      `ports:` nào khác, nên không thể quét thấy từ ngoài.
+#   2. Không có adminer/asynqmon: cả hai không có xác thực, mở ra là cho không
+#      cả database lẫn hàng đợi. Cần xem thì mở SSH tunnel (xem scripts/).
+#   3. Mọi service đều có `mem_limit` và giới hạn log. Trên máy 2GB, một
+#      container phình to là kéo Postgres chết theo; log không xoay vòng thì
+#      vài tuần là đầy đĩa.
+#   4. 1 worker × 2 task song song (dev là 2 × 10). Task nặng nhất là Mode A
+#      (yt-dlp tải video + ffmpeg tách audio) — 2 job cùng lúc đã ăn hết 2 vCPU,
+#      và 3voices cũng chỉ cho 2 job đồng thời.
+#
+# ---------------------------------------------------------------------------
+# CHẠY Ở ĐÂU
+# ---------------------------------------------------------------------------
+# Phần `build:` bên dưới để BUILD Ở MÁY BẠN, không phải trên VPS: `npm run
+# build` của Next cần ~1.5-2GB RAM, trên máy 2GB nó bị OOM killer bắn giữa
+# chừng và kéo theo cả Postgres.
+#
+#   Máy bạn:  ./scripts/push-images.sh deploy@103.121.89.215
+#   Trên VPS: ./scripts/deploy.sh          (KHÔNG bao giờ kèm --build)
+#
+# Image ở đây mang tag `prod`, tách khỏi tag `latest` của bản dev: hai bản build
+# frontend bằng NEXT_PUBLIC_API_URL khác nhau (dev trỏ localhost:8080), trùng
+# tag là có ngày đẩy nhầm bundle gọi localhost lên máy chủ thật.
+# ---------------------------------------------------------------------------
+
+name: voice-tool
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Caddy — cửa duy nhất ra Internet, tự xin và gia hạn chứng chỉ TLS.
+  #
+  # Frontend và API đứng chung 1 tên miền nên bundle JS gọi `/api/v1` tương
+  # đối: không vướng CORS, và đổi tên miền không phải build lại frontend.
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: voice-tool-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?SITE_DOMAIN là bắt buộc, ví dụ voice.duyet.work}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # chứng chỉ đã cấp — mất là phải xin lại, dễ đụng rate limit của Let's Encrypt
+      - caddy-config:/config
+    depends_on:
+      - api
+      - frontend
+    mem_limit: 96m
+    logging: *logging
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: voice-tool-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-voice}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD là bắt buộc}
+      POSTGRES_DB: ${POSTGRES_DB:-voice_tool}
+    # Tham số cho máy 2GB. Mặc định của Postgres tính cho máy lớn hơn nhiều:
+    # shared_buffers mặc định 128MB thì ít, nhưng max_connections 100 lại quá
+    # nhiều — mỗi connection là 1 process, 100 process đủ ăn hết RAM còn lại.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=192MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=30
+      - -c
+      - wal_compression=on
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voice} -d ${POSTGRES_DB:-voice_tool}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 384m
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    container_name: voice-tool-redis
+    restart: unless-stopped
+    # maxmemory là hàng rào cứng: Asynq giữ lịch sử task đã xong, để trôi tự do
+    # thì Redis lớn dần rồi bị OOM killer bắn. `noeviction` để queue không bị
+    # xoá âm thầm — đầy thì enqueue báo lỗi, còn hơn mất task.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 96mb
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 128m
+    logging: *logging
+
+  # ---------------------------------------------------------------------------
+  # MinIO — chỗ chứa file voice khi CHƯA có S3 thật.
+  #
+  # Dùng S3 bên ngoài (AWS, R2, strongbody-files-api…) thì xoá service này, xoá
+  # 3 khối `depends_on: minio` bên dưới, và đổi S3_* trong .env. Bỏ được ~250MB
+  # RAM cùng toàn bộ áp lực ghi đĩa — đây là khoản tiết kiệm lớn nhất trên máy
+  # 2GB. File voice vốn là tạm: publish xong là xoá (business rule #2).
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: voice-tool-minio
+    restart: unless-stopped
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?S3_ACCESS_KEY là bắt buộc}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?S3_SECRET_KEY là bắt buộc}
+      # Console quản trị tắt hẳn: không mở ra ngoài thì cũng không cần chạy.
+      MINIO_BROWSER: "off"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 384m
+    logging: *logging
+
+  # migrate chạy 1 lần rồi thoát; api/worker/scheduler chờ nó xong mới khởi
+  # động, nên schema luôn đúng phiên bản trước khi có process nào chạm vào DB.
+  migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: voice-tool-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/migrations:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=${DATABASE_URL:?DATABASE_URL là bắt buộc}"
+      - "up"
+    mem_limit: 64m
+    logging: *logging
+
+  api:
+    build:
+      context: ./backend
+      target: api
+    image: voice-tool-api:${IMAGE_TAG:-prod}
+    container_name: voice-tool-api
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_ADDR: redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 192m
+    logging: *logging
+
+  # 1 process worker trên máy 2 vCPU. Mọi task đều idempotent nên tăng số
+  # process là an toàn khi lên máy lớn hơn — nhưng ở đây nghẽn là CPU và RAM
+  # (ffmpeg), không phải số process.
+  worker:
+    build:
+      context: ./backend
+      target: worker
+    image: voice-tool-worker:${IMAGE_TAG:-prod}
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_ADDR: redis:6379
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Rộng tay nhất trong nhà vì yt-dlp + ffmpeg xử lý video dài ăn RAM theo
+    # kích thước file. Chạm trần thì container này chết và Asynq retry, thay vì
+    # OOM killer chọn bừa một nạn nhân — thường là Postgres.
+    mem_limit: 768m
+    logging: *logging
+
+  # CHỈ 1 process — asynq.PeriodicTaskManager tự enqueue theo cronspec của
+  # chính nó, chạy 2 process là mỗi kênh bị quét 2 lần.
+  scheduler:
+    build:
+      context: ./backend
+      target: scheduler
+    image: voice-tool-scheduler:${IMAGE_TAG:-prod}
+    container_name: voice-tool-scheduler
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_ADDR: redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 96m
+    logging: *logging
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # RỖNG là cố ý: bundle gọi API bằng đường dẫn tương đối /api/v1 vì
+        # frontend và api đứng sau cùng 1 Caddy. Điền URL tuyệt đối vào đây là
+        # tự buộc mình build lại image mỗi lần đổi tên miền.
+        NEXT_PUBLIC_API_URL: ""
+    image: voice-tool-frontend:${IMAGE_TAG:-prod}
+    container_name: voice-tool-frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    mem_limit: 256m
+    logging: *logging
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  caddy-data:
+  caddy-config:

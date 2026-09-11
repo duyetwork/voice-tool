@@ -142,6 +142,49 @@ type MultimeAuthenticator interface {
 	RefreshAccessToken(ctx context.Context, refreshToken string) (string, error)
 }
 
+// MultimeDirectory tra danh bạ tài khoản bên Strongbody.
+//
+// Tồn tại vì tác giả của bài đăng KHÔNG nhất thiết là người bấm nút đăng: một
+// biên tập viên có thể phải đưa voice lên dưới tên một tài khoản khác. Danh
+// sách phải lấy từ Strongbody chứ không phải từ app_user của tool, vì tài
+// khoản đích có thể chưa bao giờ đăng nhập vào tool này.
+type MultimeDirectory interface {
+	// RandomUser bốc ngẫu nhiên 1 tài khoản theo giới tính.
+	//
+	// Người dùng không chọn đích danh ai: họ chỉ chọn giới tính của giọng đứng
+	// tên bài, còn là ai thì để hệ thống rải đều — nên đây là "bốc" chứ không
+	// phải "tìm".
+	RandomUser(ctx context.Context, token string, gender Gender) (MultimeUser, error)
+}
+
+// Gender là giới tính tài khoản Strongbody. Đúng 3 giá trị strongbody-api nhận
+// (`v:"in:male,female,other"` ở api/user/v1).
+type Gender string
+
+const (
+	GenderMale   Gender = "male"
+	GenderFemale Gender = "female"
+	GenderOther  Gender = "other"
+)
+
+func (g Gender) Valid() bool {
+	switch g {
+	case GenderMale, GenderFemale, GenderOther:
+		return true
+	}
+	return false
+}
+
+// MultimeUser là một tài khoản Strongbody chọn được làm tác giả bài đăng.
+type MultimeUser struct {
+	// ID chính là author_id gửi kèm khi đăng voice.
+	ID       int64  `json:"id"`
+	Email    string `json:"email"`
+	Gender   string `json:"gender"`
+	FullName string `json:"full_name"`
+	Avatar   string `json:"avatar_url,omitempty"`
+}
+
 // MultimeSession là kết quả đăng nhập.
 type MultimeSession struct {
 	// UserID bên strongbody, đồng thời là author_id khi đăng voice.
@@ -163,6 +206,10 @@ type MultimeCredentials struct {
 type VoicePostInput struct {
 	FileName string
 	MimeType string
+
+	// AuthorID là tài khoản Strongbody đứng tên bài đăng — bắt buộc, và do
+	// người dùng chọn chứ không suy ra từ người bấm nút đăng.
+	AuthorID int64
 
 	// Title bắt buộc — API từ chối nếu rỗng — và là TOÀN BỘ phần chữ của bài
 	// đăng: 1 dòng, tối đa MaxVoiceTitleRunes ký tự (xem VoiceTitle).

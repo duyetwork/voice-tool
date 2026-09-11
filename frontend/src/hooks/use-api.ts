@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, api } from "@/lib/api";
 import type {
+  Author,
+  Gender,
   DuplicatePost,
   AIEngine,
   AuditLog,
@@ -34,6 +36,7 @@ export const keys = {
   auditLog: (filters: Record<string, unknown>) => ["audit-log", filters] as const,
   platforms: ["meta", "platforms"] as const,
   publishMeta: ["meta", "publish"] as const,
+
   collectModes: ["meta", "collect-modes"] as const,
 };
 
@@ -184,6 +187,43 @@ export function useVoices(filters: VoiceFilters = {}) {
 }
 
 /**
+ * useSourcePost theo dõi metadata của 1 Bài Post.
+ *
+ * Metadata (tiêu đề, hashtag, ảnh bìa) do task `post:metadata` ghi và về sau
+ * vài giây, trong khi audio mất lâu hơn nhiều — tách ra hỏi riêng để màn tạo
+ * voice hiện được phần chữ trước, không bắt người dùng ngồi chờ audio.
+ */
+export function useSourcePost(id: string | null) {
+  return useQuery({
+    queryKey: ["source-posts", id] as const,
+    queryFn: () => api.get<SourcePost>(`/source-posts/${id}`),
+    enabled: id !== null,
+    // Chưa có tiêu đề nghĩa là task metadata chưa chạy xong.
+    refetchInterval: (query) => (query.state.data?.title ? false : 2_000),
+  });
+}
+
+/**
+ * useVoiceOfSourcePost theo dõi voice sinh ra từ 1 Bài Post vừa tạo.
+ *
+ * Hỏi lại đều đặn cho tới khi worker tạo xong: lúc mới tạo bài, dòng voice có
+ * thể chưa kịp xuất hiện, nên không thể chỉ dừng ở "có dữ liệu là thôi" như
+ * bảng Voice.
+ */
+export function useVoiceOfSourcePost(sourcePostId: string | null) {
+  return useQuery({
+    queryKey: ["voices", "by-source-post", sourcePostId] as const,
+    queryFn: () => api.get<Page<Voice>>("/voices", { source_post_id: sourcePostId, limit: 1 }),
+    enabled: sourcePostId !== null,
+    refetchInterval: (query) => {
+      const voice = query.state.data?.items[0];
+      if (query.state.data === undefined) return 2_000;
+      return !voice || voice.publish_status === "processing" ? 2_000 : false;
+    },
+  });
+}
+
+/**
  * CreateTextVoiceInput — tạo Voice thẳng từ text gõ tay, KHÔNG qua Bài Post.
  *
  * Bài lấy từ URL vẫn đi đường cũ (`useCreateSourcePost`): chỉ khi đó Voice mới
@@ -232,6 +272,21 @@ export function useUpdateVoice() {
   return useMutation({
     mutationFn: ({ id, ...body }: { id: string } & Partial<Voice>) =>
       api.patch<Voice>(`/voices/${id}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["voices"] }),
+  });
+}
+
+/**
+ * useUploadVoiceImage tải ảnh bìa từ máy lên cho 1 voice.
+ *
+ * Ảnh nằm trong storage của tool và bị xoá ngay sau khi đăng lên multime (bên
+ * đó đã giữ một bản) — nên đây là file tạm, không phải kho ảnh.
+ */
+export function useUploadVoiceImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, file }: { id: string; file: File }) =>
+      api.upload<Voice>(`/voices/${id}/image`, file),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["voices"] }),
   });
 }
@@ -504,8 +559,21 @@ export function usePlatforms() {
 }
 
 /**
- * Điều kiện đăng bài của multime.ai. Có `default_hashtags` cấu hình sẵn thì
- * voice không có hashtag riêng vẫn đăng được — UI không nên chặn.
+ * useRandomAuthor bốc 1 tài khoản Strongbody theo giới tính.
+ *
+ * Là mutation chứ không phải query vì mỗi lần gọi phải ra một người KHÁC: bấm
+ * nút random là bốc lại, cache ở đây sẽ trả về đúng người cũ.
+ */
+export function useRandomAuthor() {
+  return useMutation({
+    mutationFn: (gender: Gender) =>
+      api.get<{ author: Author }>("/meta/authors/random", { gender }),
+  });
+}
+
+/**
+ * Điều kiện đăng bài của multime.ai. Hashtag mặc định đã bị bỏ, nên thứ còn
+ * đọc ở đây là độ dài tối thiểu và category cấu hình sẵn.
  */
 export function usePublishRequirements() {
   return useQuery({

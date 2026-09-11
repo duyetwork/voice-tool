@@ -20,7 +20,7 @@ Danh sách (List) → Bài Post (SourcePost) → Voice → multime.ai
 | Mã | Tên | Cơ chế |
 |---|---|---|
 | **A** | Extract từ URL | Tải video/audio gốc, tách trực tiếp track giọng nói |
-| **B** | Text → TTS → Voice | Lấy caption/transcript (hoặc text gõ tay) → TTS đọc nguyên văn |
+| **B** | Text → TTS → Voice | Lấy nội dung bài — đúng phần chữ hiện trên bảng (hoặc text gõ tay) → TTS đọc nguyên văn |
 | **C** | Text + Prompt → TTS → Voice | Text gốc → LLM viết lại theo Prompt mẫu → TTS |
 
 Nền tảng nguồn: YouTube, Facebook, TikTok, Instagram, X — hệ thống tự nhận diện
@@ -34,7 +34,8 @@ mục **AI Engine** (key mã hoá trong DB, không bao giờ hiện lại), work
 bằng key của chính người tạo voice nên quota/chi phí về đúng người đó. Admin
 xem và quản lý được key của tất cả mọi người.
 
-Nguồn cho B/C có 2 kiểu: **URL** (hệ thống tự lấy caption/transcript) hoặc
+Nguồn cho B/C có 2 kiểu: **URL** (hệ thống tự lấy nội dung bài; bài không có
+chữ nào thì mới rơi về phụ đề) hoặc
 **gõ thẳng text** ở màn F1 — text nhập tay không có audio gốc nên chỉ dùng
 được B/C. Mode C cần thêm LLM (`ANTHROPIC_API_KEY`). Muốn tắt bớt hình thức
 nào thì sửa `ENABLED_COLLECT_MODES` trong `.env` (mặc định `A,B,C`) — UI hiển
@@ -172,8 +173,11 @@ email trong `BOOTSTRAP_ADMIN_EMAIL` luôn là `admin`. Chi tiết phân quyền:
 4. Xem tiến trình ở http://localhost:8081 (queue `default`) hoặc
    `docker compose logs -f worker`.
 5. Vào **Voice** — bấm **▶ Nghe thử** (hoặc **⤓ Tải về**) để kiểm tra file.
-6. Tiêu đề/hashtag/ảnh bìa đã điền sẵn từ bài gốc — bấm **Sửa metadata**
-   nếu muốn đổi, rồi bấm **Đăng**.
+6. Tiêu đề/hashtag/ảnh bìa đã điền sẵn từ bài gốc — chọn **giới tính author**
+   (hệ thống bốc ngẫu nhiên một tài khoản Strongbody đứng tên bài đăng, bắt
+   buộc), kiểm tra hashtag (bắt buộc, không có giá trị mặc định) và đổi ảnh bìa
+   nếu cần, rồi bấm **Đăng**. Dán URL ngay trong hộp thoại **+ Tạo Voice** thì
+   làm được cả 3 việc — tạo, sửa metadata, đăng — mà không rời hộp thoại.
 
 ### Thử Mode B/C (TTS đọc text)
 

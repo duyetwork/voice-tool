@@ -145,7 +145,7 @@ ClaimSourcePostForProcessing   # new|failed → processing, idempotent khi retry
       nội dung lấy thẳng từ extracted_text, không gọi mạng
     còn lại:       adapter.FetchContent(postID, mode)
   → mode A: audio gốc
-    mode B: text (caption/transcript → fallback STT)
+    mode B: text (nội dung bài → fallback phụ đề → fallback STT)
     mode C: text → LLM(prompt)
   → mode B/C: lưu extracted_text (text NGUỒN, không phải bản LLM viết lại)
               + ttsFor(người tạo voice) → TTS bằng API key của chính họ

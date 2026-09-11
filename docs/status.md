@@ -83,10 +83,11 @@ POST /api/v1/auth/login {email, password}
   → phát JWT của voice-tool
 ```
 
-Tài khoản đăng nhập **chính là** tài khoản đăng voice: khi publish, worker lấy
-token của người tạo ra voice đó và gọi API với `author_id` của họ. Voice xuất
-hiện trên multime dưới đúng tài khoản đó, không phải một tài khoản hệ thống
-dùng chung.
+Worker publish bằng **token của người tạo ra voice** (không phải một tài khoản
+hệ thống dùng chung), nhưng `author_id` — tài khoản ĐỨNG TÊN bài đăng — là
+trường bắt buộc do người dùng **chọn** ở form Sửa metadata, lấy từ danh bạ
+Strongbody (`GET /meta/authors`). Hai thứ này không nhất thiết trùng nhau: biên
+tập viên có thể đưa voice lên dưới tên một tài khoản khác.
 
 Token hết hạn → refresh 1 lần qua `GET /v1/admin/auth/refresh-token` → nếu
 refresh cũng thất bại thì trả lỗi vĩnh viễn yêu cầu user đăng nhập lại.
@@ -187,8 +188,8 @@ tài khoản người dùng. Nghĩa là:
 
 - Bài do voice-tool đăng và bài user tự đăng trên `/studio/upload` **không phân
   biệt được** trên multime. Nếu cần phân biệt (để thống kê, hoặc để rollback
-  hàng loạt), nên chốt 1 hashtag/category riêng và đặt vào
-  `MULTIME_DEFAULT_HASHTAGS` / `MULTIME_CATEGORY_IDS`.
+  hàng loạt), nên chốt 1 hashtag riêng và quy ước điền cho mọi voice, hoặc đặt
+  `MULTIME_CATEGORY_IDS`.
 - F2 Breaking bật `auto_publish` có thể đăng rất nhiều bài trong thời gian
   ngắn. Chưa biết multime có rate limit cho `/voice-posts/upload` hay không.
   **Nên bật `auto_publish` cho 1 kênh trước và theo dõi**, đừng bật đồng loạt.

@@ -14,6 +14,7 @@ func TestPostContent(t *testing.T) {
 		name        string
 		title       string
 		description string
+		author      string
 		want        string
 	}{
 		{
@@ -82,12 +83,58 @@ func TestPostContent(t *testing.T) {
 			title: "42 N lượt xem · 824 bình luận | Caption tiếng Việt",
 			want:  "Caption tiếng Việt",
 		},
+		{
+			// yt-dlp dựng title của X bằng "<tên tài khoản> - <nội dung tweet>".
+			// Không bóc thì TTS đọc luôn tên tài khoản ra đầu voice.
+			name:   "x bỏ tên tài khoản nối ở đầu tiêu đề",
+			title:  "Street Poller - This Street Poll sparked a MASSIVE debate",
+			author: "Street Poller",
+			want:   "This Street Poll sparked a MASSIVE debate",
+		},
+		{
+			name:   "x có @ trước tên tài khoản",
+			title:  "@vtv24 - Cháy lớn tại KCN sáng nay",
+			author: "vtv24",
+			want:   "Cháy lớn tại KCN sáng nay",
+		},
+		{
+			// Tên tài khoản trùng phần đầu nội dung thì KHÔNG được cắt: cắt là
+			// mất chữ của người đăng.
+			name:   "không bóc khi không có dấu nối",
+			title:  "Street Poller sparked a debate",
+			author: "Street Poller",
+			want:   "Street Poller sparked a debate",
+		},
+		{
+			// Instagram không có tiêu đề riêng; yt-dlp tự đặt "Video by <tài
+			// khoản>". Đó là chữ của công cụ, đọc lên vô nghĩa.
+			name:        "instagram bỏ tiêu đề máy tự đặt",
+			title:       "Video by hotpodwithkhaqan",
+			description: "Is vlogging your daily life still worth it in 2026?",
+			author:      "hotpodwithkhaqan",
+			want:        "Is vlogging your daily life still worth it in 2026?",
+		},
+		{
+			name:        "instagram có tiền tố nền tảng",
+			title:       "Instagram photo by duyet_nguyen",
+			description: "Sáng nay Hà Nội trở lạnh.",
+			want:        "Sáng nay Hà Nội trở lạnh.",
+		},
+		{
+			// Bỏ được tiêu đề rác nhưng cũng không còn caption -> thà giữ
+			// nguyên còn hơn trả bài trắng.
+			name:   "tiêu đề máy đặt mà không có caption thì vẫn phải có nội dung",
+			title:  "Video by hotpodwithkhaqan",
+			author: "hotpodwithkhaqan",
+			want:   "",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := PostContent(tc.title, tc.description); got != tc.want {
-				t.Errorf("PostContent(%q, %q) = %q, muốn %q", tc.title, tc.description, got, tc.want)
+			if got := PostContent(tc.title, tc.description, tc.author); got != tc.want {
+				t.Errorf("PostContent(%q, %q, %q) = %q, muốn %q",
+					tc.title, tc.description, tc.author, got, tc.want)
 			}
 		})
 	}
@@ -98,10 +145,10 @@ func TestPostContent(t *testing.T) {
 func TestPostContentTitled(t *testing.T) {
 	const desc = "Đăng ký kênh: https://youtube.com/@kenh\n00:00 Mở đầu"
 
-	if got := PostContentTitled("Tin nóng 24h | VTV24", desc); got != "Tin nóng 24h | VTV24" {
+	if got := PostContentTitled("Tin nóng 24h | VTV24", desc, "VTV24"); got != "Tin nóng 24h | VTV24" {
 		t.Errorf("tiêu đề YouTube phải giữ nguyên, được %q", got)
 	}
-	if got := PostContentTitled("", "Nội dung duy nhất còn lại."); got != "Nội dung duy nhất còn lại." {
+	if got := PostContentTitled("", "Nội dung duy nhất còn lại.", ""); got != "Nội dung duy nhất còn lại." {
 		t.Errorf("không có tiêu đề thì phải rơi về mô tả, được %q", got)
 	}
 }
@@ -109,7 +156,7 @@ func TestPostContentTitled(t *testing.T) {
 // Nội dung dài bị cắt ở ranh giới từ, không cắt giữa chữ.
 func TestPostContentCắtTheoGiớiHạn(t *testing.T) {
 	long := strings.Repeat("Tin nong hom nay ", 400) // ~6800 ký tự
-	got := PostContent(long, "")
+	got := PostContent(long, "", "")
 
 	if n := len([]rune(got)); n > domain.MaxPostTitleRunes+1 {
 		t.Errorf("nội dung dài %d rune, muốn <= %d", n, domain.MaxPostTitleRunes+1)
@@ -124,7 +171,7 @@ func TestPostContentCắtTheoGiớiHạn(t *testing.T) {
 
 // Tiêu đề Voice là nội dung Bài Post gộp về 1 dòng, cắt đúng giới hạn multime.
 func TestVoiceTitleTừNộiDungBàiPost(t *testing.T) {
-	content := PostContent("Bản tin sáng", "Bản tin sáng\n\n"+strings.Repeat("chi tiết ", 60))
+	content := PostContent("Bản tin sáng", "Bản tin sáng\n\n"+strings.Repeat("chi tiết ", 60), "")
 
 	got := domain.VoiceTitle(content)
 	if n := len([]rune(got)); n > domain.MaxVoiceTitleRunes+1 {

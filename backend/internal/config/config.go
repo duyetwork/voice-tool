@@ -62,10 +62,9 @@ type Config struct {
 	MultimeAuthBaseURL string `mapstructure:"MULTIME_AUTH_BASE_URL"`
 	MultimeSiteURL     string `mapstructure:"MULTIME_SITE_URL"`
 	// Mặc định cho bài đăng.
-	MultimeVisibility        string `mapstructure:"MULTIME_VISIBILITY"`
-	MultimeCategoryIDsRaw    string `mapstructure:"MULTIME_CATEGORY_IDS"`
-	MultimeDefaultHashtagRaw string `mapstructure:"MULTIME_DEFAULT_HASHTAGS"`
-	MultimePublicDownload    bool   `mapstructure:"MULTIME_PUBLIC_DOWNLOAD"`
+	MultimeVisibility     string `mapstructure:"MULTIME_VISIBILITY"`
+	MultimeCategoryIDsRaw string `mapstructure:"MULTIME_CATEGORY_IDS"`
+	MultimePublicDownload bool   `mapstructure:"MULTIME_PUBLIC_DOWNLOAD"`
 
 	// ---- Tham số quét: mặc định là chỉ số tối ưu, chỉnh được qua .env ----
 	// Chu kỳ vòng dispatch của Breaking. Kênh nào có scan_interval riêng thì
@@ -193,7 +192,7 @@ var allKeys = []string{
 	"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
 	"YTDLP_PATH", "FFMPEG_PATH", "FFPROBE_PATH",
 	"MULTIME_BASE_URL", "MULTIME_AUTH_BASE_URL", "MULTIME_SITE_URL",
-	"MULTIME_VISIBILITY", "MULTIME_CATEGORY_IDS", "MULTIME_DEFAULT_HASHTAGS",
+	"MULTIME_VISIBILITY", "MULTIME_CATEGORY_IDS",
 	"MULTIME_PUBLIC_DOWNLOAD",
 	"BREAKING_SCAN_INTERVAL", "SCAN_LIMIT_DEFAULT", "MAX_POSTS_PER_RUN_DEFAULT",
 	"BREAKING_SCAN_PARALLELISM", "SCHEDULER_SYNC_INTERVAL", "SKIPPED_LOG_RETENTION",
@@ -249,12 +248,6 @@ func (c *Config) MultimeCategoryIDs() []int64 {
 		}
 	}
 	return out
-}
-
-// MultimeDefaultHashtags là hashtag dùng khi Voice chưa có hashtag riêng —
-// multime yêu cầu ít nhất 1 hashtag hoặc category cho mỗi bài đăng.
-func (c *Config) MultimeDefaultHashtags() []string {
-	return SplitHashtags(c.MultimeDefaultHashtagRaw)
 }
 
 // SplitHashtags tách chuỗi hashtag tự do thành từng thẻ đã chuẩn hoá.

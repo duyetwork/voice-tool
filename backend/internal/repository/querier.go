@@ -34,6 +34,14 @@ type Querier interface {
 	CountSkippedLogsSince(ctx context.Context, arg CountSkippedLogsSinceParams) (int64, error)
 	CountSourcePosts(ctx context.Context, arg CountSourcePostsParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	// Lọc theo trạng thái NGƯỜI DÙNG THẤY, không phải cột thô: voice còn thiếu điều
+	// kiện đăng (chưa chọn author, chưa có hashtag/tiêu đề, audio ngắn hơn mức
+	// multime nhận) hiện badge "Chưa đủ điều kiện", nên chọn trạng thái đó phải ra
+	// đúng những dòng ấy — và "Nháp"/"Chờ đăng" thì không được lẫn chúng.
+	//
+	// 'incomplete' KHÔNG phải giá trị có trong cột publish_status: nó là trạng thái
+	// suy ra lúc đọc. Thiếu hashtag là việc người dùng chưa điền xong, khác hẳn
+	// 'failed' (đã gửi lên multime và bị từ chối), nên không gộp chung.
 	CountVoices(ctx context.Context, arg CountVoicesParams) (int64, error)
 	// user_id là CHỦ SỞ HỮU key (worker chạy TTS của người đó bằng key này),
 	// created_by là người bấm nút — khác nhau khi admin khai hộ.
@@ -99,6 +107,14 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]AppUser, error)
 	// Trả kèm nền tảng nguồn + email người tạo để bảng Voice hiển thị và lọc được
 	// mà không phải gọi thêm API (prompt.md mục 3, 4, 8).
+	// Lọc theo trạng thái NGƯỜI DÙNG THẤY, không phải cột thô: voice còn thiếu điều
+	// kiện đăng (chưa chọn author, chưa có hashtag/tiêu đề, audio ngắn hơn mức
+	// multime nhận) hiện badge "Chưa đủ điều kiện", nên chọn trạng thái đó phải ra
+	// đúng những dòng ấy — và "Nháp"/"Chờ đăng" thì không được lẫn chúng.
+	//
+	// 'incomplete' KHÔNG phải giá trị có trong cột publish_status: nó là trạng thái
+	// suy ra lúc đọc. Thiếu hashtag là việc người dùng chưa điền xong, khác hẳn
+	// 'failed' (đã gửi lên multime và bị từ chối), nên không gộp chung.
 	// Sắp xếp động: mỗi nhánh CASE chỉ có giá trị khi đúng cột + đúng chiều đang
 	// chọn, các nhánh còn lại toàn NULL nên không ảnh hưởng thứ tự. Dòng cuối là
 	// mặc định (mới nhất trước) và cũng là nhánh sort=created_at + dir=desc.
@@ -106,6 +122,9 @@ type Querier interface {
 	ListVoicesBySourcePost(ctx context.Context, sourcePostID *uuid.UUID) ([]Voice, error)
 	// Business rule #2: publish thành công -> xoá file S3 và set voice_file_url = NULL,
 	// chỉ giữ multime_post_url làm nguồn tham chiếu duy nhất.
+	// Ảnh bìa tải từ máy cũng bị xoá theo cùng lý do: multime đã giữ bản của nó,
+	// bản trong bucket của mình không còn ai đọc nữa. Ảnh lấy từ URL bài gốc không
+	// nằm trong bucket nên giữ nguyên link.
 	MarkVoicePublished(ctx context.Context, arg MarkVoicePublishedParams) (Voice, error)
 	SetLastSyncedPostID(ctx context.Context, arg SetLastSyncedPostIDParams) error
 	SetSourcePostStatus(ctx context.Context, arg SetSourcePostStatusParams) (SourcePost, error)
@@ -119,6 +138,9 @@ type Querier interface {
 	// "Tạo lại" là thấy dòng voice chuyển sang đang xử lý ngay, không có khoảng
 	// giữa mà bảng vẫn hiện voice cũ như chưa có gì xảy ra.
 	SetVoiceContent(ctx context.Context, arg SetVoiceContentParams) (Voice, error)
+	// Ảnh bìa tải từ máy: image_uploaded = TRUE đánh dấu file nằm trong storage của
+	// mình, để sau khi đăng lên multime thì xoá đi cho đỡ tốn dung lượng.
+	SetVoiceImage(ctx context.Context, arg SetVoiceImageParams) (Voice, error)
 	SetVoicePublishStatus(ctx context.Context, arg SetVoicePublishStatusParams) (Voice, error)
 	// Đóng dấu thời điểm key thật sự đọc ra audio. Chỉ gọi sau khi TTS thành công:
 	// cột này để người dùng biết key nào còn sống, key nào khai xong bỏ đó.
@@ -138,6 +160,9 @@ type Querier interface {
 	// `title` là TOÀN BỘ nội dung bài (trừ hashtag) — hệ thống không còn trường mô
 	// tả riêng. COALESCE để lần fetch không ra thì giữ nguyên phần đã có.
 	UpdateSourcePostMetadata(ctx context.Context, arg UpdateSourcePostMetadataParams) (SourcePost, error)
+	// author_id/author_email/author_gender đi thành một bộ: bốc tác giả là nhận cả
+	// ba, nên không COALESCE riêng lẻ để tránh trạng thái id của người này còn
+	// email/giới tính của người kia.
 	UpdateVoiceMetadata(ctx context.Context, arg UpdateVoiceMetadataParams) (Voice, error)
 	// Đăng nhập bằng strongbody: tạo user nếu chưa có, cập nhật thông tin + token
 	// nếu đã có. Role của lần tạo đầu do $5 quyết định, các lần sau KHÔNG ghi đè

@@ -117,16 +117,26 @@ func parseOpenGraph(page string) domain.PostMetadata {
 	}
 	description := pick("og:description", "twitter:description", "description")
 
+	// Tác giả THẬT của bài. KHÔNG lấy og:site_name làm tác giả: cái đó là tên
+	// nền tảng ("Instagram", "X"), lấy nhầm thì bước bóc tên tài khoản khỏi
+	// tiêu đề sẽ cắt nhầm chỗ.
+	author := pick("author", "article:author", "twitter:creator", "profile:username")
+
 	// Tiêu đề của Facebook/Instagram cũng là <title> của trang nên dính số liệu
 	// tương tác, và og:description mới là caption đầy đủ — PostContent lo cả hai
 	// việc đó để ra đúng nội dung bài (xem title.go).
-	content := PostContent(title, description)
+	content := PostContent(title, description, author)
+
+	authorName := author
+	if authorName == "" {
+		authorName = pick("og:site_name")
+	}
 
 	return domain.PostMetadata{
 		Title:        content,
 		Hashtags:     domain.ExtractHashtags(title+"\n"+description, nil),
 		ThumbnailURL: pick("og:image", "og:image:secure_url", "twitter:image"),
-		AuthorName:   pick("og:site_name", "author", "article:author"),
+		AuthorName:   authorName,
 		PostedAt:     parseOGTime(pick("article:published_time", "og:updated_time")),
 	}
 }

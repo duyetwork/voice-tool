@@ -44,7 +44,7 @@ của người khác. Đổi sang `editor` nếu muốn ai cũng xoá được.
 ## 5. Bài do voice-tool đăng có cần phân biệt với bài user tự đăng? 🟢
 
 Trên multime hiện không phân biệt được. Nếu cần (để thống kê hoặc rollback hàng
-loạt) thì chốt 1 hashtag/category riêng và đặt vào `MULTIME_DEFAULT_HASHTAGS` /
+loạt) thì chốt 1 hashtag riêng và quy ước điền cho mọi voice, hoặc đặt
 `MULTIME_CATEGORY_IDS`.
 
 ---

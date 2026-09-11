@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math/rand/v2"
 
 	"github.com/strongbody/voice-tool/backend/internal/domain"
 )
@@ -17,6 +18,7 @@ type Mock struct{}
 var (
 	_ domain.MultimeClient        = (*Mock)(nil)
 	_ domain.MultimeAuthenticator = (*Mock)(nil)
+	_ domain.MultimeDirectory     = (*Mock)(nil)
 )
 
 func NewMock() *Mock { return &Mock{} }
@@ -29,13 +31,9 @@ func (m *Mock) Login(_ context.Context, email, password string) (domain.MultimeS
 	}
 
 	sum := sha256.Sum256([]byte(email))
-	id := int64(sum[0])<<16 | int64(sum[1])<<8 | int64(sum[2])
-	if id == 0 {
-		id = 1
-	}
 
 	return domain.MultimeSession{
-		UserID:       id,
+		UserID:       mockUserID(email),
 		Email:        email,
 		FullName:     email,
 		AccessToken:  "mock-access-" + hex.EncodeToString(sum[:4]),
@@ -60,12 +58,42 @@ func (m *Mock) PublishVoice(
 		return "", domain.ErrReloginRequired
 	}
 
-	validator := &Client{defaultHashtags: []string{"voicetool"}}
-	if err := validator.validate(post); err != nil {
+	if err := (&Client{}).validate(post); err != nil {
 		return "", err
 	}
 
 	sum := sha256.Sum256(audio)
 	return fmt.Sprintf("https://multime.ai/voice/mock-%d-%s",
-		creds.AuthorID, hex.EncodeToString(sum[:4])), nil
+		post.AuthorID, hex.EncodeToString(sum[:4])), nil
+}
+
+// RandomUser bốc 1 tài khoản giả theo giới tính để màn chọn tác giả dùng được
+// ở dev mà không cần Strongbody thật.
+func (m *Mock) RandomUser(
+	_ context.Context,
+	token string,
+	gender domain.Gender,
+) (domain.MultimeUser, error) {
+	if token == "" {
+		return domain.MultimeUser{}, domain.ErrReloginRequired
+	}
+	if !gender.Valid() {
+		return domain.MultimeUser{}, domain.Permanent(fmt.Errorf(
+			"%w: giới tính phải là male, female hoặc other", domain.ErrInvalidInput))
+	}
+
+	email := fmt.Sprintf("%s%d@strongbody.ai", gender, rand.IntN(1000))
+	return domain.MultimeUser{
+		ID: mockUserID(email), Email: email, Gender: string(gender), FullName: email,
+	}, nil
+}
+
+// mockUserID sinh id ổn định theo email để dev đăng lại vẫn ra cùng tác giả.
+func mockUserID(email string) int64 {
+	sum := sha256.Sum256([]byte(email))
+	id := int64(sum[0])<<16 | int64(sum[1])<<8 | int64(sum[2])
+	if id == 0 {
+		id = 1
+	}
+	return id
 }

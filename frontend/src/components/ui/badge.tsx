@@ -22,6 +22,8 @@ export function statusTone(status: string): keyof typeof TONES {
       return "danger";
     case "paused":
     case "draft":
+    // Chưa đủ điều kiện đăng: nhắc người dùng điền nốt, không phải lỗi hệ thống.
+    case "incomplete":
       return "warning";
     default:
       return "neutral";

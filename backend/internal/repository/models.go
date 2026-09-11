@@ -149,4 +149,8 @@ type Voice struct {
 	InputText       *string    `json:"input_text"`
 	CollectMode     *string    `json:"collect_mode"`
 	PromptID        *uuid.UUID `json:"prompt_id"`
+	AuthorID        *int64     `json:"author_id"`
+	AuthorEmail     *string    `json:"author_email"`
+	ImageUploaded   bool       `json:"image_uploaded"`
+	AuthorGender    *string    `json:"author_gender"`
 }

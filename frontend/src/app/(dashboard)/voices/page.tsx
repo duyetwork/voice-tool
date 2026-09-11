@@ -13,16 +13,7 @@ import { Card, CardBody } from "@/components/ui/card";
 import { Checkbox, Field, Input, Select, Textarea } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { Pagination, usePaging } from "@/components/ui/pagination";
-import {
-  DateCell,
-  EmptyRow,
-  RowActions,
-  SortableTh,
-  Table,
-  Td,
-  Th,
-  useSorting,
-} from "@/components/ui/table";
+import { EmptyRow, RowActions, SortButton, Table, Td, Th, useSorting } from "@/components/ui/table";
 import {
   duplicateOf,
   useCollectModes,
@@ -33,35 +24,109 @@ import {
   usePrompts,
   usePublishVoice,
   usePublishRequirements,
+  useRandomAuthor,
   useRegenerateVoice,
+  useSourcePost,
   useUpdateVoice,
+  useUploadVoiceImage,
+  useVoiceOfSourcePost,
   useVoices,
 } from "@/hooks/use-api";
+import { coverImageUrl } from "@/lib/api";
 import { LANGUAGE_OPTIONS, compactLanguageOptions, languageOptionsFor } from "@/lib/languages";
 import { COLLECT_MODE_LABELS, PUBLISH_STATUS_LABELS, platformLabel } from "@/lib/utils";
-import type { CollectMode, DuplicatePost, PublishRequirements, Voice } from "@/types/api";
+import type { CollectMode, DuplicatePost, Gender, PublishRequirements, Voice } from "@/types/api";
 
 /**
  * multimeBlockers trả về các lý do multime.ai sẽ từ chối bài đăng.
- * Hợp đồng API (/v1/seller/voice-posts/upload): bắt buộc title, ít nhất 1
- * hashtag (hoặc category), và audio dài tối thiểu 15 giây. Không có trường mô
- * tả nào bắt buộc — `title` là phần chữ duy nhất của bài đăng.
+ * Hợp đồng API (/v1/seller/voice-posts/upload): bắt buộc author_id, title, ít
+ * nhất 1 hashtag, và audio dài tối thiểu 15 giây. Không có trường mô tả nào
+ * bắt buộc — `title` là phần chữ duy nhất của bài đăng.
  *
- * `req` là cấu hình phía server: có `MULTIME_DEFAULT_HASHTAGS` thì voice không
- * có hashtag riêng vẫn đăng được, nên không chặn.
+ * Hashtag KHÔNG còn giá trị mặc định phía server: bỏ trống là không đăng được,
+ * kể cả khi có category cấu hình sẵn.
  */
 function multimeBlockers(voice: Voice, req?: PublishRequirements): string[] {
   const reasons: string[] = [];
-  const hasFallbackTag =
-    (req?.default_hashtags?.length ?? 0) > 0 || (req?.category_ids?.length ?? 0) > 0;
   const minDuration = req?.min_duration_seconds ?? 15;
 
+  if (!voice.author_id) reasons.push("chưa chọn author");
   if (!voice.title?.trim()) reasons.push("chưa có tiêu đề");
-  if (!voice.hashtag?.trim() && !hasFallbackTag) reasons.push("chưa có hashtag");
+  if (!voice.hashtag?.trim()) reasons.push("chưa có hashtag");
   if (voice.duration_seconds != null && voice.duration_seconds < minDuration) {
     reasons.push(`chỉ dài ${voice.duration_seconds}s (tối thiểu ${minDuration}s)`);
   }
   return reasons;
+}
+
+/**
+ * CharCount — dòng đếm ký tự nằm ngay dưới ô nhập.
+ *
+ * Để trong nhãn thì lúc vượt giới hạn người dùng phải ngước lên mới thấy, mà
+ * đó đúng là lúc cần thấy nhất. Vượt giới hạn là đỏ: API sẽ từ chối, nên phải
+ * chặn được người dùng trước khi họ bấm Lưu.
+ */
+function CharCount({ length, max }: { length: number; max: number }) {
+  const remaining = max - length;
+  return (
+    <p className={"mt-1 text-xs " + (remaining < 0 ? "text-red-700" : "text-slate-500")}>
+      {remaining >= 0
+        ? `Còn ${remaining.toLocaleString("vi-VN")} ký tự`
+        : `Vượt ${(-remaining).toLocaleString("vi-VN")} ký tự`}
+    </p>
+  );
+}
+
+/**
+ * VoiceImage là ảnh bìa đang gắn với voice, kèm việc nó nằm ở đâu: ảnh tải từ
+ * máy nằm trong bucket riêng tư của tool, ảnh còn lại là link công khai của
+ * bài gốc. Hai nguồn đó hiển thị bằng hai URL khác nhau.
+ */
+type VoiceImage = { url: string; uploaded: boolean };
+
+/**
+ * voiceImageSrc trả URL hiển thị được cho thẻ <img>.
+ *
+ * Ảnh tải từ máy KHÔNG dùng được `image_url` đang lưu: đó là địa chỉ nội bộ của
+ * storage (`http://minio:9000/…`, bucket riêng tư) — trình duyệt không với tới,
+ * nên ảnh vừa tải lên hiện ra ô trắng. Phải đi qua API như file audio.
+ */
+function voiceImageSrc(voiceId: string, image: VoiceImage): string {
+  return image.uploaded ? coverImageUrl(voiceId, image.url) : image.url;
+}
+
+/**
+ * PublishTimes gộp "Tạo lúc" và "Đăng lúc" vào chung 1 ô, mỗi mốc 1 dòng.
+ *
+ * Hai cột thời gian riêng đẩy bảng tràn ngang mà phần lớn thời gian chỉ 1 trong
+ * 2 có giá trị (voice chưa đăng thì cột "Đăng lúc" trống rỗng suốt).
+ */
+function PublishTimes({ voice }: { voice: Voice }) {
+  const fmt = (value: string) => {
+    const d = new Date(value);
+    return `${d.toLocaleDateString("vi-VN")} ${d.toLocaleTimeString("vi-VN", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+  };
+
+  return (
+    <div className="space-y-0.5 whitespace-nowrap text-xs leading-tight">
+      <p>
+        <span className="text-slate-400">Tạo</span> {fmt(voice.created_at)}
+      </p>
+      <p>
+        {voice.published_at ? (
+          <>
+            <span className="text-slate-400">Đăng</span>{" "}
+            <span className="text-slate-900">{fmt(voice.published_at)}</span>
+          </>
+        ) : (
+          <span className="text-slate-400">Chưa đăng</span>
+        )}
+      </p>
+    </div>
+  );
 }
 
 /**
@@ -255,7 +320,7 @@ export default function VoicesPage() {
                     if (!voice || voice.publish_status === "published") return;
                     if (multimeBlockers(voice, publishReq).length > 0) {
                       throw new Error(
-                        `${voice.title ?? voice.id.slice(0, 8)}: thiếu hashtag/tiêu đề`,
+                        `${voice.title ?? voice.id.slice(0, 8)}: ${multimeBlockers(voice, publishReq).join(", ")}`,
                       );
                     }
                     await publish.mutateAsync(id);
@@ -293,13 +358,19 @@ export default function VoicesPage() {
                 <Th>Nền tảng</Th>
                 <Th>Ngôn ngữ</Th>
                 <Th>Người tạo</Th>
+                <Th>Author</Th>
                 <Th>Trạng thái</Th>
-                <SortableTh sorting={sorting} column="created_at">
-                  Tạo lúc
-                </SortableTh>
-                <SortableTh sorting={sorting} column="published_at">
-                  Đăng lúc
-                </SortableTh>
+                {/* 1 cột, 2 mốc: bấm nhãn nào thì sắp xếp theo mốc đó. */}
+                <Th className="p-0">
+                  <div className="flex flex-col items-start gap-1 px-3 py-2">
+                    <SortButton sorting={sorting} column="created_at">
+                      Tạo lúc
+                    </SortButton>
+                    <SortButton sorting={sorting} column="published_at">
+                      Đăng lúc
+                    </SortButton>
+                  </div>
+                </Th>
                 <Can permission="can_write">
                   <Th className="text-right">Hành động</Th>
                 </Can>
@@ -313,17 +384,28 @@ export default function VoicesPage() {
                   // Voice đang xử lý thì chưa có file/metadata cuối cùng —
                   // cảnh báo "thiếu hashtag" lúc này chỉ là nhiễu.
                   const processing = voice.publish_status === "processing";
+                  // isPending của mutation là trạng thái CHUNG cho cả bảng, nên
+                  // so id đang gửi đi: bấm Đăng ở 1 dòng không được làm mờ nút
+                  // của mọi dòng khác.
+                  const publishing = publish.isPending && publish.variables === voice.id;
+                  const updating = update.isPending && update.variables?.id === voice.id;
                   const published = voice.publish_status === "published";
                   const blockers =
                     processing || published ? [] : multimeBlockers(voice, publishReq);
                   // Không đăng được lên multime cũng là lỗi: hiện trạng thái
                   // "Lỗi" kèm lý do, thay vì badge "Nháp" trông như bình thường.
+                  // Trạng thái hiển thị = đúng quy tắc API dùng để lọc
+                  // (queries/voice.sql): đã thử đăng và hỏng thì là "Đăng lỗi",
+                  // còn draft/ready mà thiếu điều kiện là "Chưa đủ điều kiện".
+                  const status =
+                    voice.publish_status !== "failed" && blockers.length > 0
+                      ? "incomplete"
+                      : voice.publish_status;
                   const errorNote =
                     voice.last_error ??
                     (blockers.length > 0
-                      ? `Chưa đăng được lên multime: ${blockers.join(", ")}.`
+                      ? `Chưa đủ điều kiện đăng lên multime: ${blockers.join(", ")}.`
                       : null);
-                  const failed = voice.publish_status === "failed" || blockers.length > 0;
                   return (
                     <tr key={voice.id}>
                       <Can permission="can_write">
@@ -341,7 +423,10 @@ export default function VoicesPage() {
                           {voice.image_url ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
-                              src={voice.image_url}
+                              src={voiceImageSrc(voice.id, {
+                                url: voice.image_url,
+                                uploaded: voice.image_uploaded,
+                              })}
                               alt=""
                               className="h-12 w-20 shrink-0 rounded object-cover"
                             />
@@ -403,7 +488,7 @@ export default function VoicesPage() {
                             className="h-8 w-28 text-xs"
                             value={voice.language}
                             disabled={
-                              processing || voice.publish_status === "published" || update.isPending
+                              processing || voice.publish_status === "published" || updating
                             }
                             onChange={(e) =>
                               update.mutate({ id: voice.id, language: e.target.value })
@@ -424,16 +509,44 @@ export default function VoicesPage() {
                         </span>
                       </Td>
 
+                      {/* Author = tài khoản Strongbody ĐỨNG TÊN bài đăng, khác
+                          "Người tạo" là người bấm nút trong tool này. Sửa được
+                          ngay tại bảng: đây là trường hay phải đổi nhất và là
+                          lý do phổ biến nhất khiến voice chưa đăng được. */}
+                      <Td className="text-xs">
+                        <Can
+                          permission="can_write"
+                          fallback={
+                            <span className="block w-44 break-all text-slate-600">
+                              {voice.author_email ?? "—"}
+                            </span>
+                          }
+                        >
+                          <AuthorCell
+                            voice={voice}
+                            disabled={processing || published}
+                            busy={updating}
+                          />
+                        </Can>
+                      </Td>
+
                       <Td className="max-w-48">
-                        <Badge tone={failed ? "danger" : statusTone(voice.publish_status)}>
-                          {failed
-                            ? PUBLISH_STATUS_LABELS.failed
-                            : (PUBLISH_STATUS_LABELS[voice.publish_status] ?? voice.publish_status)}
+                        <Badge tone={statusTone(status)}>
+                          {PUBLISH_STATUS_LABELS[status] ?? status}
                         </Badge>
-                        {/* Lý do lỗi nằm ngay dưới trạng thái — đọc 1 chỗ là
-                            hiểu, không phải dò trong ô nội dung. */}
+                        {/* Lý do nằm ngay dưới trạng thái — đọc 1 chỗ là hiểu,
+                            không phải dò trong ô nội dung. Thiếu điều kiện thì
+                            là việc phải điền nốt (màu hổ phách), khác lỗi thật
+                            của lần đăng hỏng (màu đỏ). */}
                         {errorNote ? (
-                          <p className="mt-1 text-xs text-red-700">{errorNote}</p>
+                          <p
+                            className={
+                              "mt-1 text-xs " +
+                              (status === "incomplete" ? "text-amber-700" : "text-red-700")
+                            }
+                          >
+                            {errorNote}
+                          </p>
                         ) : null}
                         {/* Đã đăng: file nội bộ đã bị xoá, chỗ nghe duy nhất
                             là multime — để cùng chỗ với thông báo lỗi cho nhất
@@ -450,10 +563,7 @@ export default function VoicesPage() {
                         ) : null}
                       </Td>
                       <Td>
-                        <DateCell value={voice.created_at} />
-                      </Td>
-                      <Td>
-                        <DateCell value={voice.published_at} />
+                        <PublishTimes voice={voice} />
                       </Td>
 
                       <Can permission="can_write">
@@ -477,9 +587,7 @@ export default function VoicesPage() {
                                 <Button
                                   size="sm"
                                   disabled={
-                                    !voice.voice_file_url ||
-                                    publish.isPending ||
-                                    blockers.length > 0
+                                    !voice.voice_file_url || publishing || blockers.length > 0
                                   }
                                   title={
                                     blockers.length > 0
@@ -488,7 +596,7 @@ export default function VoicesPage() {
                                   }
                                   onClick={() => publish.mutate(voice.id)}
                                 >
-                                  Đăng
+                                  {publishing ? "Đang đăng…" : "Đăng"}
                                 </Button>
                               </>
                             ) : null}
@@ -528,78 +636,120 @@ export default function VoicesPage() {
 /**
  * CreateVoiceDialog — tạo Voice ngay từ màn Voice (luồng F1).
  *
- * Vẫn đi qua Bài Post như mọi luồng khác (business rule #1): hộp thoại này tạo
- * Bài Post rồi bật `auto_process` để worker sinh Voice luôn, chứ không có
+ * Vẫn đi qua Bài Post như mọi luồng khác (business rule #1): tab "Thông tin"
+ * tạo Bài Post rồi bật `auto_process` để worker sinh Voice luôn, chứ không có
  * đường tắt tạo Voice trực tiếp.
  *
  * Hai kiểu nhập liệu loại trừ nhau và đi 2 đường khác nhau, giống hệt màn F1:
- *   - URL:  tạo Bài Post trước rồi sinh Voice (business rule #1).
- *   - Text: tạo thẳng Voice, không sinh Bài Post — text gõ tay không có bài
- *           gốc nào để truy vết.
+ *   - Thông tin: dán URL -> tạo Bài Post -> Voice, rồi sửa metadata và đăng
+ *                ngay trong hộp thoại này.
+ *   - Nhập text: tạo thẳng Voice, không sinh Bài Post — text gõ tay không có
+ *                bài gốc nào để truy vết.
  */
 type VoiceInputMode = "url" | "text";
 
 function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
-  const create = useCreateSourcePost();
-  const createVoice = useCreateTextVoice();
-  const platforms = usePlatforms();
-  const prompts = usePrompts();
-  const modes = useCollectModes();
-
   const [inputMode, setInputMode] = React.useState<VoiceInputMode>("url");
-  const [sourceUrl, setSourceUrl] = React.useState("");
-  const [text, setText] = React.useState("");
-  const [collectMode, setCollectMode] = React.useState<CollectMode>("A");
-  const [promptId, setPromptId] = React.useState("");
-  const [language, setLanguage] = React.useState("auto");
-  const [platform, setPlatform] = React.useState("");
-  const [duplicate, setDuplicate] = React.useState<DuplicatePost | null>(null);
+  // Đã dán URL và tạo Bài Post thì không cho đổi tab nữa: voice đang được tạo
+  // ở tab này, nhảy sang tab kia là bỏ lại nó giữa chừng mà không thấy đâu.
+  const [locked, setLocked] = React.useState(false);
 
-  const isTextInput = inputMode === "text";
-  const needsPrompt = collectMode === "C";
-  const pending = create.isPending || createVoice.isPending;
+  return (
+    <Modal
+      title="Tạo Voice"
+      description="Dán URL bài đăng để hệ thống tự lấy nội dung, hoặc gõ thẳng text cho TTS đọc."
+      width="3xl"
+      onClose={onClose}
+    >
+      {/* 2 kiểu nhập liệu loại trừ nhau nên dùng nút chọn thay vì 2 ô cùng
+          hiện — đỡ phải đoán ô nào thắng khi điền cả hai. */}
+      <div className="mb-4 grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+        {(
+          [
+            ["url", "Thông tin"],
+            ["text", "Nhập text"],
+          ] as [VoiceInputMode, string][]
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            disabled={locked && inputMode !== value}
+            title={
+              locked && inputMode !== value
+                ? "Đang tạo voice từ URL — đóng hộp thoại nếu muốn làm việc khác"
+                : undefined
+            }
+            onClick={() => setInputMode(value)}
+            className={
+              "rounded-md px-3 py-1.5 text-sm font-medium transition " +
+              (inputMode === value
+                ? "bg-white text-slate-900 shadow-sm"
+                : "text-slate-600 hover:text-slate-900 disabled:text-slate-300 disabled:hover:text-slate-300")
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {inputMode === "url" ? (
+        <FromURLTab onClose={onClose} onCreated={() => setLocked(true)} />
+      ) : (
+        <FromTextTab onClose={onClose} />
+      )}
+    </Modal>
+  );
+}
+
+/** enabledMode gom việc đọc /meta/collect-modes cho cả 2 tab. */
+function useModeGate() {
+  const modes = useCollectModes();
   const modeMeta = modes.data?.collect_modes ?? [];
   const metaOf = (mode: string) => modeMeta.find((m) => m.mode === mode);
-  const isEnabled = (mode: string) => metaOf(mode)?.enabled ?? mode === "A";
-  // Mode tắt thì nói luôn thiếu gì (vd chưa có ANTHROPIC_API_KEY) — server đã
-  // trả kèm lý do ở /meta/collect-modes.
-  const modeNote = (mode: string) =>
-    isEnabled(mode) ? "" : ` — ${metaOf(mode)?.reason ?? "chưa được bật"}`;
-  // Nhập text thì không có audio gốc -> hình thức A không dùng được.
-  const modeAvailable = (mode: string) => isEnabled(mode) && !(isTextInput && mode === "A");
+  return {
+    isEnabled: (mode: string) => metaOf(mode)?.enabled ?? mode === "A",
+    // Mode tắt thì nói luôn thiếu gì (vd chưa có ANTHROPIC_API_KEY) — server đã
+    // trả kèm lý do ở /meta/collect-modes.
+    note: (mode: string) =>
+      (metaOf(mode)?.enabled ?? mode === "A")
+        ? ""
+        : ` — ${metaOf(mode)?.reason ?? "chưa được bật"}`,
+  };
+}
 
-  // Đổi sang nhập text khi đang để hình thức A: chuyển sẵn sang B thay vì bắt
-  // người dùng tự sửa rồi mới submit được.
-  function switchInput(mode: VoiceInputMode) {
-    setInputMode(mode);
-    setDuplicate(null);
-    if (mode === "text" && collectMode === "A") setCollectMode("B");
-  }
+/**
+ * FromURLTab — dán URL, hệ thống tạo bài post + audio, rồi sửa metadata và
+ * đăng luôn tại chỗ.
+ *
+ * Voice được tạo NGAY khi bấm Enter chứ không đợi bấm "Đăng voice": đóng hộp
+ * thoại giữa chừng thì voice vẫn nằm trong bảng như mọi voice khác (nháp/chưa
+ * đủ điều kiện), không mất công đã chờ.
+ */
+function FromURLTab({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const create = useCreateSourcePost();
+  const prompts = usePrompts();
+  const gate = useModeGate();
+
+  const [collectMode, setCollectMode] = React.useState<CollectMode>("A");
+  const [promptId, setPromptId] = React.useState("");
+  const [sourceUrl, setSourceUrl] = React.useState("");
+  const [duplicate, setDuplicate] = React.useState<DuplicatePost | null>(null);
+  const [postId, setPostId] = React.useState<string | null>(null);
+
+  const needsPrompt = collectMode === "C";
 
   async function send(allowDuplicate: boolean) {
-    // Nhập text: tạo thẳng Voice, không sinh Bài Post -> không có bài trùng.
-    if (isTextInput) {
-      await createVoice.mutateAsync({
-        text: text.trim(),
-        collect_mode: collectMode === "C" ? "C" : "B",
-        prompt_id: needsPrompt && promptId ? promptId : null,
-        language,
-      });
-      onClose();
-      return;
-    }
-
     try {
-      await create.mutateAsync({
+      const post = await create.mutateAsync({
         source_url: sourceUrl.trim(),
         collect_mode: collectMode,
         prompt_id: needsPrompt && promptId ? promptId : null,
-        language,
         auto_process: true,
-        platform: platform || undefined,
         allow_duplicate: allowDuplicate || undefined,
       });
-      onClose();
+      setDuplicate(null);
+      setPostId(post.id);
+      onCreated();
     } catch (err) {
       const dup = duplicateOf(err);
       if (!dup) throw err;
@@ -607,144 +757,377 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    await send(false);
+  // Đã tạo bài post -> phần còn lại là metadata của chính voice đó.
+  if (postId) {
+    return (
+      <NewVoicePanel
+        sourcePostId={postId}
+        collectMode={collectMode}
+        sourceUrl={sourceUrl.trim()}
+        onClose={onClose}
+      />
+    );
   }
 
   return (
-    <Modal
-      title="Tạo Voice"
-      description="Dán URL bài đăng để hệ thống tự lấy nội dung, hoặc gõ thẳng text cho TTS đọc."
-      width="xl"
-      onClose={onClose}
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void send(false);
+      }}
+      className="space-y-4"
     >
-      <form onSubmit={submit} className="space-y-4">
-        {/* 2 kiểu nhập liệu loại trừ nhau nên dùng nút chọn thay vì 2 ô cùng
-            hiện — đỡ phải đoán ô nào thắng khi điền cả hai. */}
-        <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
-          {(
-            [
-              ["url", "Từ URL"],
-              ["text", "Nhập text"],
-            ] as [VoiceInputMode, string][]
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => switchInput(value)}
-              className={
-                "rounded-md px-3 py-1.5 text-sm font-medium transition " +
-                (inputMode === value
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900")
-              }
-            >
+      <Field label="Hình thức tạo" required>
+        <Select
+          value={collectMode}
+          onChange={(e) => setCollectMode(e.target.value as CollectMode)}
+          required
+        >
+          {Object.entries(COLLECT_MODE_LABELS).map(([value, label]) => (
+            <option key={value} value={value} disabled={!gate.isEnabled(value)}>
               {label}
-            </button>
+              {gate.note(value)}
+            </option>
           ))}
-        </div>
+        </Select>
+      </Field>
 
-        {isTextInput ? (
-          <Field
-            label={`Nội dung TTS đọc (còn ${(MAX_TTS_TEXT_LENGTH - text.length).toLocaleString("vi-VN")} ký tự)`}
-            required
+      {needsPrompt ? (
+        <Field label="Prompt mẫu" required>
+          <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
+            <option value="">— Chọn prompt —</option>
+            {prompts.data?.items.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      ) : null}
+
+      <Field label="URL bài đăng" required>
+        <Input
+          type="url"
+          placeholder="https://www.youtube.com/watch?v=..."
+          value={sourceUrl}
+          onChange={(e) => setSourceUrl(e.target.value)}
+          required
+          autoFocus
+        />
+      </Field>
+
+      {duplicate ? (
+        <DuplicatePostNotice
+          existing={duplicate}
+          pending={create.isPending}
+          onSkip={onClose}
+          onCreateAnyway={() => void send(true)}
+        />
+      ) : (
+        <ErrorNote error={create.error} />
+      )}
+
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={onClose}>
+          Huỷ
+        </Button>
+        <Button type="submit" disabled={create.isPending || duplicate !== null}>
+          {create.isPending ? "Đang xử lý…" : "Tạo Voice"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * NewVoicePanel — metadata của voice vừa tạo, nghe thử và đăng ngay.
+ *
+ * Metadata và audio về ở hai nhịp khác hẳn nhau: task `post:metadata` chỉ đọc
+ * thông tin bài (vài giây), còn audio phải tải/đọc cả video (có khi hàng phút).
+ * Nên form điền sẵn từ BÀI POST và hiện ngay, chỗ nghe thử tự quay vòng riêng
+ * — bắt người dùng ngồi nhìn màn trống tới khi có audio là phí mất quãng họ
+ * có thể sửa tiêu đề, chọn author.
+ */
+function NewVoicePanel({
+  sourcePostId,
+  collectMode,
+  sourceUrl,
+  onClose,
+}: {
+  sourcePostId: string;
+  collectMode: CollectMode;
+  sourceUrl: string;
+  onClose: () => void;
+}) {
+  const post = useSourcePost(sourcePostId);
+  const created = useVoiceOfSourcePost(sourcePostId);
+  const update = useUpdateVoice();
+  const publish = usePublishVoice();
+  const publishReq = usePublishRequirements().data;
+
+  const voice = created.data?.items[0];
+  // Voice còn `processing` thì chưa sửa/đăng được (API chặn) — mọi thao tác ghi
+  // phải đợi đúng mốc này, dù phần chữ đã hiện từ trước.
+  const ready = voice != null && voice.publish_status !== "processing";
+
+  const [form, setForm] = React.useState<{
+    title: string;
+    hashtag: string;
+    language: string;
+    image: VoiceImage;
+    author: AuthorChoice;
+  } | null>(null);
+
+  // Điền form ngay khi Bài Post có metadata. Voice xong sau đó chỉ bù vào ô còn
+  // trống — không đè lên thứ người dùng đang gõ dở.
+  React.useEffect(() => {
+    const meta = post.data;
+    if (!meta?.title && !ready) return;
+
+    setForm((current) => {
+      if (current) {
+        if (!voice || !ready) return current;
+        return {
+          ...current,
+          title: current.title || (voice.title ?? ""),
+          hashtag: current.hashtag || (voice.hashtag ?? ""),
+          image: current.image.url ? current.image : { url: voice.image_url ?? "", uploaded: voice.image_uploaded },
+        };
+      }
+      return {
+        title: meta?.title ?? voice?.title ?? "",
+        hashtag: (meta?.hashtags ?? []).join(" ") || (voice?.hashtag ?? ""),
+        language: voice?.language ?? meta?.language ?? "auto",
+        image: { url: meta?.thumbnail_url ?? voice?.image_url ?? "", uploaded: false },
+        author: {
+          id: voice?.author_id ?? null,
+          email: voice?.author_email ?? null,
+          gender: voice?.author_gender ?? null,
+        },
+      };
+    });
+  }, [post.data, voice, ready]);
+
+  async function publishNow() {
+    if (!voice || !form) return;
+    await update.mutateAsync({
+      id: voice.id,
+      title: form.title || null,
+      hashtag: form.hashtag,
+      language: form.language,
+      image_url: form.image.url || null,
+      author_id: form.author.id,
+      author_email: form.author.email,
+      author_gender: form.author.gender,
+    });
+    await publish.mutateAsync(voice.id);
+    onClose();
+  }
+
+  // Điều kiện multime đòi, tính trên giá trị người dùng ĐANG sửa chứ không phải
+  // bản đã lưu — nút không được sáng lên rồi mới báo lỗi.
+  const blockers =
+    voice && form
+      ? multimeBlockers(
+          {
+            ...voice,
+            title: form.title,
+            hashtag: form.hashtag,
+            author_id: form.author.id,
+          },
+          publishReq,
+        )
+      : [];
+  const posting = update.isPending || publish.isPending;
+  // Tiêu đề dài quá thì API từ chối — chặn ngay ở nút thay vì để người dùng
+  // bấm rồi mới nhận lỗi.
+  const tooLong = (form?.title.length ?? 0) > MAX_TITLE_LENGTH;
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md bg-slate-50 px-3 py-2 text-sm">
+        <p className="text-slate-600">
+          Hình thức tạo: <span className="text-slate-900">{COLLECT_MODE_LABELS[collectMode]}</span>
+        </p>
+        <p className="mt-0.5 break-all text-slate-600">
+          URL:{" "}
+          <a
+            href={sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-indigo-700 hover:underline"
           >
+            {sourceUrl}
+          </a>
+        </p>
+      </div>
+
+      {/* Chỗ nghe thử: chờ riêng, không chặn phần chữ bên dưới. */}
+      {voice?.voice_file_url ? (
+        <AudioPreview voiceId={voice.id} />
+      ) : (
+        <p className="flex items-center gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800">
+          <span className="size-3 animate-spin rounded-full border-2 border-sky-300 border-t-sky-700" />
+          Đang tạo audio…
+        </p>
+      )}
+
+      {!form ? (
+        <p className="rounded-md bg-slate-50 px-3 py-3 text-sm text-slate-600">
+          Đang lấy nội dung bài…
+        </p>
+      ) : (
+        <>
+          <Field label="Tiêu đề">
             <Textarea
-              className="min-h-40"
-              maxLength={MAX_TTS_TEXT_LENGTH}
-              placeholder="Bản tin sáng nay…"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              required
-              autoFocus
+              className="min-h-20"
+              value={form.title}
+              onChange={(e) => setForm({ ...form, title: e.target.value })}
             />
+            <CharCount length={form.title.length} max={MAX_TITLE_LENGTH} />
           </Field>
-        ) : (
-          <Field label="URL bài đăng" required>
-            <Input
-              type="url"
-              placeholder="https://www.youtube.com/watch?v=..."
-              value={sourceUrl}
-              onChange={(e) => setSourceUrl(e.target.value)}
-              required
-              autoFocus
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Hashtag" required>
+              <Input
+                value={form.hashtag}
+                onChange={(e) => setForm({ ...form, hashtag: e.target.value })}
+                placeholder="#tinnong #vietnam"
+                required
+              />
+            </Field>
+
+            <Field label="Ngôn ngữ">
+              <Select
+                value={form.language}
+                onChange={(e) => setForm({ ...form, language: e.target.value })}
+              >
+                {languageOptionsFor(form.language).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+
+          <AuthorField value={form.author} onChange={(author) => setForm({ ...form, author })} />
+
+          {voice ? (
+            <ImageField
+              voiceId={voice.id}
+              value={form.image}
+              onChange={(image) => setForm({ ...form, image })}
+              // Voice chưa xử lý xong thì API từ chối ghi ảnh — chặn ở đây để
+              // người dùng không bấm rồi nhận lỗi khó hiểu.
+              uploadDisabled={!ready}
             />
-          </Field>
-        )}
+          ) : null}
+        </>
+      )}
 
-        {isTextInput ? null : (
-          <Field label="Nền tảng">
-            <Select value={platform} onChange={(e) => setPlatform(e.target.value)}>
-              <option value="">Tự nhận diện từ URL</option>
-              {(platforms.data?.platforms ?? []).map((p) => (
-                <option key={p} value={p}>
-                  {platformLabel(p)}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        )}
+      <ErrorNote error={post.error ?? created.error ?? update.error ?? publish.error} />
 
-        <Field label="Hình thức thu thập" required>
-          <Select
-            value={collectMode}
-            onChange={(e) => setCollectMode(e.target.value as CollectMode)}
-          >
-            {Object.entries(COLLECT_MODE_LABELS).map(([value, label]) => (
-              <option key={value} value={value} disabled={!modeAvailable(value)}>
-                {label}
-                {modeNote(value)}
-                {isEnabled(value) && !modeAvailable(value) ? " — cần URL" : ""}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={onClose}>
+          Đóng
+        </Button>
+        <Button
+          type="button"
+          disabled={!ready || !form || blockers.length > 0 || tooLong || posting}
+          title={blockers.length > 0 ? `multime.ai yêu cầu: ${blockers.join(", ")}` : undefined}
+          onClick={() => void publishNow()}
+        >
+          {posting ? "Đang đăng…" : "Đăng voice"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** FromTextTab — gõ thẳng text cho TTS đọc, không sinh Bài Post. */
+function FromTextTab({ onClose }: { onClose: () => void }) {
+  const createVoice = useCreateTextVoice();
+  const prompts = usePrompts();
+  const gate = useModeGate();
+
+  const [text, setText] = React.useState("");
+  const [collectMode, setCollectMode] = React.useState<"B" | "C">("B");
+  const [promptId, setPromptId] = React.useState("");
+
+  const needsPrompt = collectMode === "C";
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    await createVoice.mutateAsync({
+      text: text.trim(),
+      collect_mode: collectMode,
+      prompt_id: needsPrompt && promptId ? promptId : null,
+    });
+    onClose();
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      {/* Nhập text thì không có audio gốc -> hình thức A không dùng được. */}
+      <Field label="Hình thức tạo" required>
+        <Select
+          value={collectMode}
+          onChange={(e) => setCollectMode(e.target.value as "B" | "C")}
+          required
+        >
+          {(["B", "C"] as const).map((value) => (
+            <option key={value} value={value} disabled={!gate.isEnabled(value)}>
+              {COLLECT_MODE_LABELS[value]}
+              {gate.note(value)}
+            </option>
+          ))}
+        </Select>
+      </Field>
+
+      {needsPrompt ? (
+        <Field label="Prompt mẫu" required>
+          <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
+            <option value="">— Chọn prompt —</option>
+            {prompts.data?.items.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
               </option>
             ))}
           </Select>
         </Field>
+      ) : null}
 
-        {needsPrompt ? (
-          <Field label="Prompt mẫu" required>
-            <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
-              <option value="">— Chọn prompt —</option>
-              {prompts.data?.items.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        ) : null}
+      <Field label="Nội dung TTS đọc" required>
+        <Textarea
+          className="min-h-40"
+          placeholder="Bản tin sáng nay…"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          required
+          autoFocus
+        />
+        <CharCount length={text.length} max={MAX_TTS_TEXT_LENGTH} />
+      </Field>
 
-        <Field label="Ngôn ngữ">
-          <Select value={language} onChange={(e) => setLanguage(e.target.value)}>
-            {LANGUAGE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </Select>
-        </Field>
+      <ErrorNote error={createVoice.error} />
 
-        {duplicate ? (
-          <DuplicatePostNotice
-            existing={duplicate}
-            pending={create.isPending}
-            onSkip={onClose}
-            onCreateAnyway={() => void send(true)}
-          />
-        ) : (
-          <ErrorNote error={create.error ?? createVoice.error} />
-        )}
-
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
-            Huỷ
-          </Button>
-          <Button type="submit" disabled={pending || duplicate !== null}>
-            {pending ? "Đang xử lý…" : "Tạo Voice"}
-          </Button>
-        </div>
-      </form>
-    </Modal>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={onClose}>
+          Huỷ
+        </Button>
+        <Button
+          type="submit"
+          disabled={
+            createVoice.isPending ||
+            !gate.isEnabled(collectMode) ||
+            text.length > MAX_TTS_TEXT_LENGTH
+          }
+        >
+          {createVoice.isPending ? "Đang xử lý…" : "Tạo Voice"}
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -763,6 +1146,14 @@ function EditVoiceDialog({ voice, onClose }: { voice: Voice; onClose: () => void
 
   return (
     <Modal title="Sửa Voice" width="3xl" onClose={onClose}>
+      {/* Nghe thử ngay trong modal: sửa tiêu đề/lời đọc mà phải đóng modal ra
+          bảng mới nghe được thì không đối chiếu được với thứ mình đang sửa. */}
+      {voice.voice_file_url ? (
+        <div className="mb-4">
+          <AudioPreview voiceId={voice.id} />
+        </div>
+      ) : null}
+
       <div className="mb-4 grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
         {(
           [
@@ -795,13 +1186,46 @@ function EditVoiceDialog({ voice, onClose }: { voice: Voice; onClose: () => void
   );
 }
 
+/**
+ * originalTitle trả nội dung bài GỐC để điền vào ô tiêu đề.
+ *
+ * `voice.title` là bản đã cắt về 200 ký tự (giới hạn của multime) kèm "…", nên
+ * mở modal sửa mà hiện nó thì người dùng thấy một bài cụt và không có cách nào
+ * lấy lại phần đuôi. Modal tạo voice điền sẵn nguyên văn bài post, ở đây cũng
+ * phải vậy.
+ *
+ * Chỉ trả lại bản gốc khi tiêu đề đang lưu ĐÚNG LÀ bản cắt của nó — người dùng
+ * đã tự sửa tiêu đề thì giữ nguyên thứ họ viết.
+ */
+function originalTitle(voice: Voice): string {
+  const source = voice.source_title?.trim();
+  const title = voice.title ?? "";
+  if (!source) return title;
+  if (!title) return source;
+
+  // So sau khi gộp khoảng trắng: tiêu đề Voice là bản bài post đã ép về MỘT
+  // dòng rồi mới cắt, nên bài nào có xuống dòng thì so thô sẽ không khớp và
+  // người dùng mất phần đuôi.
+  const flatten = (value: string) => value.replace(/\s+/g, " ").trim();
+  const cut = flatten(title.replace(/…$/, ""));
+  return cut && flatten(source).startsWith(cut) ? source : title;
+}
+
 /** VoiceInfoTab — phần chữ đi kèm bài đăng trên multime. */
 function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void }) {
   const update = useUpdateVoice();
-  const [title, setTitle] = React.useState(voice.title ?? "");
+  const [title, setTitle] = React.useState(originalTitle(voice));
   const [hashtag, setHashtag] = React.useState(voice.hashtag ?? "");
   const [language, setLanguage] = React.useState(voice.language);
-  const [imageUrl, setImageUrl] = React.useState(voice.image_url ?? "");
+  const [image, setImage] = React.useState<VoiceImage>({
+    url: voice.image_url ?? "",
+    uploaded: voice.image_uploaded,
+  });
+  const [author, setAuthor] = React.useState<AuthorChoice>({
+    id: voice.author_id,
+    email: voice.author_email,
+    gender: voice.author_gender,
+  });
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -810,7 +1234,10 @@ function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void })
       title: title || null,
       hashtag,
       language,
-      image_url: imageUrl || null,
+      image_url: image.url || null,
+      author_id: author.id,
+      author_email: author.email,
+      author_gender: author.gender,
     });
     onClose();
   }
@@ -819,31 +1246,18 @@ function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void })
     <form onSubmit={submit} className="space-y-4">
       {/* Tiêu đề là phần chữ DUY NHẤT multime hiển thị — không có ô mô tả.
             Điền sẵn bằng nội dung bài gốc đã cắt về giới hạn ký tự. */}
-      <Field
-        label="Tiêu đề"
-        hint={`Điền sẵn từ nội dung bài gốc (đã bỏ hashtag). Đây là toàn bộ phần chữ hiện trên multime — tối đa ${MAX_TITLE_LENGTH} ký tự (còn ${MAX_TITLE_LENGTH - title.length}).`}
-      >
-        <Textarea
-          className="min-h-20"
-          maxLength={MAX_TITLE_LENGTH}
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-        />
+      <Field label="Tiêu đề">
+        <Textarea className="min-h-20" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <CharCount length={title.length} max={MAX_TITLE_LENGTH} />
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field
-          label={
-            <>
-              Hashtag <span className="text-red-700">*</span>
-            </>
-          }
-          hint="multime.ai yêu cầu ít nhất 1 hashtag. Bỏ trống thì hệ thống dùng hashtag mặc định trong cấu hình."
-        >
+        <Field label="Hashtag" required>
           <Input
             value={hashtag}
             onChange={(e) => setHashtag(e.target.value)}
             placeholder="#tinnong #vietnam"
+            required
           />
         </Field>
 
@@ -858,13 +1272,9 @@ function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void })
         </Field>
       </div>
 
-      <Field label="Ảnh bìa (URL)">
-        <Input value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} />
-      </Field>
-      {imageUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={imageUrl} alt="" className="h-24 rounded object-cover" />
-      ) : null}
+      <AuthorField value={author} onChange={setAuthor} />
+
+      <ImageField voiceId={voice.id} value={image} onChange={setImage} />
 
       <ErrorNote error={update.error} />
 
@@ -872,11 +1282,217 @@ function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void })
         <Button type="button" variant="secondary" onClick={onClose}>
           Huỷ
         </Button>
-        <Button type="submit" disabled={update.isPending}>
+        <Button type="submit" disabled={update.isPending || title.length > MAX_TITLE_LENGTH}>
           Lưu
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * AuthorChoice là tài khoản Strongbody đứng tên bài đăng.
+ *
+ * Người dùng không chọn đích danh ai: họ chọn GIỚI TÍNH, hệ thống bốc ngẫu
+ * nhiên một tài khoản khớp. `gender` vì thế là thứ người dùng quyết định, còn
+ * `id`/`email` là kết quả bốc ra — cả ba luôn thuộc về cùng một người.
+ */
+type AuthorChoice = { id: number | null; email: string | null; gender: Gender | null };
+
+const GENDER_LABELS: Record<Gender, string> = {
+  male: "Male",
+  female: "Female",
+  other: "Other",
+};
+
+/**
+ * AuthorPicker — chọn tài khoản đứng tên bài đăng bằng giới tính.
+ *
+ * Chọn một giới tính là bốc ngay một tài khoản khớp; nút random bốc lại người
+ * khác trong cùng giới tính. Danh bạ Strongbody có hàng nghìn tài khoản mà
+ * việc cần làm chỉ là "rải bài đều cho nhiều người", nên chọn đích danh email
+ * vừa chậm vừa không giải quyết được gì.
+ */
+function AuthorPicker({
+  value,
+  onChange,
+  disabled,
+  compact,
+}: {
+  value: AuthorChoice;
+  onChange: (next: AuthorChoice) => void;
+  disabled?: boolean;
+  /** compact: bản gọn cho ô trong bảng. */
+  compact?: boolean;
+}) {
+  const random = useRandomAuthor();
+
+  async function pick(gender: Gender) {
+    const { author } = await random.mutateAsync(gender);
+    onChange({ id: author.id, email: author.email, gender: author.gender });
+  }
+
+  const busy = random.isPending;
+  const small = compact ? "text-xs" : "text-sm";
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2">
+        {/* Giới tính + email hiện NGAY TRONG ô: đó là một giá trị duy nhất, tách
+            ra 2 dòng thì mỗi lần đọc phải ghép lại. Ô giữ nguyên bề ngang, chuỗi
+            dài thì trình duyệt tự cắt — bảng không được co giãn theo độ dài
+            email của từng dòng. */}
+        <Select
+          className={"truncate " + (compact ? "h-8 w-44 text-xs" : "h-10 w-full")}
+          value={value.gender ?? ""}
+          disabled={disabled || busy}
+          onChange={(e) => void pick(e.target.value as Gender)}
+        >
+          <option value="" disabled>
+            — Giới tính —
+          </option>
+          {(Object.keys(GENDER_LABELS) as Gender[]).map((gender) => (
+            <option key={gender} value={gender}>
+              {gender === value.gender && value.email
+                ? `${GENDER_LABELS[gender]} - ${value.email}`
+                : GENDER_LABELS[gender]}
+            </option>
+          ))}
+        </Select>
+
+        {/* Random lại chỉ có nghĩa khi đã chọn giới tính — bốc lại trong đúng
+            giới tính đó, không đổi lựa chọn của người dùng. */}
+        <button
+          type="button"
+          disabled={disabled || busy || !value.gender}
+          onClick={() => value.gender && void pick(value.gender)}
+          title="Bốc lại một tài khoản khác cùng giới tính"
+          className={
+            "shrink-0 rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-600 " +
+            "hover:border-slate-400 hover:text-slate-900 disabled:text-slate-300 " +
+            small
+          }
+        >
+          ⟳
+        </button>
+
+        {busy ? <span className={small + " shrink-0 text-slate-500"}>Đang bốc…</span> : null}
+      </div>
+
+      {random.error ? <p className={small + " text-red-700"}>{random.error.message}</p> : null}
+    </div>
+  );
+}
+
+/** AuthorCell — chọn/đổi author ngay tại bảng. */
+function AuthorCell({
+  voice,
+  disabled,
+  busy,
+}: {
+  voice: Voice;
+  disabled?: boolean;
+  /** busy: chính dòng này đang lưu — do bảng truyền xuống, không lấy từ
+      mutation dùng chung (nó pending cho MỌI dòng). */
+  busy?: boolean;
+}) {
+  const update = useUpdateVoice();
+
+  return (
+    <AuthorPicker
+      compact
+      disabled={disabled || busy}
+      value={{ id: voice.author_id, email: voice.author_email, gender: voice.author_gender }}
+      onChange={(next) =>
+        update.mutate({
+          id: voice.id,
+          author_id: next.id,
+          author_email: next.email,
+          author_gender: next.gender,
+        })
+      }
+    />
+  );
+}
+
+/** AuthorField — ô chọn author trong modal, kèm nhãn bắt buộc. */
+function AuthorField({
+  value,
+  onChange,
+}: {
+  value: AuthorChoice;
+  onChange: (next: AuthorChoice) => void;
+}) {
+  return (
+    <Field label="Tài khoản đứng tên bài đăng (author)" required>
+      <AuthorPicker value={value} onChange={onChange} />
+    </Field>
+  );
+}
+
+/**
+ * ImageField — ảnh bìa: dán URL hoặc tải từ máy.
+ *
+ * Dùng chung cho modal tạo và modal sửa để hai nơi không lệch nhau về cách
+ * hiển thị ảnh đã tải lên (ảnh đó nằm trong bucket riêng tư, phải đi qua API).
+ */
+function ImageField({
+  voiceId,
+  value,
+  onChange,
+  uploadDisabled,
+}: {
+  voiceId: string;
+  value: VoiceImage;
+  onChange: (next: VoiceImage) => void;
+  /** Chưa tạo xong voice thì API từ chối ghi ảnh — khoá sẵn nút chọn file. */
+  uploadDisabled?: boolean;
+}) {
+  const uploadImage = useUploadVoiceImage();
+
+  async function pickImage(file: File | undefined) {
+    if (!file) return;
+    const updated = await uploadImage.mutateAsync({ id: voiceId, file });
+    onChange({ url: updated.image_url ?? "", uploaded: updated.image_uploaded });
+  }
+
+  return (
+    <>
+      <Field label="Ảnh bìa">
+        <div className="space-y-2">
+          <Input
+            value={value.url}
+            onChange={(e) =>
+              // Gõ/dán link là chuyển sang ảnh ngoài: ảnh đã tải lên (nếu có)
+              // sẽ bị dọn khỏi storage lúc bấm Lưu.
+              onChange({ url: e.target.value, uploaded: false })
+            }
+            placeholder="https://…"
+          />
+          <div className="flex items-center gap-3">
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              disabled={uploadImage.isPending || uploadDisabled}
+              onChange={(e) => {
+                void pickImage(e.target.files?.[0]);
+                // Xoá giá trị input để chọn lại đúng file vừa rồi vẫn kích hoạt onChange.
+                e.target.value = "";
+              }}
+              className="text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+            />
+            {uploadImage.isPending ? (
+              <span className="text-xs text-slate-500">Đang tải ảnh…</span>
+            ) : null}
+          </div>
+        </div>
+      </Field>
+      {value.url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={voiceImageSrc(voiceId, value)} alt="" className="h-24 rounded object-cover" />
+      ) : null}
+      <ErrorNote error={uploadImage.error} />
+    </>
   );
 }
 
@@ -892,9 +1508,12 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
   const prompts = usePrompts();
   const modes = useCollectModes();
 
-  // Voice sinh từ Bài Post chưa từng sửa tay thì chưa có input_text — lấy tiêu
-  // đề bài (với nền tảng kiểu caption, tiêu đề CHÍNH LÀ nội dung bài).
-  const initialText = voice.input_text ?? voice.source_title ?? voice.title ?? "";
+  // Thứ tự điền sẵn = thứ tự "gần với cái đã nghe" nhất:
+  //   input_text            — lời đọc người dùng tự chốt ở lần sửa trước;
+  //   source_extracted_text — đúng đoạn worker đã đưa cho TTS;
+  //   source_title/title    — voice cũ tạo trước khi lưu extracted_text.
+  const initialText =
+    voice.input_text ?? voice.source_extracted_text ?? voice.source_title ?? voice.title ?? "";
   const initialMode = voice.collect_mode ?? voice.source_collect_mode ?? "B";
 
   const [text, setText] = React.useState(initialText);
@@ -925,18 +1544,18 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
       <Field
         label={
           voice.source_post_id
-            ? `Nội dung đọc — lấy từ tiêu đề bài ${platformLabel(voice.platform)} (còn ${(MAX_TTS_TEXT_LENGTH - text.length).toLocaleString("vi-VN")} ký tự)`
-            : `Nội dung đọc (còn ${(MAX_TTS_TEXT_LENGTH - text.length).toLocaleString("vi-VN")} ký tự)`
+            ? `Nội dung đọc — lấy từ nội dung bài ${platformLabel(voice.platform)}`
+            : "Nội dung đọc"
         }
         required
       >
         <Textarea
           className="min-h-48"
-          maxLength={MAX_TTS_TEXT_LENGTH}
           value={text}
           onChange={(e) => setText(e.target.value)}
           required
         />
+        <CharCount length={text.length} max={MAX_TTS_TEXT_LENGTH} />
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -982,19 +1601,18 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
         </Field>
       ) : null}
 
-      <p className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
-        Tạo lại sẽ ghi đè file voice hiện tại. Tiêu đề, hashtag và ảnh bìa ở tab Thông tin vẫn giữ
-        nguyên.
-        {needsPrompt ? " Hình thức C: TTS đọc bản LLM viết lại, không đọc prompt." : ""}
-      </p>
-
       <ErrorNote error={regenerate.error} />
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="secondary" onClick={onClose}>
           Huỷ
         </Button>
-        <Button type="submit" disabled={regenerate.isPending || !isEnabled(collectMode)}>
+        <Button
+          type="submit"
+          disabled={
+            regenerate.isPending || !isEnabled(collectMode) || text.length > MAX_TTS_TEXT_LENGTH
+          }
+        >
           {regenerate.isPending ? "Đang xử lý…" : "Tạo lại voice"}
         </Button>
       </div>

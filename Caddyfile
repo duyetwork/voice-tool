@@ -1,0 +1,65 @@
+# Caddy — 1 tên miền phục vụ cả giao diện lẫn API.
+#
+# Vì sao chung tên miền: frontend gọi API bằng đường dẫn tương đối nên không có
+# CORS, chỉ cần 1 chứng chỉ TLS, và đổi tên miền không phải build lại bundle JS
+# của Next (NEXT_PUBLIC_API_URL được nướng vào lúc build).
+#
+# SITE_DOMAIN và ACME_EMAIL lấy từ .env qua environment của container.
+#
+# SITE_DOMAIN nhận 2 dạng:
+#   voice.example.com          -> Caddy tự xin chứng chỉ, ép HTTPS
+#   http://103.121.89.215      -> CHỈ HTTP, không TLS
+#
+# Dạng thứ hai dùng khi chưa có tên miền: Let's Encrypt không cấp chứng chỉ cho
+# địa chỉ IP trần, nên có ghi https:// cũng không xin được. Khi có tên miền,
+# đổi SITE_DOMAIN rồi `docker compose up -d caddy` là có HTTPS, không cần build
+# lại gì (frontend gọi API bằng đường dẫn tương đối).
+
+{
+	# Email nhận cảnh báo của Let's Encrypt (sắp hết hạn, cấp lỗi). Để trống
+	# vẫn chạy, chỉ là không ai báo khi có chuyện.
+	email {$ACME_EMAIL}
+
+	# Không ghi log truy cập ra đĩa: trên máy 30GB, log truy cập là thứ lớn
+	# nhanh nhất mà ít khi ai đọc. Lỗi vẫn vào log của container.
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+{$SITE_DOMAIN} {
+	encode zstd gzip
+
+	# API + healthz đi thẳng vào backend Go.
+	@api path /api/* /healthz
+	handle @api {
+		reverse_proxy api:8080 {
+			# File voice tải về có thể vài chục MB và TTS mất tới vài phút;
+			# mặc định 0 = không giới hạn thời gian đọc từ upstream.
+			flush_interval -1
+		}
+	}
+
+	# Còn lại là Next.js.
+	handle {
+		reverse_proxy frontend:3000
+	}
+
+	# Chặn các đường dò quét quen thuộc trước khi chúng chạm tới app.
+	@blocked path /.env /.git/* /wp-admin/* /wp-login.php /phpmyadmin/*
+	respond @blocked 404
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stderr
+		format console
+		# Chỉ ghi lỗi: 2xx/3xx không nói thêm được gì mà chiếm hết log.
+		level ERROR
+	}
+}

@@ -40,6 +40,18 @@ var statPartRe = regexp.MustCompile(
 // platformNameRe khớp đoạn chỉ là tên nền tảng — phần đuôi của <title> trang.
 var platformNameRe = regexp.MustCompile(`(?i)^(facebook( watch)?|instagram|tiktok|twitter|youtube)$`)
 
+// boilerplateTitleRe khớp tiêu đề do yt-dlp TỰ ĐẶT khi bài không có tiêu đề
+// riêng: Instagram trả về "Video by <tên tài khoản>", đôi khi kèm tiền tố
+// "Instagram". Đó là nhãn của công cụ, không phải chữ người đăng viết — đọc lên
+// thành "vi-đê-ô bai duyet_nguyen" thì vô nghĩa. Bỏ hẳn, dùng caption
+// (description) làm nội dung.
+var boilerplateTitleRe = regexp.MustCompile(
+	`(?i)^(instagram\s+)?(video|photo|image|post|reel|story|clip)\s+by\s+\S.*$`)
+
+// authorSeparators: các dấu yt-dlp dùng để nối tên tài khoản vào trước nội
+// dung. X trả về title dạng "<tên tài khoản> - <nội dung tweet>".
+var authorSeparators = []string{" - ", " – ", " — ", ": ", " | "}
+
 // excerptProbeRunes: số ký tự đầu dùng để nhận ra `title` là đoạn trích của
 // `description`. Facebook cắt caption giữa chừng nên không so được cả chuỗi;
 // 40 ký tự đủ dài để không trùng nhầm, đủ ngắn để nằm gọn trong phần bị cắt.
@@ -54,8 +66,10 @@ const excerptProbeRunes = 40
 // cắt theo domain.MaxPostTitleRunes. Hashtag bị bỏ vì đã đi vào trường
 // `hashtags` riêng của API — để lại trong nội dung là lặp và ăn hết giới hạn
 // ký tự của tiêu đề Voice.
-func PostContent(title, description string) string {
-	title = domain.StripHashtags(cleanPageTitle(title))
+// `author` là tên tài khoản đăng bài (uploader của yt-dlp), dùng để bóc phần
+// tên bị nối vào đầu tiêu đề — để trống nếu không biết.
+func PostContent(title, description, author string) string {
+	title = domain.StripHashtags(cleanTitle(title, author))
 	body := domain.StripHashtags(description)
 
 	switch {
@@ -77,11 +91,55 @@ func PostContent(title, description string) string {
 // dưới video là chú thích/link/timestamp, đăng lại lên multime là rác.
 //
 // Chỉ khi video không có tiêu đề mới rơi về mô tả để không ra bài trắng.
-func PostContentTitled(title, description string) string {
-	if t := domain.StripHashtags(cleanPageTitle(title)); t != "" {
+func PostContentTitled(title, description, author string) string {
+	if t := domain.StripHashtags(cleanTitle(title, author)); t != "" {
 		return domain.PostTitle(t)
 	}
 	return domain.PostTitle(domain.StripHashtags(description))
+}
+
+// cleanTitle làm sạch tiêu đề thô của nền tảng qua 3 bước, theo thứ tự:
+//
+//  1. Bỏ tiêu đề rác do công cụ tự đặt ("Video by ..." của Instagram).
+//  2. Bóc tên tài khoản bị nối vào đầu ("<tài khoản> - <nội dung>" của X).
+//  3. Bỏ số liệu tương tác và tên nền tảng trong <title> của trang.
+//
+// Cả ba đều là chữ của MÁY chứ không phải của người đăng, mà tiêu đề Bài Post
+// là thứ TTS sẽ đọc lên và multime sẽ hiển thị.
+func cleanTitle(title, author string) string {
+	title = strings.TrimSpace(title)
+	if boilerplateTitleRe.MatchString(title) {
+		return ""
+	}
+	return cleanPageTitle(stripAuthorPrefix(title, author))
+}
+
+// stripAuthorPrefix bóc "<tên tài khoản><dấu nối>" ở đầu tiêu đề.
+//
+// yt-dlp dựng title của X bằng cách nối tên tài khoản vào trước nội dung tweet,
+// nên không bóc thì tiêu đề Bài Post (và tiêu đề Voice đăng lên multime) luôn
+// mở đầu bằng tên tài khoản, còn TTS thì đọc luôn tên đó ra.
+//
+// Chỉ bóc khi phần còn lại vẫn có chữ: tiêu đề chỉ có mỗi tên tài khoản thì
+// giữ nguyên còn hơn trả về rỗng.
+func stripAuthorPrefix(title, author string) string {
+	author = strings.TrimSpace(author)
+	if author == "" || title == "" {
+		return title
+	}
+	// Tài khoản hay được ghi kèm @: khớp cả "@vtv24" lẫn "vtv24".
+	names := []string{author, "@" + strings.TrimPrefix(author, "@")}
+	for _, name := range names {
+		for _, sep := range authorSeparators {
+			prefix := name + sep
+			if len(title) > len(prefix) && strings.EqualFold(title[:len(prefix)], prefix) {
+				if rest := strings.TrimSpace(title[len(prefix):]); rest != "" {
+					return rest
+				}
+			}
+		}
+	}
+	return title
 }
 
 // cleanPageTitle bỏ khỏi <title> của trang những đoạn không phải nội dung: số

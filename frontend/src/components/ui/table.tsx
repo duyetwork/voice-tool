@@ -107,8 +107,14 @@ export function useSorting(defaultColumn: string, onChange?: () => void) {
 
 export type Sorting = ReturnType<typeof useSorting>;
 
-/** SortableTh — ô tiêu đề bấm được để đổi thứ tự. */
-export function SortableTh({
+/**
+ * SortButton — nhãn bấm được để đổi thứ tự, KHÔNG kèm ô <th>.
+ *
+ * Tách khỏi SortableTh để một ô tiêu đề chứa được nhiều mốc sắp xếp: bảng
+ * Voice gộp "Tạo lúc" và "Đăng lúc" vào chung 1 cột nhưng vẫn phải sắp xếp
+ * được theo từng mốc.
+ */
+export function SortButton({
   sorting,
   column,
   className,
@@ -121,18 +127,40 @@ export function SortableTh({
 }) {
   const active = sorting.sort === column;
   return (
+    <button
+      type="button"
+      onClick={() => sorting.toggle(column)}
+      className={cn(
+        "flex items-center gap-1 text-left uppercase tracking-wide hover:text-slate-900",
+        className,
+      )}
+      aria-label={`Sắp xếp theo ${column}`}
+    >
+      {children}
+      <span className={active ? "text-indigo-700" : "text-slate-300"} aria-hidden>
+        {active ? (sorting.dir === "desc" ? "▼" : "▲") : "⇅"}
+      </span>
+    </button>
+  );
+}
+
+/** SortableTh — ô tiêu đề bấm được để đổi thứ tự. */
+export function SortableTh({
+  sorting,
+  column,
+  className,
+  children,
+}: {
+  sorting: Sorting;
+  column: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
     <Th className={cn("p-0", className)}>
-      <button
-        type="button"
-        onClick={() => sorting.toggle(column)}
-        className="flex w-full items-center gap-1 px-3 py-2 text-left uppercase tracking-wide hover:text-slate-900"
-        aria-label={`Sắp xếp theo ${column}`}
-      >
+      <SortButton sorting={sorting} column={column} className="w-full px-3 py-2">
         {children}
-        <span className={active ? "text-indigo-700" : "text-slate-300"} aria-hidden>
-          {active ? (sorting.dir === "desc" ? "▼" : "▲") : "⇅"}
-        </span>
-      </button>
+      </SortButton>
     </Th>
   );
 }

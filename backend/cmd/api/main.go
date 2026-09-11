@@ -50,8 +50,10 @@ func run() error {
 		AIEngine:   application.AIEngine,
 		Audit:      application.Audit,
 		User:       application.User,
-		Platforms:  application.Platforms,
-		Modes:      application.Modes,
+
+		MultimeUsers: application.MultimeUsers,
+		Platforms:    application.Platforms,
+		Modes:        application.Modes,
 	})
 
 	srv := &http.Server{

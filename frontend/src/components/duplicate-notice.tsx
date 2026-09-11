@@ -50,10 +50,6 @@ export function DuplicatePostNotice({
         ) : null}
       </dl>
 
-      <p className="mt-1.5 text-xs text-amber-800">
-        Kiểm tra trùng theo ID bài đăng, không theo URL — cùng 1 bài có nhiều dạng link khác nhau.
-      </p>
-
       <div className="mt-2.5 flex flex-wrap gap-2">
         <Button size="sm" variant="secondary" onClick={onSkip} disabled={pending}>
           Bỏ qua

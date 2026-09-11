@@ -23,6 +23,14 @@
 //	rỗng và giao diện chỉ đọc `title`, nên tiêu đề là toàn bộ phần chữ của
 //	bài đăng — tối đa 200 ký tự, 1 dòng (maxLength của ô tiêu đề bên đó).
 //
+//	Danh bạ tài khoản (bốc tác giả bài đăng theo giới tính):
+//	  GET {auth_base}/v1/admin/user?page=&limit=&order_by=id&order_dir=DESC
+//	                               &filter_names=gender&filter_values=<male|female|other>
+//	  headers: authorization: Bearer <accessToken>, scope: strongbody-ai
+//	  resp:    {"code":0,"data":{"total":…,"data":[{"id":…,"email":…,"gender":…}]}}
+//	  (đối chiếu strongbody-api: api/user/v1.ListUsersReq + dto.BuildWhere, nơi
+//	   filter_names/filter_values thành mệnh đề `users.<name> = <value>`)
+//
 //	URL công khai: https://multime.ai/voice/<id>
 package multime
 
@@ -33,6 +41,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"mime/multipart"
 	"net/http"
 	"strconv"
@@ -51,6 +60,7 @@ const (
 	loginPath   = "/v1/public/auth/login"
 	refreshPath = "/v1/admin/auth/refresh-token"
 	uploadPath  = "/v1/seller/voice-posts/upload"
+	usersPath   = "/v1/admin/user"
 
 	// minDurationSeconds: UI của multime chặn voice ngắn hơn 15 giây.
 	minDurationSeconds = 15
@@ -65,7 +75,6 @@ type Client struct {
 
 	visibility       string
 	categoryIDs      []int64
-	defaultHashtags  []string
 	isPublicDownload bool
 
 	http *http.Client
@@ -74,6 +83,7 @@ type Client struct {
 var (
 	_ domain.MultimeClient        = (*Client)(nil)
 	_ domain.MultimeAuthenticator = (*Client)(nil)
+	_ domain.MultimeDirectory     = (*Client)(nil)
 )
 
 func New(cfg *config.Config) *Client {
@@ -83,7 +93,6 @@ func New(cfg *config.Config) *Client {
 		siteURL:          strings.TrimRight(cfg.MultimeSiteURL, "/"),
 		visibility:       cfg.MultimeVisibility,
 		categoryIDs:      cfg.MultimeCategoryIDs(),
-		defaultHashtags:  cfg.MultimeDefaultHashtags(),
 		isPublicDownload: cfg.MultimePublicDownload,
 		http:             &http.Client{Timeout: 10 * time.Minute},
 	}
@@ -139,8 +148,14 @@ func (c *Client) Login(ctx context.Context, email, password string) (domain.Mult
 
 	var data loginData
 	if err := c.do(req, &data); err != nil {
-		if isUnauthorized(err) {
-			return domain.MultimeSession{}, domain.ErrUnauthorized
+		// strongbody trả 400 kèm {"code":40014,"message":"Password is
+		// incorrect"} khi sai mật khẩu, không phải 401. Ở endpoint đăng nhập
+		// thì MỌI 4xx đều có nghĩa "không xác thực được" — trả 500 kèm nguyên
+		// văn lỗi của họ vừa làm người dùng tưởng hệ thống hỏng, vừa dội cảnh
+		// báo giả vào giám sát.
+		if s := statusOf(err); isUnauthorized(err) || (s >= 400 && s < 500) {
+			return domain.MultimeSession{}, domain.Explain("Sai email hoặc mật khẩu",
+				fmt.Errorf("%w: %v", domain.ErrUnauthorized, err))
 		}
 		return domain.MultimeSession{}, fmt.Errorf("đăng nhập multime: %w", err)
 	}
@@ -199,8 +214,11 @@ func (c *Client) RefreshAccessToken(ctx context.Context, refreshToken string) (s
 // Đăng voice
 // ---------------------------------------------------------------------------
 
-// PublishVoice upload audio và tạo Voice Post trong 1 request, dùng credential
-// của chính user sở hữu voice.
+// PublishVoice upload audio và tạo Voice Post trong 1 request.
+//
+// creds là của người bấm nút đăng (token gọi API); post.AuthorID là tài khoản
+// ĐỨNG TÊN bài đăng, do người dùng chọn — hai thứ này không nhất thiết trùng
+// nhau, nên không suy cái nọ ra cái kia.
 func (c *Client) PublishVoice(
 	ctx context.Context,
 	creds domain.MultimeCredentials,
@@ -214,7 +232,7 @@ func (c *Client) PublishVoice(
 		return "", err
 	}
 
-	url, err := c.upload(ctx, creds.AccessToken, creds.AuthorID, audio, post)
+	url, err := c.upload(ctx, creds.AccessToken, post.AuthorID, audio, post)
 	if err != nil && isUnauthorized(err) {
 		// Caller (Engine) sẽ refresh token rồi gọi lại.
 		return "", fmt.Errorf("%w: %v", domain.ErrTokenExpired, err)
@@ -234,11 +252,17 @@ func (c *Client) validate(post domain.VoicePostInput) error {
 			"%w: tiêu đề %d ký tự, multime chỉ nhận tối đa %d",
 			domain.ErrInvalidInput, n, domain.MaxVoiceTitleRunes))
 	}
-	if len(post.Hashtags) == 0 && len(post.CategoryIDs) == 0 &&
-		len(c.defaultHashtags) == 0 && len(c.categoryIDs) == 0 {
+	if post.AuthorID <= 0 {
 		return domain.Permanent(fmt.Errorf(
-			"%w: multime yêu cầu ít nhất 1 hashtag hoặc category — thêm hashtag cho voice, "+
-				"hoặc đặt MULTIME_DEFAULT_HASHTAGS", domain.ErrInvalidInput))
+			"%w: chưa chọn tài khoản đứng tên bài đăng (author)", domain.ErrInvalidInput))
+	}
+	// Không còn hashtag mặc định trong cấu hình: hashtag là phần phân loại của
+	// riêng từng bài, điền sẵn một thẻ chung cho mọi voice chỉ làm bẩn multime.
+	// Bỏ trống thì chặn ở đây thay vì đăng ra một bài không ai tìm lại được.
+	if len(post.Hashtags) == 0 {
+		return domain.Permanent(fmt.Errorf(
+			"%w: voice chưa có hashtag — multime yêu cầu ít nhất 1 hashtag cho mỗi bài đăng",
+			domain.ErrInvalidInput))
 	}
 	if post.DurationSeconds > 0 && post.DurationSeconds < minDurationSeconds {
 		return domain.Permanent(fmt.Errorf(
@@ -312,11 +336,7 @@ func (c *Client) buildForm(
 	_ = mw.WriteField("visibility", firstNonEmpty(post.Visibility, c.visibility, "public"))
 	_ = mw.WriteField("is_public_download", strconv.FormatBool(post.IsPublicDownload || c.isPublicDownload))
 
-	hashtags := post.Hashtags
-	if len(hashtags) == 0 {
-		hashtags = c.defaultHashtags
-	}
-	for _, h := range hashtags {
+	for _, h := range post.Hashtags {
 		_ = mw.WriteField("hashtags", h)
 	}
 
@@ -349,6 +369,165 @@ func (c *Client) buildForm(
 }
 
 // ---------------------------------------------------------------------------
+// Danh bạ tài khoản Strongbody
+// ---------------------------------------------------------------------------
+
+// randomPickSize là số tài khoản lấy về ở lượt bốc thứ hai.
+//
+// Không lấy 1 dòng: tài khoản không có email thì không dùng được (email là thứ
+// người dùng đối chiếu), nên bốc cả một nhúm rồi chọn trong đó vẫn rẻ hơn gọi
+// lại API vài lần.
+const randomPickSize = 20
+
+// randomPageAttempts: số trang thử trước khi kết luận danh bạ không có ai dùng
+// được. 3 là đủ: tài khoản thiếu email là ngoại lệ, không phải quy luật.
+const randomPageAttempts = 3
+
+// userListData là `data` của GET /v1/admin/user (strongbody-api trả
+// {total, total_page, current_page, limit, data: []UserRes}).
+type userListData struct {
+	Total     int `json:"total"`
+	TotalPage int `json:"total_page"`
+	Data      []struct {
+		ID        int64  `json:"id"`
+		Email     string `json:"email"`
+		Gender    string `json:"gender"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Avatar    string `json:"profile_picture"`
+	} `json:"data"`
+}
+
+// RandomUser bốc ngẫu nhiên 1 tài khoản Strongbody theo giới tính.
+//
+// Hai lượt gọi, và đó là chủ ý: lượt đầu chỉ để biết danh bạ có bao nhiêu tài
+// khoản khớp giới tính, lượt sau nhảy thẳng tới MỘT VỊ TRÍ BẤT KỲ trong số đó.
+// Lấy đại trang đầu thì mọi voice sẽ đứng tên vài tài khoản mới nhất, không
+// còn là ngẫu nhiên.
+//
+// Bốc theo VỊ TRÍ rồi mới quy ra số trang, chứ không bốc số trang: số trang phụ
+// thuộc cỡ trang đang hỏi (`total_page` của lượt thăm dò limit=1 chính là tổng
+// số tài khoản), nên lấy số đó làm trang cho lượt sau là trỏ ra ngoài danh sách
+// và nhận về trang rỗng.
+//
+// Gọi bằng token của chính người đang dùng tool: quyền xem danh bạ là quyền bên
+// Strongbody cấp cho tài khoản đó, tool không giữ tài khoản dịch vụ nào để
+// mượn quyền.
+func (c *Client) RandomUser(
+	ctx context.Context,
+	token string,
+	gender domain.Gender,
+) (domain.MultimeUser, error) {
+	if token == "" {
+		return domain.MultimeUser{}, domain.ErrReloginRequired
+	}
+	if !gender.Valid() {
+		return domain.MultimeUser{}, domain.Permanent(fmt.Errorf(
+			"%w: giới tính phải là male, female hoặc other", domain.ErrInvalidInput))
+	}
+
+	probe, err := c.listUsers(ctx, token, gender, 1, 1)
+	if err != nil {
+		return domain.MultimeUser{}, err
+	}
+	total := probe.Total
+	if total <= 0 {
+		total = probe.TotalPage // trang cỡ 1 dòng -> số trang = số tài khoản
+	}
+	if total <= 0 {
+		return domain.MultimeUser{}, domain.Permanent(fmt.Errorf(
+			"%w: Strongbody không có tài khoản nào giới tính %s",
+			domain.ErrNotFound, gender))
+	}
+
+	// Thử vài lần vì tài khoản thiếu email không dùng được (email là thứ người
+	// dùng đối chiếu): rơi trúng một nhúm toàn tài khoản như vậy mà bỏ cuộc
+	// ngay thì người dùng thấy lỗi ở một danh bạ hoàn toàn bình thường.
+	for attempt := 0; attempt < randomPageAttempts; attempt++ {
+		index := rand.IntN(total)
+		listed, err := c.listUsers(ctx, token, gender, index/randomPickSize+1, randomPickSize)
+		if err != nil {
+			return domain.MultimeUser{}, err
+		}
+
+		if user, ok := pickUser(listed, index%randomPickSize, gender); ok {
+			return user, nil
+		}
+	}
+
+	return domain.MultimeUser{}, domain.Permanent(fmt.Errorf(
+		"%w: không có tài khoản %s nào kèm email để đứng tên bài đăng",
+		domain.ErrNotFound, gender))
+}
+
+// pickUser lấy đúng dòng đã bốc trong trang; dòng đó thiếu email thì lấy dòng
+// dùng được gần nhất trong cùng trang, thay vì tốn thêm một lượt gọi API.
+func pickUser(listed userListData, want int, gender domain.Gender) (domain.MultimeUser, bool) {
+	usable := func(i int) (domain.MultimeUser, bool) {
+		if i < 0 || i >= len(listed.Data) {
+			return domain.MultimeUser{}, false
+		}
+		u := listed.Data[i]
+		if u.ID == 0 || strings.TrimSpace(u.Email) == "" {
+			return domain.MultimeUser{}, false
+		}
+		return domain.MultimeUser{
+			ID:       u.ID,
+			Email:    u.Email,
+			Gender:   firstNonEmpty(u.Gender, string(gender)),
+			FullName: strings.TrimSpace(u.FirstName + " " + u.LastName),
+			Avatar:   u.Avatar,
+		}, true
+	}
+
+	if user, ok := usable(want); ok {
+		return user, true
+	}
+	for i := range listed.Data {
+		if user, ok := usable(i); ok {
+			return user, true
+		}
+	}
+	return domain.MultimeUser{}, false
+}
+
+// listUsers gọi GET /v1/admin/user với bộ lọc giới tính.
+func (c *Client) listUsers(
+	ctx context.Context,
+	token string,
+	gender domain.Gender,
+	page, limit int,
+) (userListData, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.authBaseURL+usersPath, nil)
+	if err != nil {
+		return userListData{}, err
+	}
+	q := req.URL.Query()
+	q.Set("page", strconv.Itoa(page))
+	q.Set("limit", strconv.Itoa(limit))
+	q.Set("order_by", "id")
+	q.Set("order_dir", "DESC")
+	// filter_names/filter_values là bộ lọc tổng quát của strongbody-api, dịch
+	// thẳng thành `users.gender = ?` (xem dto.BuildWhere).
+	q.Set("filter_names", "gender")
+	q.Set("filter_values", string(gender))
+	req.URL.RawQuery = q.Encode()
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Scope", scopeHeader)
+
+	var data userListData
+	if err := c.do(req, &data); err != nil {
+		if isUnauthorized(err) {
+			// Caller (service) refresh token rồi gọi lại.
+			return userListData{}, fmt.Errorf("%w: %v", domain.ErrTokenExpired, err)
+		}
+		return userListData{}, fmt.Errorf("lấy danh sách tài khoản Strongbody: %w", err)
+	}
+	return data, nil
+}
+
+// ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
@@ -361,6 +540,27 @@ func (e *unauthorizedError) Unwrap() error { return e.err }
 func isUnauthorized(err error) bool {
 	var ue *unauthorizedError
 	return errors.As(err, &ue)
+}
+
+// statusError giữ lại mã HTTP để nơi gọi tự quyết định nó nghĩa là gì: cùng
+// một mã 400 có thể là "sai mật khẩu" ở endpoint đăng nhập nhưng là "payload
+// sai" ở endpoint đăng bài.
+type statusError struct {
+	status int
+	err    error
+}
+
+func (e *statusError) Error() string { return e.err.Error() }
+func (e *statusError) Unwrap() error { return e.err }
+
+// statusOf rút mã HTTP ra khỏi chuỗi lỗi; 0 nghĩa là lỗi không đến từ HTTP
+// (đứt mạng, parse hỏng).
+func statusOf(err error) int {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.status
+	}
+	return 0
 }
 
 func (c *Client) do(req *http.Request, out any) error {
@@ -380,8 +580,11 @@ func (c *Client) do(req *http.Request, out any) error {
 			req.URL.Path, resp.StatusCode, truncate(string(raw), 300))}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		e := fmt.Errorf("multime %s trả về %d: %s",
-			req.URL.Path, resp.StatusCode, truncate(string(raw), 500))
+		e := error(&statusError{
+			status: resp.StatusCode,
+			err: fmt.Errorf("multime %s trả về %d: %s",
+				req.URL.Path, resp.StatusCode, truncate(string(raw), 500)),
+		})
 		// 4xx (trừ 429) là lỗi payload/cấu hình -> retry vô nghĩa.
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
 			return domain.Permanent(e)

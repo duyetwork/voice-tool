@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -22,7 +23,8 @@ func testCreds() domain.MultimeCredentials {
 
 func validPost() domain.VoicePostInput {
 	return domain.VoicePostInput{
-		Title: "Bản tin sáng", Hashtags: []string{"tinnong"}, DurationSeconds: 42,
+		AuthorID: 777, Title: "Bản tin sáng",
+		Hashtags: []string{"tinnong"}, DurationSeconds: 42,
 	}
 }
 
@@ -33,10 +35,17 @@ func TestValidateRejectsWhatAPIWouldReject(t *testing.T) {
 		name string
 		post domain.VoicePostInput
 	}{
-		{"thiếu title", domain.VoicePostInput{Hashtags: []string{"tin"}, DurationSeconds: 30}},
-		{"không hashtag/category", domain.VoicePostInput{Title: "T", DurationSeconds: 30}},
+		{"thiếu title", domain.VoicePostInput{
+			AuthorID: 7, Hashtags: []string{"tin"}, DurationSeconds: 30,
+		}},
+		// Không còn hashtag mặc định trong cấu hình: thiếu hashtag là chặn,
+		// không có gì bù vào.
+		{"không hashtag", domain.VoicePostInput{AuthorID: 7, Title: "T", DurationSeconds: 30}},
+		{"chưa chọn author", domain.VoicePostInput{
+			Title: "T", Hashtags: []string{"tin"}, DurationSeconds: 30,
+		}},
 		{"ngắn hơn 15s", domain.VoicePostInput{
-			Title: "T", Hashtags: []string{"tin"}, DurationSeconds: 9,
+			AuthorID: 7, Title: "T", Hashtags: []string{"tin"}, DurationSeconds: 9,
 		}},
 	}
 
@@ -60,11 +69,16 @@ func TestValidateAcceptsValidPost(t *testing.T) {
 	}
 }
 
-func TestValidateAcceptsDefaultHashtagFallback(t *testing.T) {
-	c := &Client{defaultHashtags: []string{"voicetool"}}
-	err := c.validate(domain.VoicePostInput{Title: "T", DurationSeconds: 30})
-	if err != nil {
-		t.Errorf("MULTIME_DEFAULT_HASHTAGS phải bù được hashtag thiếu: %v", err)
+// Category cấu hình sẵn KHÔNG còn bù được hashtag thiếu: yêu cầu mới là mỗi
+// voice phải có hashtag của riêng nó, bỏ trống thì không đăng.
+func TestValidateRejectsMissingHashtagEvenWithCategories(t *testing.T) {
+	c := &Client{categoryIDs: []int64{12}}
+	err := c.validate(domain.VoicePostInput{AuthorID: 7, Title: "T", DurationSeconds: 30})
+	if err == nil {
+		t.Fatal("thiếu hashtag phải bị chặn")
+	}
+	if !strings.Contains(err.Error(), "hashtag") {
+		t.Errorf("lỗi phải nói rõ thiếu hashtag, được: %v", err)
 	}
 }
 
@@ -321,7 +335,10 @@ func TestPublishVoiceSendsExpectedForm(t *testing.T) {
 
 	url, err := c.PublishVoice(context.Background(), testCreds(), []byte("AUDIO"),
 		domain.VoicePostInput{
-			FileName:        "voice.mp3",
+			FileName: "voice.mp3",
+			// Khác hẳn creds.AuthorID (4242): bài phải lên dưới tên tài khoản
+			// người dùng CHỌN, không phải tài khoản đang gọi API.
+			AuthorID:        9001,
 			Title:           "Bản tin sáng",
 			Language:        "vi",
 			SourceLang:      "vi",
@@ -349,8 +366,8 @@ func TestPublishVoiceSendsExpectedForm(t *testing.T) {
 	}
 
 	want := map[string]string{
-		// author_id phải là của user sở hữu voice, không phải tài khoản hệ thống.
-		"author_id":          "4242",
+		// author_id là tài khoản người dùng chọn, không phải chủ access token.
+		"author_id":          "9001",
 		"title":              "Bản tin sáng",
 		"source_lang":        "vi",
 		"lang":               "vi",
@@ -455,5 +472,131 @@ func TestUnauthorizedDetection(t *testing.T) {
 	}
 	if !isUnauthorized(&unauthorizedError{err: errors.New("401")}) {
 		t.Error("phải nhận ra unauthorizedError")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Danh bạ tài khoản
+// ---------------------------------------------------------------------------
+
+// genderListServer giả lập GET /v1/admin/user.
+//
+// `probe` là response của lượt thăm dò (limit=1, chỉ để biết có bao nhiêu
+// trang), `page` là response của lượt bốc thật.
+func genderListServer(t *testing.T, probe, listed string) (*Client, *[]url.Values) {
+	t.Helper()
+	var queries []url.Values
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		queries = append(queries, q)
+		if r.URL.Path != usersPath {
+			t.Errorf("path = %q, muốn %q", r.URL.Path, usersPath)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if q.Get("limit") == "1" {
+			_, _ = io.WriteString(w, probe)
+			return
+		}
+		_, _ = io.WriteString(w, listed)
+	}))
+	t.Cleanup(srv.Close)
+
+	return &Client{authBaseURL: srv.URL, http: srv.Client()}, &queries
+}
+
+// TestRandomUserFiltersByGenderAndPicksBeyondFirstPage khoá lại 2 điều kiện của
+// việc "bốc ngẫu nhiên": lọc đúng giới tính, và KHÔNG phải lúc nào cũng trang
+// đầu — lấy đại trang đầu thì mọi voice sẽ đứng tên vài tài khoản mới nhất.
+func TestRandomUserFiltersByGenderAndPicksBeyondFirstPage(t *testing.T) {
+	c, queries := genderListServer(t,
+		`{"code":0,"data":{"total":500,"total_page":500,"data":[
+			{"id":1,"email":"a@strongbody.ai","gender":"female"}]}}`,
+		`{"code":0,"data":{"total":500,"total_page":25,"data":[
+			{"id":77,"email":"solr@example.com","gender":"female","first_name":"Solr","last_name":"Nguyen"}]}}`)
+
+	for i := 0; i < 20; i++ {
+		user, err := c.RandomUser(context.Background(), "tok-1", domain.GenderFemale)
+		if err != nil {
+			t.Fatalf("RandomUser lỗi: %v", err)
+		}
+		if user.ID != 77 || user.Email != "solr@example.com" || user.Gender != "female" {
+			t.Fatalf("tài khoản bốc ra = %+v", user)
+		}
+		if user.FullName != "Solr Nguyen" {
+			t.Errorf("FullName = %q", user.FullName)
+		}
+	}
+
+	pagesSeen := map[string]bool{}
+	for _, q := range *queries {
+		if q.Get("filter_names") != "gender" || q.Get("filter_values") != "female" {
+			t.Fatalf("query thiếu bộ lọc giới tính: %v", q)
+		}
+		if q.Get("limit") != "1" {
+			pagesSeen[q.Get("page")] = true
+		}
+	}
+	if len(pagesSeen) < 2 {
+		t.Errorf("20 lần bốc chỉ chạm %d trang — không phải ngẫu nhiên", len(pagesSeen))
+	}
+}
+
+// Không có tài khoản nào khớp giới tính thì phải nói rõ và KHÔNG retry: danh bạ
+// không tự mọc thêm người sau vài giây.
+func TestRandomUserWithoutMatchIsPermanent(t *testing.T) {
+	empty := `{"code":0,"data":{"total":0,"total_page":0,"data":[]}}`
+	c, _ := genderListServer(t, empty, empty)
+
+	_, err := c.RandomUser(context.Background(), "tok-1", domain.GenderOther)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("lỗi = %v, muốn ErrNotFound", err)
+	}
+	if !domain.IsPermanent(err) {
+		t.Errorf("phải là PermanentError: %v", err)
+	}
+}
+
+// Tài khoản không có email thì không đối chiếu được là ai -> bỏ qua.
+func TestRandomUserSkipsAccountsWithoutEmail(t *testing.T) {
+	c, _ := genderListServer(t,
+		`{"code":0,"data":{"total":2,"total_page":2,"data":[{"id":1,"email":"","gender":"male"}]}}`,
+		`{"code":0,"data":{"total":2,"total_page":1,"data":[
+			{"id":1,"email":"","gender":"male"},
+			{"id":2,"email":"ok@strongbody.ai","gender":"male"}]}}`)
+
+	user, err := c.RandomUser(context.Background(), "tok-1", domain.GenderMale)
+	if err != nil {
+		t.Fatalf("RandomUser lỗi: %v", err)
+	}
+	if user.ID != 2 {
+		t.Errorf("bốc trúng tài khoản không email: %+v", user)
+	}
+}
+
+func TestRandomUserRejectsUnknownGender(t *testing.T) {
+	if _, err := (&Client{}).RandomUser(context.Background(), "tok", "nam"); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("lỗi = %v, muốn ErrInvalidInput", err)
+	}
+}
+
+// 401 phải lộ ra dưới dạng ErrTokenExpired để service refresh rồi gọi lại,
+// giống đường publish.
+func TestRandomUserMapsExpiredToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"code":401,"message":"token expired"}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{authBaseURL: srv.URL, http: srv.Client()}
+	if _, err := c.RandomUser(context.Background(), "tok-1", domain.GenderMale); !errors.Is(err, domain.ErrTokenExpired) {
+		t.Errorf("lỗi = %v, muốn ErrTokenExpired", err)
+	}
+}
+
+func TestRandomUserRequiresToken(t *testing.T) {
+	if _, err := (&Client{}).RandomUser(context.Background(), "", domain.GenderMale); !errors.Is(err, domain.ErrReloginRequired) {
+		t.Errorf("lỗi = %v, muốn ErrReloginRequired", err)
 	}
 }

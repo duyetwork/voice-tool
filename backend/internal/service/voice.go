@@ -84,6 +84,7 @@ func (v *Voice) List(ctx context.Context, f VoiceFilter) ([]repository.ListVoice
 		PublishedTo:   f.PublishedTo,
 		Sort:          sort,
 		Dir:           dir,
+		MinDuration:   domain.MinPublishDurationSeconds,
 		Lim:           limit,
 		Off:           offset,
 	})
@@ -91,6 +92,7 @@ func (v *Voice) List(ctx context.Context, f VoiceFilter) ([]repository.ListVoice
 		return nil, 0, fmt.Errorf("list voice: %w", err)
 	}
 	total, err := v.q.CountVoices(ctx, repository.CountVoicesParams{
+		MinDuration:   domain.MinPublishDurationSeconds,
 		PublishStatus: f.PublishStatus,
 		SourcePostID:  f.SourcePostID,
 		Platform:      f.Platform,
@@ -162,6 +164,50 @@ func audioFileName(voice repository.Voice, key string) string {
 	return base + ext
 }
 
+// ImageFile là ảnh bìa đọc từ storage để hiển thị trên UI.
+//
+// Phải đi qua API vì bucket là riêng tư và host `minio:9000` chỉ tồn tại trong
+// mạng Docker — thẻ <img> của trình duyệt không với tới URL storage được.
+type ImageFile struct {
+	Data     []byte
+	MimeType string
+}
+
+// CoverImage trả ảnh bìa người dùng đã tải lên. Ảnh lấy từ URL bài gốc không đi
+// qua đây: nó là link công khai của nền tảng khác, trình duyệt tự tải được.
+func (v *Voice) CoverImage(ctx context.Context, id uuid.UUID) (ImageFile, error) {
+	voice, err := v.Get(ctx, id)
+	if err != nil {
+		return ImageFile{}, err
+	}
+	if !voice.ImageUploaded || voice.ImageUrl == nil {
+		return ImageFile{}, fmt.Errorf("%w: voice %s không có ảnh bìa tải lên",
+			domain.ErrNotFound, id)
+	}
+
+	key := v.storage.KeyFromURL(*voice.ImageUrl)
+	data, err := v.storage.Get(ctx, key)
+	if err != nil {
+		return ImageFile{}, fmt.Errorf("đọc ảnh bìa: %w", err)
+	}
+	return ImageFile{Data: data, MimeType: mimeByExtension(key)}, nil
+}
+
+// mimeByExtension đoán kiểu ảnh từ đuôi key đã lưu — key do chính SetImage đặt
+// theo mime người dùng tải lên nên đuôi luôn đúng.
+func mimeByExtension(key string) string {
+	switch strings.ToLower(path.Ext(key)) {
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	default:
+		return "image/jpeg"
+	}
+}
+
 // errVoiceProcessing: voice chưa xử lý xong thì chưa sửa/đăng được — record
 // tồn tại chỉ để người dùng thấy tiến trình.
 var errVoiceProcessing = fmt.Errorf(
@@ -173,6 +219,12 @@ type UpdateMetadataInput struct {
 	Hashtag  *string
 	Language *string
 	ImageURL *string
+	// AuthorID/AuthorEmail/AuthorGender: tài khoản Strongbody đứng tên bài đăng.
+	// Đi thành bộ — tác giả được bốc ngẫu nhiên theo giới tính, nên id, email
+	// hiển thị và giới tính đã bốc luôn thuộc về cùng một người.
+	AuthorID     *int64
+	AuthorEmail  *string
+	AuthorGender *string
 }
 
 func (v *Voice) UpdateMetadata(ctx context.Context, actor, id uuid.UUID, in UpdateMetadataInput) (repository.Voice, error) {
@@ -195,12 +247,32 @@ func (v *Voice) UpdateMetadata(ctx context.Context, actor, id uuid.UUID, in Upda
 			domain.ErrInvalidInput, domain.MaxVoiceTitleRunes)
 	}
 
+	if in.AuthorID != nil && *in.AuthorID <= 0 {
+		return repository.Voice{}, fmt.Errorf("%w: author_id phải là id tài khoản Strongbody",
+			domain.ErrInvalidInput)
+	}
+
+	// Thay ảnh đã tải lên bằng một URL khác: file cũ trong bucket không còn ai
+	// trỏ tới nữa. Gỡ cờ image_uploaded trước (không thì lúc đăng hệ thống đi
+	// xoá nhầm ảnh của URL mới) rồi mới dọn file.
+	if in.ImageURL != nil && before.ImageUploaded && *in.ImageURL != deref(before.ImageUrl) {
+		if _, err := v.q.SetVoiceImage(ctx, repository.SetVoiceImageParams{
+			ID: id, ImageUrl: in.ImageURL, ImageUploaded: false,
+		}); err != nil {
+			return repository.Voice{}, wrapNotFound(err, "voice "+id.String())
+		}
+		v.deleteUploadedImage(ctx, before)
+	}
+
 	after, err := v.q.UpdateVoiceMetadata(ctx, repository.UpdateVoiceMetadataParams{
-		ID:       id,
-		Title:    in.Title,
-		Hashtag:  in.Hashtag,
-		Language: in.Language,
-		ImageUrl: in.ImageURL,
+		ID:           id,
+		Title:        in.Title,
+		Hashtag:      in.Hashtag,
+		Language:     in.Language,
+		ImageUrl:     in.ImageURL,
+		AuthorID:     in.AuthorID,
+		AuthorEmail:  in.AuthorEmail,
+		AuthorGender: in.AuthorGender,
 	})
 	if err != nil {
 		return repository.Voice{}, wrapNotFound(err, "voice "+id.String())
@@ -210,12 +282,12 @@ func (v *Voice) UpdateMetadata(ctx context.Context, actor, id uuid.UUID, in Upda
 		map[string]any{
 			"title":   before.Title,
 			"hashtag": before.Hashtag, "language": before.Language,
-			"image_url": before.ImageUrl,
+			"image_url": before.ImageUrl, "author_email": before.AuthorEmail,
 		},
 		map[string]any{
 			"title":   after.Title,
 			"hashtag": after.Hashtag, "language": after.Language,
-			"image_url": after.ImageUrl,
+			"image_url": after.ImageUrl, "author_email": after.AuthorEmail,
 		},
 	))
 	return after, nil
@@ -420,6 +492,112 @@ func (v *Voice) Regenerate(
 	return after, nil
 }
 
+// publishable chặn ngay ở API các điều kiện multime sẽ từ chối, thay vì để job
+// chạy tới nơi rồi fail: người dùng thấy lý do lúc bấm nút, không phải đi tìm
+// trong cột trạng thái vài giây sau.
+func publishable(voice repository.Voice) error {
+	if voice.AuthorID == nil || *voice.AuthorID <= 0 {
+		return fmt.Errorf("%w: chưa chọn tài khoản Strongbody đứng tên bài đăng (author)",
+			domain.ErrInvalidInput)
+	}
+	// Hashtag không còn giá trị mặc định trong cấu hình — bỏ trống là không đăng.
+	if strings.TrimSpace(deref(voice.Hashtag)) == "" {
+		return fmt.Errorf("%w: voice chưa có hashtag — multime yêu cầu ít nhất 1 hashtag",
+			domain.ErrInvalidInput)
+	}
+	return nil
+}
+
+// maxVoiceImageBytes: ảnh bìa tải từ máy. multime tự resize nên không cần ảnh
+// lớn hơn; trần này chặn người dùng đẩy nguyên ảnh máy ảnh lên bucket.
+const maxVoiceImageBytes = 8 << 20
+
+// voiceImageTypes là các định dạng ảnh bìa nhận vào — đúng những gì multime
+// hiển thị được.
+var voiceImageTypes = map[string]string{
+	"image/jpeg": ".jpg",
+	"image/png":  ".png",
+	"image/webp": ".webp",
+	"image/gif":  ".gif",
+}
+
+// ImageInput là ảnh bìa người dùng tải lên từ máy.
+type ImageInput struct {
+	Data     []byte
+	MimeType string
+}
+
+// SetImage lưu ảnh bìa tải từ máy vào storage rồi trỏ voice sang ảnh đó.
+//
+// Ảnh nằm trong bucket của mình nên được đánh dấu image_uploaded: sau khi đăng
+// lên multime (nơi đã giữ một bản) thì bản này bị xoá để khỏi tốn dung lượng —
+// xem Engine.publish. Ảnh cũ (nếu cũng là ảnh tải lên) bị xoá ngay tại đây,
+// không để lại file mồ côi mỗi lần người dùng đổi ảnh.
+func (v *Voice) SetImage(ctx context.Context, actor, id uuid.UUID, in ImageInput) (repository.Voice, error) {
+	before, err := v.Get(ctx, id)
+	if err != nil {
+		return repository.Voice{}, err
+	}
+	if before.PublishStatus == domain.PublishPublished {
+		return repository.Voice{}, domain.ErrAlreadyPublished
+	}
+	if before.PublishStatus == domain.PublishProcessing {
+		return repository.Voice{}, errVoiceProcessing
+	}
+	if len(in.Data) == 0 {
+		return repository.Voice{}, fmt.Errorf("%w: file ảnh rỗng", domain.ErrInvalidInput)
+	}
+	if len(in.Data) > maxVoiceImageBytes {
+		return repository.Voice{}, fmt.Errorf("%w: ảnh lớn hơn %d MB",
+			domain.ErrInvalidInput, maxVoiceImageBytes>>20)
+	}
+	ext, ok := voiceImageTypes[strings.ToLower(strings.TrimSpace(in.MimeType))]
+	if !ok {
+		return repository.Voice{}, fmt.Errorf("%w: chỉ nhận ảnh JPG, PNG, WEBP hoặc GIF",
+			domain.ErrInvalidInput)
+	}
+
+	// Key có thêm đoạn ngẫu nhiên: đổi ảnh là ra URL mới, trình duyệt không
+	// hiện lại ảnh cũ trong cache.
+	key := fmt.Sprintf("voice-images/%s/%s%s", id, uuid.NewString(), ext)
+	url, err := v.storage.Put(ctx, key, in.Data, in.MimeType)
+	if err != nil {
+		return repository.Voice{}, fmt.Errorf("lưu ảnh bìa: %w", err)
+	}
+
+	after, err := v.q.SetVoiceImage(ctx, repository.SetVoiceImageParams{
+		ID: id, ImageUrl: &url, ImageUploaded: true,
+	})
+	if err != nil {
+		// Ghi DB hỏng thì ảnh vừa lên không ai trỏ tới -> dọn luôn.
+		if derr := v.storage.Delete(ctx, key); derr != nil {
+			return repository.Voice{}, fmt.Errorf("%w (ảnh thừa %s chưa xoá được: %v)",
+				wrapNotFound(err, "voice "+id.String()), key, derr)
+		}
+		return repository.Voice{}, wrapNotFound(err, "voice "+id.String())
+	}
+
+	v.deleteUploadedImage(ctx, before)
+	v.audit.Record(ctx, actor, domain.AuditUpdate, domain.ObjectVoice, id, map[string]any{
+		"action": "set_image", "image_url": url,
+	})
+	return after, nil
+}
+
+// deleteUploadedImage dọn ảnh bìa nằm trong storage của mình. Ảnh lấy từ URL
+// bài gốc không phải của mình nên không đụng tới.
+func (v *Voice) deleteUploadedImage(ctx context.Context, voice repository.Voice) {
+	if !voice.ImageUploaded || voice.ImageUrl == nil {
+		return
+	}
+	key := v.storage.KeyFromURL(*voice.ImageUrl)
+	if key == "" {
+		return
+	}
+	// Ảnh thừa chỉ tốn vài chục KB — không đáng để làm hỏng thao tác chính.
+	_ = v.storage.Delete(ctx, key)
+}
+
 // Delete xoá Voice và dọn luôn file trên storage nếu còn.
 func (v *Voice) Delete(ctx context.Context, actor, id uuid.UUID) error {
 	voice, err := v.Get(ctx, id)
@@ -434,6 +612,7 @@ func (v *Voice) Delete(ctx context.Context, actor, id uuid.UUID) error {
 			}
 		}
 	}
+	v.deleteUploadedImage(ctx, voice)
 
 	rows, err := v.q.DeleteVoice(ctx, id)
 	if err != nil {
@@ -460,6 +639,9 @@ func (v *Voice) Publish(ctx context.Context, actor, id uuid.UUID) error {
 	}
 	if voice.VoiceFileUrl == nil {
 		return domain.ErrNoVoiceFile
+	}
+	if err := publishable(voice); err != nil {
+		return err
 	}
 
 	if err := v.enq.EnqueueVoicePublish(ctx, id.String(), actor.String()); err != nil {

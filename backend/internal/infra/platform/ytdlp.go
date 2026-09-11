@@ -225,17 +225,29 @@ func (c ytdlpCore) fetch(
 		return out, nil
 	}
 
-	// Mode B/C: ưu tiên phụ đề (transcript), fallback text gốc của bài.
+	// Mode B/C: đọc ĐÚNG nội dung bài mà người dùng nhìn thấy — meta.Title là
+	// nội dung đã làm sạch (bỏ số liệu tương tác, tên nền tảng, tên tài khoản bị
+	// nối vào đầu, hashtag), cũng chính là tiêu đề Bài Post hiện trên bảng và
+	// điền sẵn trong ô "Nội dung đọc".
 	//
-	// Fallback lấy thẳng từ entry chứ không từ meta.Title: TTS đọc được cả phần
-	// mô tả, còn tiêu đề Bài Post thì cố tình bỏ mô tả của video YouTube đi.
-	text, err := c.subtitleText(ctx, url, name, meta.Language)
-	if err != nil || strings.TrimSpace(text) == "" {
-		text = strings.TrimSpace(entry.Title + "\n\n" + entry.Description)
+	// Trước đây chỗ này lấy phụ đề trước, và khi không có phụ đề thì ghép thô
+	// `entry.Title + entry.Description`. Cả hai đường đều cho ra thứ khác hẳn cái
+	// người dùng thấy: bài TikTok/Facebook có title trùng description nên bị đọc
+	// lặp 2 lần, bài chỉ có hashtag thì TTS đọc ra nguyên chuỗi "#fyp #studytok",
+	// còn bài có phụ đề thì đọc lời thoại trong video chứ không phải caption.
+	//
+	// Phụ đề chỉ còn là đường dự phòng: bài không có chữ nào (video thuần hình
+	// ảnh) thì lời thoại là thứ duy nhất đọc được.
+	text := strings.TrimSpace(meta.Title)
+	if text == "" {
+		if sub, serr := c.subtitleText(ctx, url, name, meta.Language); serr == nil {
+			text = strings.TrimSpace(sub)
+		}
 	}
-	if strings.TrimSpace(text) == "" {
-		return domain.FetchedContent{}, domain.Permanent(
-			fmt.Errorf("%w: bài %s không có phụ đề lẫn mô tả", domain.ErrNoTextExtracted, name))
+	if text == "" {
+		return domain.FetchedContent{}, domain.Permanent(domain.Explain(
+			"Bài này không có nội dung text để đọc (không có caption/tiêu đề lẫn phụ đề)",
+			fmt.Errorf("%w: bài %s", domain.ErrNoTextExtracted, name)))
 	}
 	out.Text = text
 	return out, nil
@@ -253,8 +265,9 @@ func (c ytdlpCore) metaFrom(e ytEntry) domain.PostMetadata {
 		author = strings.TrimSpace(e.Channel)
 	}
 	return domain.PostMetadata{
-		// Tiêu đề = toàn bộ nội dung bài, trừ hashtag (xem title.go).
-		Title:        c.postContent(e.Title, e.Description),
+		// Tiêu đề = toàn bộ nội dung bài, trừ hashtag (xem title.go). Truyền
+		// kèm tên tài khoản để bóc phần tên bị yt-dlp nối vào đầu tiêu đề.
+		Title:        c.postContent(e.Title, e.Description, author),
 		Hashtags:     domain.ExtractHashtags(e.Title+"\n"+e.Description, e.Tags),
 		ThumbnailURL: strings.TrimSpace(e.Thumbnail),
 		AuthorName:   author,
@@ -264,11 +277,11 @@ func (c ytdlpCore) metaFrom(e ytEntry) domain.PostMetadata {
 }
 
 // postContent chọn cách dựng nội dung theo kiểu bài của nền tảng.
-func (c ytdlpCore) postContent(title, description string) string {
+func (c ytdlpCore) postContent(title, description, author string) string {
 	if c.ownTitle {
-		return PostContentTitled(title, description)
+		return PostContentTitled(title, description, author)
 	}
-	return PostContent(title, description)
+	return PostContent(title, description, author)
 }
 
 func postedAt(e ytEntry) *time.Time {
