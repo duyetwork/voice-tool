@@ -279,6 +279,15 @@ export interface ListBreaking {
   status: string;
   scan_limit: number;
   scan_interval: PgInterval;
+  /**
+   * Số bài CŨ lấy về ở vòng quét đầu tiên. 0 = chỉ lấy bài đăng sau khi thêm
+   * kênh — đây là mặc định.
+   */
+  backfill_limit: number;
+  /** Mốc vòng quét đầu đã chạy xong. null = kênh chưa quét lần nào. */
+  backfill_done_at: string | null;
+  /** Trần Bài Post tạo ra mỗi vòng quét. null = không giới hạn. */
+  max_posts_per_run: number | null;
   last_scanned_at: string | null;
   created_by: string;
   created_at: string;
@@ -314,6 +323,13 @@ export interface ListScheduled {
   status: string;
   scan_limit: number;
   max_posts_per_run: number | null;
+  /**
+   * Số bài CŨ lấy về ở vòng quét đầu tiên. 0 = chỉ lấy bài đăng sau khi thêm
+   * kênh — đây là mặc định.
+   */
+  backfill_limit: number;
+  /** Mốc vòng quét đầu đã chạy xong. null = kênh chưa quét lần nào. */
+  backfill_done_at: string | null;
   last_scanned_at: string | null;
   created_by: string;
   created_at: string;

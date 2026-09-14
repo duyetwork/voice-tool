@@ -123,13 +123,17 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	// không tải hết về trình duyệt được. Lọc chạy trong DB của tool, không gọi
 	// sang MultiMe theo từng phím gõ.
 	authed.GET("/meta/hashtags", directory.Hashtags)
-	// Kèm `reason` khi mode bị tắt: FE hiện đúng lý do (thiếu ANTHROPIC_API_KEY,
+	// Kèm `reason` khi mode bị tắt: FE hiện đúng lý do (chưa có Bộ API key LLM,
 	// hay người vận hành tự tắt) thay vì mỗi chữ "chưa hỗ trợ".
+	//
+	// Trạng thái của hình thức C đọc lại từ DB ở đây chứ không chốt lúc khởi
+	// động: thêm Bộ API key xong, tải lại trang là thấy nó bật.
 	authed.GET("/meta/collect-modes", func(c *gin.Context) {
+		ctx := c.Request.Context()
 		modes := make([]gin.H, 0, len(domain.AllCollectModes))
 		for _, mode := range domain.AllCollectModes {
-			item := gin.H{"mode": mode, "enabled": d.Modes.Allows(mode)}
-			if why := d.Modes.Why(mode); why != "" {
+			item := gin.H{"mode": mode, "enabled": d.Modes.Allows(ctx, mode)}
+			if why := d.Modes.Why(ctx, mode); why != "" {
 				item["reason"] = why
 			}
 			modes = append(modes, item)

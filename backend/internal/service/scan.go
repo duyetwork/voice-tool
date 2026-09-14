@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"regexp"
 
 	"github.com/google/uuid"
@@ -103,6 +104,35 @@ func (s *Scan) ScanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 	if err != nil {
 		return res, fmt.Errorf("quét kênh %s: %w", list.SourceUrl, err)
 	}
+
+	// Vòng quét ĐẦU TIÊN của kênh: giữ lại đúng backfill_limit bài cũ nhất-định
+	// và ghi nhớ phần bị loại. Kênh Breaking không có mốc đồng bộ — mỗi vòng nó
+	// xét lại cùng một cửa sổ — nên "bỏ qua" mà không nhớ thì vòng sau chính
+	// những bài ấy lại hiện ra như vừa mới đăng.
+	//
+	// Điều kiện `len(posts) > 0`: một vòng quét không lấy được bài nào (kênh
+	// mới tinh, hoặc nền tảng trả rỗng) không phải là bằng chứng rằng chẳng có
+	// bài cũ nào để lấy. Đánh dấu xong ở đây là nuốt mất hạn mức bài cũ mà
+	// người dùng vừa chọn, và không có đường nào lấy lại.
+	switch {
+	case list.BackfillDoneAt == nil && len(posts) > 0:
+		kept, dropped := splitBackfill(posts, int(list.BackfillLimit))
+		posts = kept
+		excluded := postIDs(dropped)
+		if err := s.q.MarkListBreakingBackfilled(ctx, repository.MarkListBreakingBackfilledParams{
+			ID: list.ID, ExcludedIds: excluded,
+		}); err != nil {
+			// Không ghi được thì DỪNG: chạy tiếp nghĩa là vòng sau sẽ coi đây
+			// vẫn là lần đầu và lấy lại toàn bộ bài cũ.
+			return res, fmt.Errorf("đánh dấu backfill list_breaking: %w", err)
+		}
+		s.log.InfoContext(ctx, "vòng quét đầu của kênh Breaking",
+			"list_id", list.ID, "backfill_limit", list.BackfillLimit,
+			"lấy", len(posts), "bỏ_qua", len(excluded))
+
+	case list.BackfillDoneAt != nil && len(list.BackfillExcludedIds) > 0:
+		posts = excludeIDs(posts, list.BackfillExcludedIds)
+	}
 	res.Fetched = len(posts)
 
 	// Đánh mốc đã quét bất kể có bắt được bài nào hay không, để vòng dispatch
@@ -114,7 +144,20 @@ func (s *Scan) ScanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 		}
 	}()
 
+	// max_posts_per_run đếm số bài TẠO RA, không phải số bài xét: kênh Breaking
+	// có thể duyệt qua 200 bài mà chỉ 3 bài khớp regex, và trần này sinh ra để
+	// chặn chi phí AI chứ không phải chặn công đọc.
+	maxCreate := math.MaxInt
+	if list.MaxPostsPerRun != nil {
+		maxCreate = int(*list.MaxPostsPerRun)
+	}
+
 	for _, p := range posts {
+		if res.Created >= maxCreate {
+			s.log.InfoContext(ctx, "chạm trần max_posts_per_run, phần còn lại để vòng sau",
+				"list_id", list.ID, "trần", maxCreate, "còn_lại", len(posts)-res.Created-res.Skipped)
+			break
+		}
 		// Regex là tiêu chí duy nhất quyết định lấy hay bỏ (business rule #3).
 		if !matchAny(patterns, p.Text) {
 			res.Skipped++
@@ -179,6 +222,40 @@ func (s *Scan) ScanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 
 	// Adapter trả về mới nhất trước; chỉ lấy phần mới hơn mốc đã sync.
 	fresh := newerThan(posts, list.LastSyncedPostID)
+
+	// Vòng quét ĐẦU TIÊN: chưa có mốc đồng bộ nên `fresh` đang là TOÀN BỘ cửa
+	// sổ quét — tức là bài đã đăng từ trước khi kênh được thêm vào. Chỉ lấy
+	// đúng số bài cũ người dùng đã chọn.
+	//
+	// Không cần nhớ phần bị loại như kênh Breaking: mốc last_synced_post_id
+	// dưới đây được đẩy lên bài mới nhất, nên chúng nằm lại phía sau mốc vĩnh
+	// viễn.
+	//
+	// `len(posts) > 0` vì lý do như ở ScanBreaking: vòng quét rỗng không phải
+	// bằng chứng rằng không có bài cũ nào để lấy.
+	if list.BackfillDoneAt == nil && len(posts) > 0 {
+		kept, dropped := splitBackfill(fresh, int(list.BackfillLimit))
+		if len(dropped) > 0 {
+			// Không tạo Bài Post cho phần bỏ qua, nhưng vẫn phải đẩy mốc vượt
+			// qua chúng — nếu không, vòng sau chúng lại là "bài mới".
+			newest := posts[0].PostID
+			if err := s.q.SetLastSyncedPostID(ctx, repository.SetLastSyncedPostIDParams{
+				ID: list.ID, LastSyncedPostID: &newest,
+			}); err != nil {
+				return res, fmt.Errorf("đẩy mốc sync qua phần bài cũ bỏ qua: %w", err)
+			}
+			// Mốc vừa nhảy tới bài mới nhất nên phần GIỮ LẠI cũng đã nằm sau
+			// mốc; xử lý chúng ngay trong vòng này, đúng như người dùng chọn.
+		}
+		if err := s.q.MarkListScheduledBackfilled(ctx, list.ID); err != nil {
+			return res, fmt.Errorf("đánh dấu backfill list_scheduled: %w", err)
+		}
+		s.log.InfoContext(ctx, "vòng quét đầu của kênh Định kỳ",
+			"list_id", list.ID, "backfill_limit", list.BackfillLimit,
+			"lấy", len(kept), "bỏ_qua", len(dropped))
+		fresh = kept
+	}
+
 	res.Fetched = len(fresh)
 
 	// max_posts_per_run: trần số bài xử lý 1 vòng, chặn nổ chi phí AI khi kênh
@@ -251,6 +328,52 @@ func (s *Scan) ScanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 			"error", err, "list_id", list.ID)
 	}
 	return res, nil
+}
+
+// splitBackfill cắt danh sách bài của VÒNG QUÉT ĐẦU thành phần lấy và phần bỏ.
+//
+// `posts` theo thứ tự mới nhất trước, nên `limit` bài cũ được phép lấy chính là
+// `limit` phần tử đầu: chúng là những bài gần thời điểm thêm kênh nhất, tức là
+// phần "bài cũ" mà người dùng còn quan tâm.
+func splitBackfill(posts []domain.RemotePost, limit int) (kept, excluded []domain.RemotePost) {
+	if limit >= len(posts) {
+		return posts, nil
+	}
+	if limit <= 0 {
+		return nil, posts
+	}
+	return posts[:limit], posts[limit:]
+}
+
+// postIDs rút id của từng bài. Bài không có id thì bỏ: không nhớ được nó, và
+// dedup cũng không dựa vào nó.
+func postIDs(posts []domain.RemotePost) []string {
+	out := make([]string, 0, len(posts))
+	for _, p := range posts {
+		if p.PostID != "" {
+			out = append(out, p.PostID)
+		}
+	}
+	return out
+}
+
+// excludeIDs bỏ khỏi danh sách những bài đã bị loại ở vòng quét đầu.
+func excludeIDs(posts []domain.RemotePost, ids []string) []domain.RemotePost {
+	if len(ids) == 0 {
+		return posts
+	}
+	skip := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		skip[id] = struct{}{}
+	}
+	out := posts[:0:0]
+	for _, p := range posts {
+		if _, bad := skip[p.PostID]; bad {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // compileAll compile toàn bộ pattern của 1 kênh.

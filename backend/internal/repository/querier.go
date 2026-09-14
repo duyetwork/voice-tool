@@ -184,6 +184,14 @@ type Querier interface {
 	// consecutive_failures ở đây thì một key thỉnh thoảng lỗi sẽ tích dần số đếm
 	// qua nhiều ngày rồi bị tắt oan.
 	MarkLLMAPIKeyOK(ctx context.Context, id uuid.UUID) error
+	// Đóng vòng quét đầu: ghi mốc và nhớ những id đã cố tình bỏ qua.
+	//
+	// Kênh Breaking không có mốc đồng bộ nên nếu không nhớ, chính những bài này sẽ
+	// quay lại ở vòng sau như thể vừa đăng.
+	MarkListBreakingBackfilled(ctx context.Context, arg MarkListBreakingBackfilledParams) error
+	// Đóng vòng quét đầu. Cột riêng chứ không suy ra từ last_synced_post_id: kênh
+	// chưa có bài nào thì mốc đó vẫn NULL sau một vòng quét hoàn toàn hợp lệ.
+	MarkListScheduledBackfilled(ctx context.Context, id uuid.UUID) error
 	// Business rule #2: publish thành công -> xoá file S3 và set voice_file_url = NULL,
 	// chỉ giữ multime_post_url làm nguồn tham chiếu duy nhất.
 	// Ảnh bìa tải từ máy cũng bị xoá theo cùng lý do: multime đã giữ bản của nó,

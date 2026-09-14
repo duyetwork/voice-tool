@@ -5,9 +5,17 @@ import * as React from "react";
 import { BulkBar, SelectAllBox, useSelection } from "@/components/bulk";
 import { ErrorNote, PageHeader } from "@/components/page-header";
 import {
+  ChannelTuning,
+  emptyTuning,
+  tuningCreatePayload,
+  tuningDraftOf,
+  tuningUpdatePayload,
+} from "@/components/channel-tuning";
+import {
   ScheduleFields,
   describeSchedule,
   emptySchedule,
+  scheduleDraftOf,
   toChannelSchedule,
 } from "@/components/schedule-fields";
 import { Can } from "@/components/permission";
@@ -37,7 +45,7 @@ import {
   formatInterval,
   platformLabel,
 } from "@/lib/utils";
-import type { CollectMode } from "@/types/api";
+import type { CollectMode, ListBreaking } from "@/types/api";
 
 /**
  * F2 — Danh sách Breaking. Không có tần suất quét: worker quét liên tục và chỉ
@@ -49,6 +57,9 @@ export default function BreakingListsPage() {
   const [platform, setPlatform] = React.useState("");
   const [status, setStatus] = React.useState("");
   const [creating, setCreating] = React.useState(false);
+  // Kênh đang sửa. Giữ cả object chứ không chỉ id: dialog cần giá trị hiện tại
+  // để đổ vào form, và bảng đã có sẵn chúng rồi.
+  const [editing, setEditing] = React.useState<ListBreaking | null>(null);
   const paging = usePaging();
   const sorting = useSorting("created_at", paging.reset);
   // Nút "Xoá lọc" chỉ hiện khi thực sự có gì để xoá.
@@ -279,6 +290,14 @@ export default function BreakingListsPage() {
                           ? formatInterval(list.scan_interval)
                           : "nghỉ theo hệ thống"}
                       </div>
+                      <div className="text-slate-500">
+                        trần: {list.max_posts_per_run ?? "không giới hạn"}
+                      </div>
+                      <div className="text-slate-400">
+                        {list.backfill_done_at
+                          ? "bài cũ: đã xong"
+                          : `bài cũ: ${list.backfill_limit || "không lấy"}`}
+                      </div>
                       <div className="text-slate-400">lịch: {describeSchedule(list)}</div>
                       <div className="text-slate-400">
                         quét: {formatDateTime(list.last_scanned_at)}
@@ -294,6 +313,9 @@ export default function BreakingListsPage() {
                     <Can permission="can_write">
                       <Td className="whitespace-nowrap text-right">
                         <RowActions>
+                          <Button size="sm" variant="secondary" onClick={() => setEditing(list)}>
+                            Sửa
+                          </Button>
                           <Button
                             size="sm"
                             variant="secondary"
@@ -343,36 +365,53 @@ export default function BreakingListsPage() {
         </CardBody>
       </Card>
 
-      {creating ? <CreateBreakingDialog onClose={() => setCreating(false)} /> : null}
+      {creating ? <BreakingDialog onClose={() => setCreating(false)} /> : null}
+      {editing ? <BreakingDialog list={editing} onClose={() => setEditing(null)} /> : null}
     </>
   );
 }
 
-function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
+/**
+ * Dialog dùng chung cho THÊM và SỬA kênh.
+ *
+ * Một form chứ không hai: mọi trường ở đây đều sửa được sau khi tạo, nên tách
+ * ra hai dialog chỉ tạo ra hai bản sao của cùng một danh sách trường — và bản
+ * "sửa" sẽ là bản thiếu trường mỗi lần thêm tính năng mới.
+ */
+function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () => void }) {
+  const editing = list != null;
   const prompts = usePrompts();
   const modes = useCollectModes();
   const create = useCreateBreakingList();
+  const update = useUpdateBreakingList();
 
-  const [sourceUrl, setSourceUrl] = React.useState("");
-  const [patterns, setPatterns] = React.useState<string[]>([""]);
-  const [collectMode, setCollectMode] = React.useState<CollectMode>("A");
-  const [promptId, setPromptId] = React.useState("");
-  const [language, setLanguage] = React.useState("auto");
-  const [autoProcess, setAutoProcess] = React.useState(true);
-  const [autoPublish, setAutoPublish] = React.useState(false);
-  const [showTuning, setShowTuning] = React.useState(false);
-  const [scanLimit, setScanLimit] = React.useState("");
-  const [scanInterval, setScanInterval] = React.useState("");
+  const [sourceUrl, setSourceUrl] = React.useState(list?.source_url ?? "");
+  const [patterns, setPatterns] = React.useState<string[]>(
+    list?.regex_patterns?.length ? list.regex_patterns : [""],
+  );
+  const [collectMode, setCollectMode] = React.useState<CollectMode>(list?.collect_mode ?? "A");
+  const [promptId, setPromptId] = React.useState(list?.prompt_id ?? "");
+  const [language, setLanguage] = React.useState(list?.language_default ?? "auto");
+  const [autoProcess, setAutoProcess] = React.useState(list?.auto_process ?? true);
+  const [autoPublish, setAutoPublish] = React.useState(list?.auto_publish ?? false);
+  // Sửa kênh thì mở sẵn phần tham số: người vào đây thường là để chỉnh đúng
+  // mấy con số đó, giấu đi lại bắt bấm thêm một lần.
+  const [showTuning, setShowTuning] = React.useState(editing);
+  const [tuning, setTuning] = React.useState(list ? tuningDraftOf(list) : emptyTuning);
+  const [scanInterval, setScanInterval] = React.useState(
+    list?.scan_interval?.Valid ? `${Math.round(list.scan_interval.Microseconds / 1_000_000)}s` : "",
+  );
   // Bộ API key cho hình thức C. Quét tự động không có ai bấm nút để chọn bộ,
   // nên bộ phải nằm sẵn trên kênh.
-  const [llmSetId, setLlmSetId] = React.useState("");
-  const [schedule, setSchedule] = React.useState(emptySchedule);
+  const [llmSetId, setLlmSetId] = React.useState(list?.llm_api_set_id ?? "");
+  const [schedule, setSchedule] = React.useState(list ? scheduleDraftOf(list) : emptySchedule);
 
   const llmSets = useLLMAPISets();
   const needsPrompt = collectMode === "C";
   const modeMeta = modes.data?.collect_modes ?? [];
   const isEnabled = (mode: string) =>
     modeMeta.find((m) => m.mode === mode)?.enabled ?? mode === "A";
+  const pending = create.isPending || update.isPending;
 
   function setPattern(index: number, value: string) {
     setPatterns((prev) => prev.map((p, i) => (i === index ? value : p)));
@@ -383,7 +422,7 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
     const cleaned = patterns.map((p) => p.trim()).filter(Boolean);
     if (cleaned.length === 0) return;
 
-    await create.mutateAsync({
+    const common = {
       source_url: sourceUrl.trim(),
       regex_patterns: cleaned,
       collect_mode: collectMode,
@@ -391,17 +430,21 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
       language_default: language,
       auto_process: autoProcess,
       auto_publish: autoPublish,
-      scan_limit: scanLimit ? Number(scanLimit) : undefined,
       scan_interval: scanInterval || undefined,
       llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
       schedule: toChannelSchedule(schedule),
-    });
+    };
+    if (list) {
+      await update.mutateAsync({ id: list.id, ...common, ...tuningUpdatePayload(tuning) });
+    } else {
+      await create.mutateAsync({ ...common, ...tuningCreatePayload(tuning) });
+    }
     onClose();
   }
 
   return (
     <Modal
-      title="Thêm kênh Breaking"
+      title={editing ? "Sửa kênh Breaking" : "Thêm kênh Breaking"}
       description="Kênh sẽ được quét liên tục; chỉ bài khớp một trong các pattern bên dưới mới tạo Bài Post."
       width="2xl"
       onClose={onClose}
@@ -537,17 +580,12 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
             {showTuning ? "▾" : "▸"} Tham số quét (nâng cao)
           </button>
           {showTuning ? (
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <Field label="Số bài mỗi vòng quét" hint="Bỏ trống = dùng mặc định hệ thống (20).">
-                <Input
-                  type="number"
-                  min={1}
-                  max={200}
-                  placeholder="20"
-                  value={scanLimit}
-                  onChange={(e) => setScanLimit(e.target.value)}
-                />
-              </Field>
+            <div className="mt-3 space-y-3">
+              <ChannelTuning
+                value={tuning}
+                onChange={setTuning}
+                backfillDone={Boolean(list?.backfill_done_at)}
+              />
               <Field
                 label="Khoảng nghỉ giữa 2 vòng"
                 hint="Ví dụ 30s, 2m. Bỏ trống = theo hệ thống (60s). Tối thiểu 15s."
@@ -562,14 +600,14 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
           ) : null}
         </div>
 
-        <ErrorNote error={create.error} />
+        <ErrorNote error={create.error ?? update.error} />
 
         <div className="flex justify-end gap-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Huỷ
           </Button>
-          <Button type="submit" disabled={create.isPending}>
-            {create.isPending ? "Đang lưu…" : "Thêm kênh"}
+          <Button type="submit" disabled={pending}>
+            {pending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Thêm kênh"}
           </Button>
         </div>
       </form>

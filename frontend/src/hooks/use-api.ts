@@ -371,6 +371,13 @@ export interface CreateBreakingInput {
   scan_limit?: number;
   scan_interval?: string;
   /**
+   * Số bài CŨ lấy về ở vòng quét đầu. Bỏ trống = 0 = chỉ lấy bài đăng sau khi
+   * thêm kênh.
+   */
+  backfill_limit?: number;
+  /** Trần Bài Post mỗi vòng quét. 0 = không giới hạn (mặc định). */
+  max_posts_per_run?: number;
+  /**
    * Bộ API key cho hình thức C. Quét tự động không có ai bấm nút để chọn bộ,
    * nên bộ phải nằm sẵn trên kênh.
    */
@@ -379,9 +386,14 @@ export interface CreateBreakingInput {
   schedule?: ChannelSchedule;
 }
 
-/** Sửa kênh: mọi trường tuỳ chọn, chỉ gửi thứ thật sự đổi. */
+/**
+ * Sửa kênh: mọi trường tuỳ chọn, chỉ gửi thứ thật sự đổi.
+ *
+ * `backfill_done_at` bị loại: nó là mốc do vòng quét ghi, không phải thứ người
+ * dùng đặt — gửi lên chỉ tổ để server phải bỏ qua.
+ */
 export type UpdateBreakingInput = Partial<
-  Omit<ListBreaking, "id" | "created_at" | "created_by" | "scan_interval">
+  Omit<ListBreaking, "id" | "created_at" | "created_by" | "scan_interval" | "backfill_done_at">
 > & {
   scan_interval?: string;
   schedule?: ChannelSchedule;
@@ -440,7 +452,13 @@ export interface CreateScheduledInput {
   auto_process?: boolean;
   auto_publish?: boolean;
   scan_limit?: number;
+  /** Trần Bài Post mỗi vòng quét. 0 = không giới hạn (mặc định). */
   max_posts_per_run?: number;
+  /**
+   * Số bài CŨ lấy về ở vòng quét đầu. Bỏ trống = 0 = chỉ lấy bài đăng sau khi
+   * thêm kênh.
+   */
+  backfill_limit?: number;
   llm_api_set_id?: string | null;
   /**
    * Bỏ trống = quét 24/7 theo `scan_frequency`. Đặt `fixed_times_min` thì giờ
@@ -450,7 +468,7 @@ export interface CreateScheduledInput {
 }
 
 export type UpdateScheduledInput = Partial<
-  Omit<ListScheduled, "id" | "created_at" | "created_by" | "scan_frequency">
+  Omit<ListScheduled, "id" | "created_at" | "created_by" | "scan_frequency" | "backfill_done_at">
 > & {
   scan_frequency?: string;
   schedule?: ChannelSchedule;

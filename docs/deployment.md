@@ -216,7 +216,7 @@ Mặc định là chỉ số tối ưu, chỉnh được theo từng kênh trên
 |---|---|---|
 | `BREAKING_SCAN_INTERVAL` | `60s` | Khoảng nghỉ giữa 2 vòng quét Breaking |
 | `SCAN_LIMIT_DEFAULT` | `20` | Số bài lấy về mỗi vòng |
-| `MAX_POSTS_PER_RUN_DEFAULT` | `50` | Trần Bài Post tạo ra mỗi vòng (chặn nổ chi phí AI) |
+| `MAX_POSTS_PER_RUN_DEFAULT` | `0` | Trần Bài Post tạo ra mỗi vòng; `0` = không giới hạn. Đặt số > 0 để chặn nổ chi phí AI cho mọi kênh chưa cấu hình riêng |
 | `BREAKING_SCAN_PARALLELISM` | `4` | Số kênh quét song song |
 | `SCHEDULER_SYNC_INTERVAL` | `30s` | Chu kỳ đọc lại lịch từ DB |
 | `SKIPPED_LOG_RETENTION` | `168h` | Giữ log bài bị bỏ qua 7 ngày |

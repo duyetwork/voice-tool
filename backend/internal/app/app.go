@@ -192,24 +192,17 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	multimeUsers := service.NewMultimeUsers(multimeDir, multimeCreds)
 
 	// Hình thức C viết lại nội dung bằng LLM. Không có LLM thật thì không có gì
-	// viết lại được — tắt hẳn mode C thay vì để nó chạy và cho ra voice đọc sai
-	// (bản mock trước đây đọc to cả prompt).
+	// viết lại được — mode C bị tắt thay vì chạy và cho ra voice đọc sai (bản
+	// mock trước đây đọc to cả prompt cho AI).
 	//
-	// "Có LLM thật" giờ có HAI đường: Bộ API key trong DB (đường chính) hoặc
-	// provider trong .env (dự phòng cho dev). Chỉ nhìn .env như trước thì một hệ
-	// thống đã khai đủ key trong DB vẫn bị tắt mode C.
+	// "Có LLM thật" có HAI đường: provider trong .env (dự phòng, chủ yếu cho
+	// dev) hoặc Bộ API key trong DB — đường chính. Đường thứ hai thay đổi TRONG
+	// LÚC CHẠY: người dùng thêm bộ key qua giao diện bất cứ lúc nào. Nên câu
+	// hỏi này phải được hỏi lại mỗi lần, không chốt một lần lúc khởi động —
+	// chốt một lần nghĩa là thêm key xong vẫn phải restart mới dùng được mode C.
 	modes := service.ModeGate{Enabled: cfg.EnabledCollectModes()}
 	if llmProvider.Name() == "mock" {
-		keyCount, err := queries.CountLLMAPIKeys(ctx)
-		if err != nil {
-			return fail(fmt.Errorf("đếm key LLM: %w", err))
-		}
-		if keyCount == 0 {
-			modes = disablePromptMode(modes, log)
-		} else {
-			log.Info("LLM_PROVIDER=mock nhưng đã có Bộ API key trong DB — mode C vẫn bật",
-				"llm_keys", keyCount)
-		}
+		modes.LLM = service.NewLLMKeyProbe(queries, log)
 	}
 
 	scanDefaults := service.ScanDefaults{
@@ -323,31 +316,4 @@ func providerName(p interface{ Name() string }) string {
 		return "(chưa cấu hình)"
 	}
 	return p.Name()
-}
-
-// disablePromptMode gỡ hình thức C khỏi danh sách đang bật.
-//
-// Mode C = "text nguồn -> LLM viết lại theo Prompt mẫu -> TTS đọc bản viết
-// lại". Không có LLM thật thì bước giữa không tồn tại; để mode C chạy tiếp
-// nghĩa là TTS đọc một thứ không ai viết lại — trước đây là đọc to cả prompt.
-// Thà tắt và nói rõ thiếu gì.
-func disablePromptMode(gate service.ModeGate, log *slog.Logger) service.ModeGate {
-	const reason = "cần LLM thật để viết lại nội dung — thêm Bộ API key ở mục " +
-		"AI Engine > LLM Model (hoặc đặt LLM_PROVIDER + API key trong .env) rồi khởi động lại"
-
-	enabled := make([]domain.CollectMode, 0, len(gate.Enabled))
-	for _, m := range gate.Enabled {
-		if m != domain.ModePromptToVoice {
-			enabled = append(enabled, m)
-		}
-	}
-	log.Warn("tắt hình thức C: "+reason, "llm", "mock")
-
-	reasons := map[domain.CollectMode]string{domain.ModePromptToVoice: reason}
-	for k, v := range gate.Reason {
-		if _, taken := reasons[k]; !taken {
-			reasons[k] = v
-		}
-	}
-	return service.ModeGate{Enabled: enabled, Reason: reasons}
 }

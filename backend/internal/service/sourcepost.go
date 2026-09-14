@@ -90,7 +90,7 @@ func (s *SourcePost) Create(ctx context.Context, actor uuid.UUID, in CreateInput
 	if !in.CollectMode.Valid() {
 		return repository.SourcePost{}, fmt.Errorf("%w: collect_mode phải là A, B hoặc C", domain.ErrInvalidInput)
 	}
-	if err := s.modes.Check(in.CollectMode); err != nil {
+	if err := s.modes.Check(ctx, in.CollectMode); err != nil {
 		return repository.SourcePost{}, err
 	}
 	if in.CollectMode.NeedsPrompt() && in.PromptID == nil {
@@ -261,7 +261,7 @@ func (s *SourcePost) Update(ctx context.Context, actor, id uuid.UUID, in UpdateI
 		if !mode.Valid() {
 			return repository.SourcePost{}, fmt.Errorf("%w: collect_mode phải là A, B hoặc C", domain.ErrInvalidInput)
 		}
-		if err := s.modes.Check(mode); err != nil {
+		if err := s.modes.Check(ctx, mode); err != nil {
 			return repository.SourcePost{}, err
 		}
 		// Bài nhập tay bằng text không có audio gốc để tách -> không đổi sang A.

@@ -246,6 +246,121 @@ export default function HuongDanPage() {
             </Step>
           </Section>
 
+          <Section title="Danh sách kênh — cấu hình và cách hoạt động">
+            <p>
+              Có <b>hai loại kênh</b>, khác nhau ở chỗ <i>cái gì quyết định một bài được lấy</i>:
+            </p>
+            <Table>
+              <thead>
+                <tr>
+                  <Th className="w-36">Loại</Th>
+                  <Th>Lấy bài khi nào</Th>
+                  <Th>Nhịp quét</Th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <Td className="font-medium text-slate-900">
+                    <NavLink href="/lists/breaking">Breaking</NavLink>
+                  </Td>
+                  <Td>
+                    Bài <b>khớp một trong các Regex Pattern</b> của kênh. Không khớp thì bỏ và ghi
+                    vào nhật ký bỏ qua. Nhiều pattern kết hợp OR.
+                  </Td>
+                  <Td>
+                    Liên tục, theo <b>Khoảng nghỉ giữa 2 vòng</b> của kênh (mặc định 60s).
+                  </Td>
+                </tr>
+                <tr>
+                  <Td className="font-medium text-slate-900">
+                    <NavLink href="/lists/scheduled">Định kỳ</NavLink>
+                  </Td>
+                  <Td>
+                    <b>Mọi bài mới</b> hơn mốc đã đồng bộ. Không lọc gì cả — kênh nào cũng lấy sạch
+                    bài mới.
+                  </Td>
+                  <Td>
+                    Theo <b>Tần suất quét</b> của kênh (15 phút → 1 ngày), hoặc{" "}
+                    <b>giờ chạy cố định</b> nếu có đặt.
+                  </Td>
+                </tr>
+              </tbody>
+            </Table>
+
+            <p className="font-medium text-slate-900">Một vòng quét đi qua 4 bước, theo thứ tự:</p>
+            <ol className="list-decimal space-y-1 pl-5">
+              <li>
+                <b>Nhìn</b> — lấy về <b>Số bài nhìn mỗi vòng quét</b> bài mới nhất của kênh (mặc
+                định 20). Đây là cửa sổ quét; bài nằm ngoài cửa sổ này thì vòng đó không biết tới.
+              </li>
+              <li>
+                <b>Lọc</b> — Breaking bỏ bài không khớp regex; Định kỳ bỏ bài cũ hơn mốc đã đồng bộ.
+              </li>
+              <li>
+                <b>Chặn trần</b> — nếu có đặt <b>Trần Bài Post mỗi vòng</b>, phần vượt trần để dành
+                cho vòng sau chứ không mất.
+              </li>
+              <li>
+                <b>Tạo Bài Post</b> — và nếu bật <i>Tự tạo Voice ngay</i> thì đẩy thẳng sang tạo
+                voice.
+              </li>
+            </ol>
+
+            <p className="font-medium text-slate-900">Ba con số hay bị nhầm với nhau</p>
+            <Table>
+              <thead>
+                <tr>
+                  <Th className="w-52">Tham số</Th>
+                  <Th>Trả lời câu hỏi</Th>
+                  <Th className="w-44">Mặc định</Th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <Td className="font-medium text-slate-900">Số bài nhìn mỗi vòng quét</Td>
+                  <Td>Mỗi vòng NHÌN bao nhiêu bài mới nhất của kênh?</Td>
+                  <Td>20 (tối đa 200)</Td>
+                </tr>
+                <tr>
+                  <Td className="font-medium text-slate-900">Lấy bài cũ khi thêm kênh</Td>
+                  <Td>Lần quét ĐẦU TIÊN, lấy bao nhiêu bài đã đăng từ trước?</Td>
+                  <Td>0 — không lấy bài cũ nào</Td>
+                </tr>
+                <tr>
+                  <Td className="font-medium text-slate-900">Trần Bài Post mỗi vòng</Td>
+                  <Td>Mỗi vòng được TẠO tối đa bao nhiêu Bài Post?</Td>
+                  <Td>Không giới hạn</Td>
+                </tr>
+              </tbody>
+            </Table>
+
+            <Tip title="Lấy bài cũ: mặc định là KHÔNG, và chỉ có tác dụng đúng một lần">
+              Thêm kênh xong, vòng quét đầu chỉ đánh dấu &quot;từ đây trở đi&quot; rồi bỏ qua toàn
+              bộ bài đã đăng trước đó. Muốn lấy cả bài cũ thì mở <b>Tham số quét (nâng cao)</b> và
+              điền số bài — hệ thống lấy bấy nhiêu bài gần thời điểm thêm kênh nhất, và không bao
+              giờ lấy quá cửa sổ quét. Sau khi vòng đầu chạy xong, ô này bị khoá lại: đổi số cũng
+              không còn gì để lấy nữa.
+            </Tip>
+
+            <Tip title="Trần Bài Post: bỏ trống là không giới hạn">
+              Bỏ trống thì mọi bài mới trong cửa sổ quét đều được lấy. Đặt trần khi kênh đăng ồ ạt
+              và bạn muốn giữ nhịp chi phí AI — phần vượt trần <b>không mất</b>, nó nằm lại cho vòng
+              quét kế tiếp. Kênh Định kỳ thì trần đếm theo bài xử lý; kênh Breaking đếm theo Bài
+              Post thật sự tạo ra (bài không khớp regex không tính).
+            </Tip>
+
+            <Tip title="Sửa kênh: nút Sửa trên từng dòng">
+              Mọi thứ khai lúc thêm kênh đều sửa lại được — URL, regex, hình thức, prompt, Bộ API,
+              ngôn ngữ, lịch quét, cả ba tham số ở trên. Riêng <b>ngôn ngữ</b> và{" "}
+              <b>tạm dừng/kích hoạt</b> đổi nhanh ngay trên bảng không cần mở hộp thoại.
+            </Tip>
+
+            <Note>
+              Đổi <b>Tần suất quét</b> của kênh Định kỳ có hiệu lực sau tối đa 30 giây — đó là chu
+              kỳ scheduler đọc lại lịch từ database.
+            </Note>
+          </Section>
+
           <Section title="Tips và lưu ý">
             <Tip title="Tiêu đề là toàn bộ phần chữ của bài đăng">
               Hệ thống không có trường mô tả riêng vì multime cũng không hiển thị nó. Tiêu đề bị cắt

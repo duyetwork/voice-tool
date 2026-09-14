@@ -47,14 +47,16 @@ INSERT INTO list_scheduled (
   source_url, platform, content_type, collect_mode, prompt_id, scan_frequency,
   language_default, auto_process, auto_publish, status, scan_limit,
   max_posts_per_run, created_by, llm_api_set_id,
-  timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min
+  timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min,
+  backfill_limit
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   $14, $15,
   $16, $17,
-  $18, $19
+  $18, $19,
+  $20
 )
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at
 `
 
 type CreateListScheduledParams struct {
@@ -77,6 +79,7 @@ type CreateListScheduledParams struct {
 	ActiveToMin     *int16          `json:"active_to_min"`
 	ActiveWeekdays  []int16         `json:"active_weekdays"`
 	FixedTimesMin   []int16         `json:"fixed_times_min"`
+	BackfillLimit   int32           `json:"backfill_limit"`
 }
 
 func (q *Queries) CreateListScheduled(ctx context.Context, arg CreateListScheduledParams) (ListScheduled, error) {
@@ -100,6 +103,7 @@ func (q *Queries) CreateListScheduled(ctx context.Context, arg CreateListSchedul
 		arg.ActiveToMin,
 		arg.ActiveWeekdays,
 		arg.FixedTimesMin,
+		arg.BackfillLimit,
 	)
 	var i ListScheduled
 	err := row.Scan(
@@ -126,6 +130,8 @@ func (q *Queries) CreateListScheduled(ctx context.Context, arg CreateListSchedul
 		&i.ActiveToMin,
 		&i.ActiveWeekdays,
 		&i.FixedTimesMin,
+		&i.BackfillLimit,
+		&i.BackfillDoneAt,
 	)
 	return i, err
 }
@@ -143,7 +149,7 @@ func (q *Queries) DeleteListScheduled(ctx context.Context, id uuid.UUID) (int64,
 }
 
 const getListScheduled = `-- name: GetListScheduled :one
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min FROM list_scheduled WHERE id = $1
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at FROM list_scheduled WHERE id = $1
 `
 
 func (q *Queries) GetListScheduled(ctx context.Context, id uuid.UUID) (ListScheduled, error) {
@@ -173,12 +179,14 @@ func (q *Queries) GetListScheduled(ctx context.Context, id uuid.UUID) (ListSched
 		&i.ActiveToMin,
 		&i.ActiveWeekdays,
 		&i.FixedTimesMin,
+		&i.BackfillLimit,
+		&i.BackfillDoneAt,
 	)
 	return i, err
 }
 
 const listActiveListScheduleds = `-- name: ListActiveListScheduleds :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min FROM list_scheduled WHERE status = 'active' ORDER BY created_at
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at FROM list_scheduled WHERE status = 'active' ORDER BY created_at
 `
 
 func (q *Queries) ListActiveListScheduleds(ctx context.Context) ([]ListScheduled, error) {
@@ -214,6 +222,8 @@ func (q *Queries) ListActiveListScheduleds(ctx context.Context) ([]ListScheduled
 			&i.ActiveToMin,
 			&i.ActiveWeekdays,
 			&i.FixedTimesMin,
+			&i.BackfillLimit,
+			&i.BackfillDoneAt,
 		); err != nil {
 			return nil, err
 		}
@@ -226,7 +236,7 @@ func (q *Queries) ListActiveListScheduleds(ctx context.Context) ([]ListScheduled
 }
 
 const listListScheduleds = `-- name: ListListScheduleds :many
-SELECT ls.id, ls.source_url, ls.platform, ls.content_type, ls.collect_mode, ls.prompt_id, ls.scan_frequency, ls.language_default, ls.last_synced_post_id, ls.auto_process, ls.auto_publish, ls.status, ls.created_by, ls.created_at, ls.scan_limit, ls.max_posts_per_run, ls.last_scanned_at, ls.llm_api_set_id, ls.timezone, ls.active_from_min, ls.active_to_min, ls.active_weekdays, ls.fixed_times_min, u.email AS created_by_email
+SELECT ls.id, ls.source_url, ls.platform, ls.content_type, ls.collect_mode, ls.prompt_id, ls.scan_frequency, ls.language_default, ls.last_synced_post_id, ls.auto_process, ls.auto_publish, ls.status, ls.created_by, ls.created_at, ls.scan_limit, ls.max_posts_per_run, ls.last_scanned_at, ls.llm_api_set_id, ls.timezone, ls.active_from_min, ls.active_to_min, ls.active_weekdays, ls.fixed_times_min, ls.backfill_limit, ls.backfill_done_at, u.email AS created_by_email
 FROM list_scheduled ls
 JOIN app_user u ON u.id = ls.created_by
 WHERE ($1::varchar   IS NULL OR ls.status     = $1)
@@ -279,6 +289,8 @@ type ListListScheduledsRow struct {
 	ActiveToMin      *int16          `json:"active_to_min"`
 	ActiveWeekdays   []int16         `json:"active_weekdays"`
 	FixedTimesMin    []int16         `json:"fixed_times_min"`
+	BackfillLimit    int32           `json:"backfill_limit"`
+	BackfillDoneAt   *time.Time      `json:"backfill_done_at"`
 	CreatedByEmail   string          `json:"created_by_email"`
 }
 
@@ -325,6 +337,8 @@ func (q *Queries) ListListScheduleds(ctx context.Context, arg ListListScheduleds
 			&i.ActiveToMin,
 			&i.ActiveWeekdays,
 			&i.FixedTimesMin,
+			&i.BackfillLimit,
+			&i.BackfillDoneAt,
 			&i.CreatedByEmail,
 		); err != nil {
 			return nil, err
@@ -335,6 +349,17 @@ func (q *Queries) ListListScheduleds(ctx context.Context, arg ListListScheduleds
 		return nil, err
 	}
 	return items, nil
+}
+
+const markListScheduledBackfilled = `-- name: MarkListScheduledBackfilled :exec
+UPDATE list_scheduled SET backfill_done_at = now() WHERE id = $1
+`
+
+// Đóng vòng quét đầu. Cột riêng chứ không suy ra từ last_synced_post_id: kênh
+// chưa có bài nào thì mốc đó vẫn NULL sau một vòng quét hoàn toàn hợp lệ.
+func (q *Queries) MarkListScheduledBackfilled(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markListScheduledBackfilled, id)
+	return err
 }
 
 const setLastSyncedPostID = `-- name: SetLastSyncedPostID :exec
@@ -375,20 +400,24 @@ SET source_url        = COALESCE($1, source_url),
     auto_publish      = COALESCE($9, auto_publish),
     status            = COALESCE($10, status),
     scan_limit        = COALESCE($11, scan_limit),
-    max_posts_per_run = COALESCE($12, max_posts_per_run),
-    llm_api_set_id    = COALESCE($13, llm_api_set_id),
-    timezone          = COALESCE($14, timezone),
+    backfill_limit    = COALESCE($12, backfill_limit),
+    -- Cùng lý do với khung giờ: NULL ở max_posts_per_run nghĩa là "không giới
+    -- hạn", nên chỉ COALESCE thì người dùng đặt trần rồi không gỡ ra được nữa.
+    max_posts_per_run = CASE WHEN $13::bool THEN NULL
+                             ELSE COALESCE($14, max_posts_per_run) END,
+    llm_api_set_id    = COALESCE($15, llm_api_set_id),
+    timezone          = COALESCE($16, timezone),
     -- Khung giờ dùng cờ ` + "`" + `clear_*` + "`" + ` chứ không chỉ COALESCE: NULL ở đây vừa có
     -- nghĩa "không sửa" vừa có nghĩa "bỏ khung giờ, quay lại 24/7", và chỉ
     -- COALESCE thì người dùng không bao giờ xoá được khung giờ đã đặt.
-    active_from_min   = CASE WHEN $15::bool THEN NULL
-                             ELSE COALESCE($16, active_from_min) END,
-    active_to_min     = CASE WHEN $15::bool THEN NULL
-                             ELSE COALESCE($17, active_to_min) END,
-    active_weekdays   = COALESCE($18, active_weekdays),
-    fixed_times_min   = COALESCE($19, fixed_times_min)
-WHERE id = $20
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min
+    active_from_min   = CASE WHEN $17::bool THEN NULL
+                             ELSE COALESCE($18, active_from_min) END,
+    active_to_min     = CASE WHEN $17::bool THEN NULL
+                             ELSE COALESCE($19, active_to_min) END,
+    active_weekdays   = COALESCE($20, active_weekdays),
+    fixed_times_min   = COALESCE($21, fixed_times_min)
+WHERE id = $22
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at
 `
 
 type UpdateListScheduledParams struct {
@@ -403,6 +432,8 @@ type UpdateListScheduledParams struct {
 	AutoPublish     *bool           `json:"auto_publish"`
 	Status          *string         `json:"status"`
 	ScanLimit       *int32          `json:"scan_limit"`
+	BackfillLimit   *int32          `json:"backfill_limit"`
+	ClearMaxPosts   bool            `json:"clear_max_posts"`
 	MaxPostsPerRun  *int32          `json:"max_posts_per_run"`
 	LlmApiSetID     *uuid.UUID      `json:"llm_api_set_id"`
 	Timezone        *string         `json:"timezone"`
@@ -427,6 +458,8 @@ func (q *Queries) UpdateListScheduled(ctx context.Context, arg UpdateListSchedul
 		arg.AutoPublish,
 		arg.Status,
 		arg.ScanLimit,
+		arg.BackfillLimit,
+		arg.ClearMaxPosts,
 		arg.MaxPostsPerRun,
 		arg.LlmApiSetID,
 		arg.Timezone,
@@ -462,6 +495,8 @@ func (q *Queries) UpdateListScheduled(ctx context.Context, arg UpdateListSchedul
 		&i.ActiveToMin,
 		&i.ActiveWeekdays,
 		&i.FixedTimesMin,
+		&i.BackfillLimit,
+		&i.BackfillDoneAt,
 	)
 	return i, err
 }

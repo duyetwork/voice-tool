@@ -173,7 +173,10 @@ func setDefaults(v *viper.Viper) {
 	//   4    — quét 4 kênh song song: cân bằng throughput và rate-limit.
 	v.SetDefault("BREAKING_SCAN_INTERVAL", "60s")
 	v.SetDefault("SCAN_LIMIT_DEFAULT", 20)
-	v.SetDefault("MAX_POSTS_PER_RUN_DEFAULT", 50)
+	// 0 = không giới hạn: mặc định lấy hết bài mới trong cửa sổ quét. Trần là
+	// thứ người vận hành BẬT khi biết mình cần, chứ không phải con số 50 lặng
+	// lẽ cắt bớt bài của một kênh mà chẳng ai nhìn thấy.
+	v.SetDefault("MAX_POSTS_PER_RUN_DEFAULT", 0)
 	v.SetDefault("BREAKING_SCAN_PARALLELISM", 4)
 	v.SetDefault("SCHEDULER_SYNC_INTERVAL", "30s")
 	v.SetDefault("SKIPPED_LOG_RETENTION", "168h") // 7 ngày

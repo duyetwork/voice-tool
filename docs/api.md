@@ -378,7 +378,7 @@ trả `400` ngay nếu thiếu author/hashtag, các điều kiện còn lại l�
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| POST | `/lists/breaking` | Body: `source_url`, `regex_patterns[]`, `collect_mode`, `prompt_id?`, `llm_api_set_id?`, `language_default?`, `auto_process?`, `auto_publish?`, `status?`, `scan_limit?`, `scan_interval?`, `schedule?` |
+| POST | `/lists/breaking` | Body: `source_url`, `regex_patterns[]`, `collect_mode`, `prompt_id?`, `llm_api_set_id?`, `language_default?`, `auto_process?`, `auto_publish?`, `status?`, `scan_limit?`, `scan_interval?`, `backfill_limit?`, `max_posts_per_run?`, `schedule?` |
 | GET | `/lists/breaking` | Query: `status`, `search` (regex lọc theo `source_url`), `limit`, `offset` |
 | GET | `/lists/breaking/:id` | |
 | PATCH | `/lists/breaking/:id` | Mọi field ở trên đều optional |
@@ -402,11 +402,38 @@ Tối đa 20 pattern/kênh; pattern trùng nhau sau khi chuẩn hoá bị loại
 
 | Field | Mặc định | Ý nghĩa |
 |---|---|---|
-| `scan_limit` | `SCAN_LIMIT_DEFAULT` (20) | Số bài mới nhất lấy về mỗi vòng, 1..200 |
+| `scan_limit` | `SCAN_LIMIT_DEFAULT` (20) | Cửa sổ quét: số bài mới nhất NHÌN mỗi vòng, 1..200 |
 | `scan_interval` | `BREAKING_SCAN_INTERVAL` (60s) | Khoảng nghỉ riêng của kênh, tối thiểu 15s. Dạng `"30s"`, `"2m"` hoặc số giây |
+| `backfill_limit` | `0` | Số bài CŨ lấy về ở vòng quét ĐẦU TIÊN, 0..200 |
+| `max_posts_per_run` | `MAX_POSTS_PER_RUN_DEFAULT` (0 = không giới hạn) | Trần số Bài Post tạo ra mỗi vòng |
 
 Response còn trả `last_scanned_at` — mốc vòng quét gần nhất, dùng để theo dõi
-lịch chạy thực tế.
+lịch chạy thực tế — và `backfill_done_at`, mốc vòng quét đầu đã chạy xong.
+
+### `backfill_limit` — lấy bài cũ khi thêm kênh
+
+Có ở cả Breaking lẫn Định kỳ. Vòng quét ĐẦU TIÊN của một kênh không có mốc nào
+để so, nên trước đây nó nuốt trọn cả cửa sổ quét: thêm kênh là lập tức có 20 Bài
+Post từ bài đã đăng từ trước, và với `auto_process` thì 20 voice.
+
+`backfill_limit` biến việc đó thành lựa chọn tường minh:
+
+| Giá trị | Vòng quét đầu làm gì |
+|---|---|
+| `0` (mặc định) | Không lấy bài nào có sẵn — chỉ bài đăng SAU khi thêm kênh |
+| `N` | Lấy thêm `N` bài gần thời điểm thêm kênh nhất |
+
+Đếm theo **số bài**, không theo khoảng thời gian: danh sách nền tảng trả về vốn
+đã là "N bài mới nhất". Lọc theo ngày đăng thì phải tin vào `posted_at`, mà
+yt-dlp không trả trường này ổn định trên mọi nền tảng.
+
+Chỉ có tác dụng **một lần**. Sau vòng quét đầu, `backfill_done_at` được ghi và
+giá trị này không còn được đọc tới nữa — PATCH vẫn nhận nhưng không đổi gì.
+
+Với kênh Breaking, những bài bị loại ở vòng đầu được nhớ trong
+`backfill_excluded_ids`: kênh Breaking không có mốc đồng bộ, mỗi vòng nó xét lại
+cùng một cửa sổ, nên không nhớ thì chính chúng sẽ quay lại ở vòng thứ hai như
+thể vừa mới đăng.
 
 ### `schedule` — lịch quét theo từng kênh
 
@@ -451,7 +478,7 @@ phải chạy bằng đúng bộ đã chọn.
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| POST | `/lists/scheduled` | Body như Breaking nhưng thay `regex_patterns` bằng `scan_frequency`; thêm `scan_limit?`, `max_posts_per_run?`. Cũng nhận `llm_api_set_id?` và `schedule?` (xem mục trên) |
+| POST | `/lists/scheduled` | Body như Breaking nhưng thay `regex_patterns` bằng `scan_frequency`; cũng nhận `scan_limit?`, `max_posts_per_run?`, `backfill_limit?`, `llm_api_set_id?`, `schedule?` (xem mục trên) |
 | GET | `/lists/scheduled` | Query: `status`, `search`, `limit`, `offset` |
 | GET | `/lists/scheduled/:id` | |
 | PATCH | `/lists/scheduled/:id` | |
@@ -460,9 +487,13 @@ phải chạy bằng đúng bộ đã chọn.
 `scan_frequency` nhận `"30m"`, `"6h"`, `"24h"` hoặc số giây (`"1800"`).
 Tối thiểu 1 phút.
 
-`max_posts_per_run` (mặc định `MAX_POSTS_PER_RUN_DEFAULT` = 50) là trần số Bài
-Post tạo ra trong 1 vòng quét — chặn nổ chi phí AI khi kênh đăng ồ ạt. Phần dư
-được xử lý ở vòng sau. `0` = không giới hạn.
+`max_posts_per_run` (mặc định `MAX_POSTS_PER_RUN_DEFAULT` = `0` = **không giới
+hạn**) là trần số Bài Post tạo ra trong 1 vòng quét — chặn nổ chi phí AI khi
+kênh đăng ồ ạt. Phần dư không mất, nó được xử lý ở vòng sau.
+
+Trên PATCH, gửi `0` nghĩa là **bỏ trần** (cột trong DB về `NULL`). Bỏ hẳn field
+ra khỏi body thì trần cũ giữ nguyên — hai điều đó khác nhau, và đây là lý do
+`0` không thể là "không sửa".
 
 ## Danh mục
 
@@ -692,7 +723,7 @@ Append-only — không có endpoint sửa/xoá.
 |---|---|---|
 | GET | `/healthz` | Không cần auth |
 | GET | `/meta/platforms` | Danh sách nền tảng đang được tích hợp |
-| GET | `/meta/collect-modes` | `[{mode, enabled, reason?}]` — hình thức nào đang bật. `reason` chỉ có khi tắt và nói rõ vì sao: người vận hành tự tắt trong `ENABLED_COLLECT_MODES`, hoặc không có LLM thật nào (mode C bị tắt khi `LLM_PROVIDER=mock` **và** trong DB chưa có Bộ API key nào) |
+| GET | `/meta/collect-modes` | `[{mode, enabled, reason?}]` — hình thức nào đang bật. `reason` chỉ có khi tắt và nói rõ vì sao: người vận hành tự tắt trong `ENABLED_COLLECT_MODES`, hoặc không có LLM thật nào (mode C tắt khi `LLM_PROVIDER=mock` **và** trong DB chưa có Bộ API key nào). Trạng thái mode C đọc lại từ DB ngay trong lúc chạy (nhớ tạm 30s) — thêm Bộ API key xong, tải lại trang là thấy bật, **không cần restart** |
 | GET | `/meta/publish` | `{category_ids, min_duration_seconds}` — điều kiện multime đòi ở 1 bài đăng |
 | GET | `/meta/authors/random` | Query: `gender` (`male`/`female`/`other`, bắt buộc), `country_id` (tuỳ chọn). Trả `{author: {id, email, gender, full_name, avatar_url}}` — **bốc ngẫu nhiên 1 tài khoản** bên Strongbody (`GET /v1/admin/user` + `filter_names=gender` + `country_id`) bằng token của người đang đăng nhập; tool không giữ bản sao danh bạ. `id` chính là `author_id` khi đăng voice. Mỗi lần gọi là một lần bốc mới |
 | GET | `/meta/catalog` | `{countries, hashtags, language_order}` — **cả 3 danh mục của modal Tạo Voice trong 1 lần gọi**. Frontend cache vĩnh viễn trong phiên: mở modal lần sau không gọi lại, mọi thao tác search chạy trên dữ liệu này. `countries` đọc từ bảng `country` (đồng bộ từ Strongbody mỗi 24h, sắp theo thứ tự nghiệp vụ — Việt Nam trước); `hashtags` là `[{tag, count, languages}]` dựng từ chính dữ liệu hệ thống; `language_order` là mã ngôn ngữ theo thứ tự suy ra từ thứ tự quốc gia |

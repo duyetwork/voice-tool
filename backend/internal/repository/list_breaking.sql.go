@@ -47,13 +47,15 @@ INSERT INTO list_breaking (
   source_url, platform, content_type, collect_mode, prompt_id, regex_patterns,
   language_default, auto_process, auto_publish, status, scan_limit, scan_interval,
   created_by, llm_api_set_id,
-  timezone, active_from_min, active_to_min, active_weekdays
+  timezone, active_from_min, active_to_min, active_weekdays,
+  backfill_limit, max_posts_per_run
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   $14, $15,
-  $16, $17, $18
+  $16, $17, $18,
+  $19, $20
 )
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run
 `
 
 type CreateListBreakingParams struct {
@@ -75,6 +77,8 @@ type CreateListBreakingParams struct {
 	ActiveFromMin   *int16          `json:"active_from_min"`
 	ActiveToMin     *int16          `json:"active_to_min"`
 	ActiveWeekdays  []int16         `json:"active_weekdays"`
+	BackfillLimit   int32           `json:"backfill_limit"`
+	MaxPostsPerRun  *int32          `json:"max_posts_per_run"`
 }
 
 func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreakingParams) (ListBreaking, error) {
@@ -97,6 +101,8 @@ func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreaking
 		arg.ActiveFromMin,
 		arg.ActiveToMin,
 		arg.ActiveWeekdays,
+		arg.BackfillLimit,
+		arg.MaxPostsPerRun,
 	)
 	var i ListBreaking
 	err := row.Scan(
@@ -121,6 +127,10 @@ func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreaking
 		&i.ActiveFromMin,
 		&i.ActiveToMin,
 		&i.ActiveWeekdays,
+		&i.BackfillLimit,
+		&i.BackfillDoneAt,
+		&i.BackfillExcludedIds,
+		&i.MaxPostsPerRun,
 	)
 	return i, err
 }
@@ -138,7 +148,7 @@ func (q *Queries) DeleteListBreaking(ctx context.Context, id uuid.UUID) (int64, 
 }
 
 const getListBreaking = `-- name: GetListBreaking :one
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays FROM list_breaking WHERE id = $1
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run FROM list_breaking WHERE id = $1
 `
 
 func (q *Queries) GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaking, error) {
@@ -166,12 +176,16 @@ func (q *Queries) GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaki
 		&i.ActiveFromMin,
 		&i.ActiveToMin,
 		&i.ActiveWeekdays,
+		&i.BackfillLimit,
+		&i.BackfillDoneAt,
+		&i.BackfillExcludedIds,
+		&i.MaxPostsPerRun,
 	)
 	return i, err
 }
 
 const listActiveListBreakings = `-- name: ListActiveListBreakings :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays FROM list_breaking WHERE status = 'active' ORDER BY created_at
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run FROM list_breaking WHERE status = 'active' ORDER BY created_at
 `
 
 func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, error) {
@@ -205,6 +219,10 @@ func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, 
 			&i.ActiveFromMin,
 			&i.ActiveToMin,
 			&i.ActiveWeekdays,
+			&i.BackfillLimit,
+			&i.BackfillDoneAt,
+			&i.BackfillExcludedIds,
+			&i.MaxPostsPerRun,
 		); err != nil {
 			return nil, err
 		}
@@ -217,7 +235,7 @@ func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, 
 }
 
 const listDueListBreakings = `-- name: ListDueListBreakings :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays FROM list_breaking
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run FROM list_breaking
 WHERE status = 'active'
   AND (
     last_scanned_at IS NULL
@@ -259,6 +277,10 @@ func (q *Queries) ListDueListBreakings(ctx context.Context, defaultInterval pgty
 			&i.ActiveFromMin,
 			&i.ActiveToMin,
 			&i.ActiveWeekdays,
+			&i.BackfillLimit,
+			&i.BackfillDoneAt,
+			&i.BackfillExcludedIds,
+			&i.MaxPostsPerRun,
 		); err != nil {
 			return nil, err
 		}
@@ -271,7 +293,7 @@ func (q *Queries) ListDueListBreakings(ctx context.Context, defaultInterval pgty
 }
 
 const listListBreakings = `-- name: ListListBreakings :many
-SELECT lb.id, lb.source_url, lb.platform, lb.content_type, lb.collect_mode, lb.prompt_id, lb.language_default, lb.auto_process, lb.auto_publish, lb.status, lb.created_by, lb.created_at, lb.regex_patterns, lb.scan_limit, lb.scan_interval, lb.last_scanned_at, lb.llm_api_set_id, lb.timezone, lb.active_from_min, lb.active_to_min, lb.active_weekdays, u.email AS created_by_email
+SELECT lb.id, lb.source_url, lb.platform, lb.content_type, lb.collect_mode, lb.prompt_id, lb.language_default, lb.auto_process, lb.auto_publish, lb.status, lb.created_by, lb.created_at, lb.regex_patterns, lb.scan_limit, lb.scan_interval, lb.last_scanned_at, lb.llm_api_set_id, lb.timezone, lb.active_from_min, lb.active_to_min, lb.active_weekdays, lb.backfill_limit, lb.backfill_done_at, lb.backfill_excluded_ids, lb.max_posts_per_run, u.email AS created_by_email
 FROM list_breaking lb
 JOIN app_user u ON u.id = lb.created_by
 WHERE ($1::varchar   IS NULL OR lb.status     = $1)
@@ -301,28 +323,32 @@ type ListListBreakingsParams struct {
 }
 
 type ListListBreakingsRow struct {
-	ID              uuid.UUID       `json:"id"`
-	SourceUrl       string          `json:"source_url"`
-	Platform        string          `json:"platform"`
-	ContentType     *string         `json:"content_type"`
-	CollectMode     string          `json:"collect_mode"`
-	PromptID        *uuid.UUID      `json:"prompt_id"`
-	LanguageDefault string          `json:"language_default"`
-	AutoProcess     bool            `json:"auto_process"`
-	AutoPublish     bool            `json:"auto_publish"`
-	Status          string          `json:"status"`
-	CreatedBy       uuid.UUID       `json:"created_by"`
-	CreatedAt       time.Time       `json:"created_at"`
-	RegexPatterns   []string        `json:"regex_patterns"`
-	ScanLimit       int32           `json:"scan_limit"`
-	ScanInterval    pgtype.Interval `json:"scan_interval"`
-	LastScannedAt   *time.Time      `json:"last_scanned_at"`
-	LlmApiSetID     *uuid.UUID      `json:"llm_api_set_id"`
-	Timezone        string          `json:"timezone"`
-	ActiveFromMin   *int16          `json:"active_from_min"`
-	ActiveToMin     *int16          `json:"active_to_min"`
-	ActiveWeekdays  []int16         `json:"active_weekdays"`
-	CreatedByEmail  string          `json:"created_by_email"`
+	ID                  uuid.UUID       `json:"id"`
+	SourceUrl           string          `json:"source_url"`
+	Platform            string          `json:"platform"`
+	ContentType         *string         `json:"content_type"`
+	CollectMode         string          `json:"collect_mode"`
+	PromptID            *uuid.UUID      `json:"prompt_id"`
+	LanguageDefault     string          `json:"language_default"`
+	AutoProcess         bool            `json:"auto_process"`
+	AutoPublish         bool            `json:"auto_publish"`
+	Status              string          `json:"status"`
+	CreatedBy           uuid.UUID       `json:"created_by"`
+	CreatedAt           time.Time       `json:"created_at"`
+	RegexPatterns       []string        `json:"regex_patterns"`
+	ScanLimit           int32           `json:"scan_limit"`
+	ScanInterval        pgtype.Interval `json:"scan_interval"`
+	LastScannedAt       *time.Time      `json:"last_scanned_at"`
+	LlmApiSetID         *uuid.UUID      `json:"llm_api_set_id"`
+	Timezone            string          `json:"timezone"`
+	ActiveFromMin       *int16          `json:"active_from_min"`
+	ActiveToMin         *int16          `json:"active_to_min"`
+	ActiveWeekdays      []int16         `json:"active_weekdays"`
+	BackfillLimit       int32           `json:"backfill_limit"`
+	BackfillDoneAt      *time.Time      `json:"backfill_done_at"`
+	BackfillExcludedIds []string        `json:"backfill_excluded_ids"`
+	MaxPostsPerRun      *int32          `json:"max_posts_per_run"`
+	CreatedByEmail      string          `json:"created_by_email"`
 }
 
 // Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
@@ -366,6 +392,10 @@ func (q *Queries) ListListBreakings(ctx context.Context, arg ListListBreakingsPa
 			&i.ActiveFromMin,
 			&i.ActiveToMin,
 			&i.ActiveWeekdays,
+			&i.BackfillLimit,
+			&i.BackfillDoneAt,
+			&i.BackfillExcludedIds,
+			&i.MaxPostsPerRun,
 			&i.CreatedByEmail,
 		); err != nil {
 			return nil, err
@@ -376,6 +406,26 @@ func (q *Queries) ListListBreakings(ctx context.Context, arg ListListBreakingsPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const markListBreakingBackfilled = `-- name: MarkListBreakingBackfilled :exec
+UPDATE list_breaking
+SET backfill_done_at = now(), backfill_excluded_ids = $1
+WHERE id = $2
+`
+
+type MarkListBreakingBackfilledParams struct {
+	ExcludedIds []string  `json:"excluded_ids"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Đóng vòng quét đầu: ghi mốc và nhớ những id đã cố tình bỏ qua.
+//
+// Kênh Breaking không có mốc đồng bộ nên nếu không nhớ, chính những bài này sẽ
+// quay lại ở vòng sau như thể vừa đăng.
+func (q *Queries) MarkListBreakingBackfilled(ctx context.Context, arg MarkListBreakingBackfilledParams) error {
+	_, err := q.db.Exec(ctx, markListBreakingBackfilled, arg.ExcludedIds, arg.ID)
+	return err
 }
 
 const touchListBreakingScanned = `-- name: TouchListBreakingScanned :exec
@@ -407,9 +457,14 @@ SET source_url       = COALESCE($1, source_url),
                             ELSE COALESCE($16, active_from_min) END,
     active_to_min    = CASE WHEN $15::bool THEN NULL
                             ELSE COALESCE($17, active_to_min) END,
-    active_weekdays  = COALESCE($18, active_weekdays)
-WHERE id = $19
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays
+    active_weekdays  = COALESCE($18, active_weekdays),
+    backfill_limit   = COALESCE($19, backfill_limit),
+    -- Cùng lý do với khung giờ: NULL ở max_posts_per_run nghĩa là "không giới
+    -- hạn", nên chỉ COALESCE thì người dùng đặt trần rồi không gỡ ra được nữa.
+    max_posts_per_run = CASE WHEN $20::bool THEN NULL
+                             ELSE COALESCE($21, max_posts_per_run) END
+WHERE id = $22
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run
 `
 
 type UpdateListBreakingParams struct {
@@ -431,6 +486,9 @@ type UpdateListBreakingParams struct {
 	ActiveFromMin   *int16          `json:"active_from_min"`
 	ActiveToMin     *int16          `json:"active_to_min"`
 	ActiveWeekdays  []int16         `json:"active_weekdays"`
+	BackfillLimit   *int32          `json:"backfill_limit"`
+	ClearMaxPosts   bool            `json:"clear_max_posts"`
+	MaxPostsPerRun  *int32          `json:"max_posts_per_run"`
 	ID              uuid.UUID       `json:"id"`
 }
 
@@ -454,6 +512,9 @@ func (q *Queries) UpdateListBreaking(ctx context.Context, arg UpdateListBreaking
 		arg.ActiveFromMin,
 		arg.ActiveToMin,
 		arg.ActiveWeekdays,
+		arg.BackfillLimit,
+		arg.ClearMaxPosts,
+		arg.MaxPostsPerRun,
 		arg.ID,
 	)
 	var i ListBreaking
@@ -479,6 +540,10 @@ func (q *Queries) UpdateListBreaking(ctx context.Context, arg UpdateListBreaking
 		&i.ActiveFromMin,
 		&i.ActiveToMin,
 		&i.ActiveWeekdays,
+		&i.BackfillLimit,
+		&i.BackfillDoneAt,
+		&i.BackfillExcludedIds,
+		&i.MaxPostsPerRun,
 	)
 	return i, err
 }

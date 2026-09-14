@@ -3,12 +3,14 @@ INSERT INTO list_scheduled (
   source_url, platform, content_type, collect_mode, prompt_id, scan_frequency,
   language_default, auto_process, auto_publish, status, scan_limit,
   max_posts_per_run, created_by, llm_api_set_id,
-  timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min
+  timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min,
+  backfill_limit
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   sqlc.narg('llm_api_set_id'), sqlc.arg('timezone'),
   sqlc.narg('active_from_min'), sqlc.narg('active_to_min'),
-  sqlc.arg('active_weekdays'), sqlc.arg('fixed_times_min')
+  sqlc.arg('active_weekdays'), sqlc.arg('fixed_times_min'),
+  sqlc.arg('backfill_limit')
 )
 RETURNING *;
 
@@ -50,7 +52,11 @@ SET source_url        = COALESCE(sqlc.narg('source_url'), source_url),
     auto_publish      = COALESCE(sqlc.narg('auto_publish'), auto_publish),
     status            = COALESCE(sqlc.narg('status'), status),
     scan_limit        = COALESCE(sqlc.narg('scan_limit'), scan_limit),
-    max_posts_per_run = COALESCE(sqlc.narg('max_posts_per_run'), max_posts_per_run),
+    backfill_limit    = COALESCE(sqlc.narg('backfill_limit'), backfill_limit),
+    -- Cùng lý do với khung giờ: NULL ở max_posts_per_run nghĩa là "không giới
+    -- hạn", nên chỉ COALESCE thì người dùng đặt trần rồi không gỡ ra được nữa.
+    max_posts_per_run = CASE WHEN sqlc.arg('clear_max_posts')::bool THEN NULL
+                             ELSE COALESCE(sqlc.narg('max_posts_per_run'), max_posts_per_run) END,
     llm_api_set_id    = COALESCE(sqlc.narg('llm_api_set_id'), llm_api_set_id),
     timezone          = COALESCE(sqlc.narg('timezone'), timezone),
     -- Khung giờ dùng cờ `clear_*` chứ không chỉ COALESCE: NULL ở đây vừa có
@@ -64,6 +70,11 @@ SET source_url        = COALESCE(sqlc.narg('source_url'), source_url),
     fixed_times_min   = COALESCE(sqlc.narg('fixed_times_min'), fixed_times_min)
 WHERE id = sqlc.arg('id')
 RETURNING *;
+
+-- name: MarkListScheduledBackfilled :exec
+-- Đóng vòng quét đầu. Cột riêng chứ không suy ra từ last_synced_post_id: kênh
+-- chưa có bài nào thì mốc đó vẫn NULL sau một vòng quét hoàn toàn hợp lệ.
+UPDATE list_scheduled SET backfill_done_at = now() WHERE id = $1;
 
 -- name: SetLastSyncedPostID :exec
 UPDATE list_scheduled

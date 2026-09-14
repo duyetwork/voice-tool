@@ -55,6 +55,22 @@ func (r *scheduleRequest) scheduleUpdate() (*domain.ChannelSchedule, bool) {
 	return &sched, r.ClearWindow
 }
 
+// clearMaxPosts dịch giá trị max_posts_per_run nhận từ client thành cặp
+// (giá trị, cờ xoá).
+//
+// 0 nghĩa là "không giới hạn", mà cột trong DB diễn đạt điều đó bằng NULL —
+// CHECK constraint không cho phép lưu số 0. Không dịch ở đây thì client gửi 0
+// sẽ nhận về lỗi ràng buộc của Postgres thay vì bỏ được cái trần.
+func clearMaxPosts(v *int32) (*int32, bool) {
+	if v == nil {
+		return nil, false
+	}
+	if *v <= 0 {
+		return nil, true
+	}
+	return v, false
+}
+
 type List struct {
 	svc *service.List
 }
@@ -79,6 +95,11 @@ type createBreakingRequest struct {
 	// Tham số quét — bỏ trống thì dùng chỉ số tối ưu của hệ thống.
 	ScanLimit    *int32  `json:"scan_limit" binding:"omitempty,min=1,max=200"`
 	ScanInterval *string `json:"scan_interval"`
+	// BackfillLimit: số bài CŨ lấy về ở vòng quét đầu. Bỏ trống = 0 = chỉ lấy
+	// bài đăng sau khi thêm kênh.
+	BackfillLimit *int32 `json:"backfill_limit" binding:"omitempty,min=0,max=200"`
+	// MaxPostsPerRun: trần Bài Post tạo ra mỗi vòng quét. 0 = không giới hạn.
+	MaxPostsPerRun *int32 `json:"max_posts_per_run" binding:"omitempty,min=0"`
 	// LLMAPISetID: bộ API key cho mode C. Quét tự động không có ai bấm nút để
 	// chọn bộ, nên bộ phải nằm sẵn trên kênh.
 	LLMAPISetID *uuid.UUID       `json:"llm_api_set_id"`
@@ -93,17 +114,19 @@ func (h *List) CreateBreaking(c *gin.Context) {
 	}
 
 	in := service.BreakingInput{
-		SourceURL:     req.SourceURL,
-		RegexPatterns: req.RegexPatterns,
-		CollectMode:   domain.CollectMode(req.CollectMode),
-		PromptID:      req.PromptID,
-		Language:      req.Language,
-		AutoProcess:   req.AutoProcess,
-		AutoPublish:   req.AutoPublish,
-		Status:        req.Status,
-		ScanLimit:     req.ScanLimit,
-		LLMAPISetID:   req.LLMAPISetID,
-		Schedule:      req.Schedule.schedule(),
+		SourceURL:      req.SourceURL,
+		RegexPatterns:  req.RegexPatterns,
+		CollectMode:    domain.CollectMode(req.CollectMode),
+		PromptID:       req.PromptID,
+		Language:       req.Language,
+		AutoProcess:    req.AutoProcess,
+		AutoPublish:    req.AutoPublish,
+		Status:         req.Status,
+		ScanLimit:      req.ScanLimit,
+		BackfillLimit:  req.BackfillLimit,
+		MaxPostsPerRun: req.MaxPostsPerRun,
+		LLMAPISetID:    req.LLMAPISetID,
+		Schedule:       req.Schedule.schedule(),
 	}
 	if req.ScanInterval != nil {
 		d, err := parseDuration(*req.ScanInterval)
@@ -164,18 +187,21 @@ func (h *List) GetBreaking(c *gin.Context) {
 }
 
 type updateBreakingRequest struct {
-	SourceURL     *string          `json:"source_url" binding:"omitempty,url"`
-	RegexPatterns []string         `json:"regex_patterns" binding:"omitempty,dive,required"`
-	CollectMode   *string          `json:"collect_mode" binding:"omitempty,oneof=A B C"`
-	PromptID      *uuid.UUID       `json:"prompt_id"`
-	Language      *string          `json:"language_default"`
-	AutoProcess   *bool            `json:"auto_process"`
-	AutoPublish   *bool            `json:"auto_publish"`
-	Status        *string          `json:"status" binding:"omitempty,oneof=active paused"`
-	ScanLimit     *int32           `json:"scan_limit" binding:"omitempty,min=1,max=200"`
-	ScanInterval  *string          `json:"scan_interval"`
-	LLMAPISetID   *uuid.UUID       `json:"llm_api_set_id"`
-	Schedule      *scheduleRequest `json:"schedule"`
+	SourceURL     *string    `json:"source_url" binding:"omitempty,url"`
+	RegexPatterns []string   `json:"regex_patterns" binding:"omitempty,dive,required"`
+	CollectMode   *string    `json:"collect_mode" binding:"omitempty,oneof=A B C"`
+	PromptID      *uuid.UUID `json:"prompt_id"`
+	Language      *string    `json:"language_default"`
+	AutoProcess   *bool      `json:"auto_process"`
+	AutoPublish   *bool      `json:"auto_publish"`
+	Status        *string    `json:"status" binding:"omitempty,oneof=active paused"`
+	ScanLimit     *int32     `json:"scan_limit" binding:"omitempty,min=1,max=200"`
+	ScanInterval  *string    `json:"scan_interval"`
+	BackfillLimit *int32     `json:"backfill_limit" binding:"omitempty,min=0,max=200"`
+	// MaxPostsPerRun = 0 nghĩa là BỎ trần (không giới hạn) — xem clearMaxPosts.
+	MaxPostsPerRun *int32           `json:"max_posts_per_run" binding:"omitempty,min=0"`
+	LLMAPISetID    *uuid.UUID       `json:"llm_api_set_id"`
+	Schedule       *scheduleRequest `json:"schedule"`
 }
 
 func (h *List) UpdateBreaking(c *gin.Context) {
@@ -200,8 +226,10 @@ func (h *List) UpdateBreaking(c *gin.Context) {
 		AutoPublish:   req.AutoPublish,
 		Status:        req.Status,
 		ScanLimit:     req.ScanLimit,
+		BackfillLimit: req.BackfillLimit,
 		LLMAPISetID:   req.LLMAPISetID,
 	}
+	in.MaxPostsPerRun, in.ClearMaxPosts = clearMaxPosts(req.MaxPostsPerRun)
 	in.Schedule, in.ClearWindow = req.Schedule.scheduleUpdate()
 	if req.ScanInterval != nil {
 		d, err := parseDuration(*req.ScanInterval)
@@ -262,10 +290,13 @@ type createScheduledRequest struct {
 	AutoPublish   *bool  `json:"auto_publish"`
 	Status        string `json:"status" binding:"omitempty,oneof=active paused"`
 	// Tham số quét — bỏ trống thì dùng chỉ số tối ưu của hệ thống.
-	ScanLimit      *int32           `json:"scan_limit" binding:"omitempty,min=1,max=200"`
-	MaxPostsPerRun *int32           `json:"max_posts_per_run" binding:"omitempty,min=0"`
-	LLMAPISetID    *uuid.UUID       `json:"llm_api_set_id"`
-	Schedule       *scheduleRequest `json:"schedule"`
+	ScanLimit      *int32 `json:"scan_limit" binding:"omitempty,min=1,max=200"`
+	MaxPostsPerRun *int32 `json:"max_posts_per_run" binding:"omitempty,min=0"`
+	// BackfillLimit: số bài CŨ lấy về ở vòng quét đầu. Bỏ trống = 0 = chỉ lấy
+	// bài đăng sau khi thêm kênh.
+	BackfillLimit *int32           `json:"backfill_limit" binding:"omitempty,min=0,max=200"`
+	LLMAPISetID   *uuid.UUID       `json:"llm_api_set_id"`
+	Schedule      *scheduleRequest `json:"schedule"`
 }
 
 func (h *List) CreateScheduled(c *gin.Context) {
@@ -291,6 +322,7 @@ func (h *List) CreateScheduled(c *gin.Context) {
 		Status:         req.Status,
 		ScanLimit:      req.ScanLimit,
 		MaxPostsPerRun: req.MaxPostsPerRun,
+		BackfillLimit:  req.BackfillLimit,
 		LLMAPISetID:    req.LLMAPISetID,
 		Schedule:       req.Schedule.schedule(),
 	})
@@ -352,8 +384,10 @@ type updateScheduledRequest struct {
 	AutoPublish   *bool      `json:"auto_publish"`
 	Status        *string    `json:"status" binding:"omitempty,oneof=active paused"`
 
-	ScanLimit      *int32           `json:"scan_limit" binding:"omitempty,min=1,max=200"`
+	ScanLimit *int32 `json:"scan_limit" binding:"omitempty,min=1,max=200"`
+	// MaxPostsPerRun = 0 nghĩa là BỎ trần (không giới hạn) — xem clearMaxPosts.
 	MaxPostsPerRun *int32           `json:"max_posts_per_run" binding:"omitempty,min=0"`
+	BackfillLimit  *int32           `json:"backfill_limit" binding:"omitempty,min=0,max=200"`
 	LLMAPISetID    *uuid.UUID       `json:"llm_api_set_id"`
 	Schedule       *scheduleRequest `json:"schedule"`
 }
@@ -371,17 +405,18 @@ func (h *List) UpdateScheduled(c *gin.Context) {
 	}
 
 	in := service.ScheduledUpdate{
-		SourceURL:      req.SourceURL,
-		CollectMode:    req.CollectMode,
-		PromptID:       req.PromptID,
-		Language:       req.Language,
-		AutoProcess:    req.AutoProcess,
-		AutoPublish:    req.AutoPublish,
-		Status:         req.Status,
-		ScanLimit:      req.ScanLimit,
-		MaxPostsPerRun: req.MaxPostsPerRun,
-		LLMAPISetID:    req.LLMAPISetID,
+		SourceURL:     req.SourceURL,
+		CollectMode:   req.CollectMode,
+		PromptID:      req.PromptID,
+		Language:      req.Language,
+		AutoProcess:   req.AutoProcess,
+		AutoPublish:   req.AutoPublish,
+		Status:        req.Status,
+		ScanLimit:     req.ScanLimit,
+		BackfillLimit: req.BackfillLimit,
+		LLMAPISetID:   req.LLMAPISetID,
 	}
+	in.MaxPostsPerRun, in.ClearMaxPosts = clearMaxPosts(req.MaxPostsPerRun)
 	in.Schedule, in.ClearWindow = req.Schedule.scheduleUpdate()
 	if req.ScanFrequency != nil {
 		freq, err := parseDuration(*req.ScanFrequency)

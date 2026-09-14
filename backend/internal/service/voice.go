@@ -370,7 +370,7 @@ func (v *Voice) CreateFromText(
 		return repository.Voice{}, fmt.Errorf(
 			"%w: nhập bằng text chỉ dùng được hình thức B hoặc C", domain.ErrInvalidInput)
 	}
-	if err := v.modes.Check(in.CollectMode); err != nil {
+	if err := v.modes.Check(ctx, in.CollectMode); err != nil {
 		return repository.Voice{}, err
 	}
 	if in.CollectMode.NeedsPrompt() && in.PromptID == nil {
@@ -468,7 +468,7 @@ func (v *Voice) Regenerate(
 			"%w: tạo lại voice từ nội dung chỉ dùng được hình thức B hoặc C",
 			domain.ErrInvalidInput)
 	}
-	if err := v.modes.Check(in.CollectMode); err != nil {
+	if err := v.modes.Check(ctx, in.CollectMode); err != nil {
 		return repository.Voice{}, err
 	}
 	if in.CollectMode.NeedsPrompt() && in.PromptID == nil {

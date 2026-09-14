@@ -33,6 +33,10 @@ const (
 	maxRegexPatterns = 20
 	// maxScanLimit khớp CHECK constraint trong migration.
 	maxScanLimit = 200
+	// maxBackfillLimit — trần số bài cũ lấy về ở vòng quét đầu. Bằng
+	// maxScanLimit vì backfill chỉ chọn trong đúng cửa sổ mà vòng quét đó lấy
+	// được; xin nhiều hơn scan_limit thì phần dư không tồn tại.
+	maxBackfillLimit = 200
 )
 
 // ScanDefaults là chỉ số quét tối ưu của hệ thống, dùng khi kênh không cấu hình
@@ -88,6 +92,12 @@ type BreakingInput struct {
 	Status        string
 	ScanLimit     *int32
 	ScanInterval  *time.Duration
+	// BackfillLimit: số bài CŨ lấy về ở vòng quét đầu tiên. nil = 0 = chỉ lấy
+	// bài đăng sau khi thêm kênh.
+	BackfillLimit *int32
+	// MaxPostsPerRun: trần Bài Post tạo ra trong 1 vòng quét. nil = theo mặc
+	// định hệ thống (MAX_POSTS_PER_RUN_DEFAULT, mặc định 0 = không giới hạn).
+	MaxPostsPerRun *int32
 	// LLMAPISetID: bộ API key dùng cho mode C của kênh này. Quét tự động không
 	// có ai bấm nút để chọn bộ, nên bộ phải nằm sẵn trên kênh.
 	LLMAPISetID *uuid.UUID
@@ -100,7 +110,7 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 	if err != nil {
 		return repository.ListBreaking{}, err
 	}
-	if err := l.modes.Check(in.CollectMode); err != nil {
+	if err := l.modes.Check(ctx, in.CollectMode); err != nil {
 		return repository.ListBreaking{}, err
 	}
 	if err := validateMode(in.CollectMode, in.PromptID); err != nil {
@@ -115,6 +125,9 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 		return repository.ListBreaking{}, err
 	}
 	if err := in.Schedule.Validate(); err != nil {
+		return repository.ListBreaking{}, err
+	}
+	if err := validateBackfillLimit(in.BackfillLimit); err != nil {
 		return repository.ListBreaking{}, err
 	}
 
@@ -132,6 +145,8 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 		Status:         statusOr(in.Status),
 		ScanLimit:      l.scanLimitOr(in.ScanLimit),
 		ScanInterval:   interval,
+		BackfillLimit:  backfillOr(in.BackfillLimit),
+		MaxPostsPerRun: l.maxPostsOr(in.MaxPostsPerRun),
 		CreatedBy:      actor,
 		LlmApiSetID:    in.LLMAPISetID,
 		Timezone:       timezoneOr(in.Schedule.Timezone),
@@ -149,6 +164,7 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 		"collect_mode":   list.CollectMode,
 		"regex_patterns": list.RegexPatterns,
 		"scan_limit":     list.ScanLimit,
+		"backfill_limit": list.BackfillLimit,
 	})
 	return list, nil
 }
@@ -221,7 +237,12 @@ type BreakingUpdate struct {
 	Status        *string
 	ScanLimit     *int32
 	ScanInterval  *time.Duration
-	LLMAPISetID   *uuid.UUID
+	BackfillLimit *int32
+	// MaxPostsPerRun / ClearMaxPosts: cùng cách xử lý với khung giờ — NULL vừa
+	// nghĩa "không sửa" vừa nghĩa "bỏ trần", nên việc BỎ phải có cờ riêng.
+	MaxPostsPerRun *int32
+	ClearMaxPosts  bool
+	LLMAPISetID    *uuid.UUID
 	// Schedule khác nil = thay toàn bộ cấu hình lịch. ClearWindow xử lý riêng
 	// việc XOÁ khung giờ: trong Schedule, nil vừa có nghĩa "không sửa" vừa có
 	// nghĩa "bỏ khung giờ", và chỉ một trong hai diễn giải được.
@@ -244,6 +265,9 @@ func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in Break
 		AutoPublish:     in.AutoPublish,
 		Status:          in.Status,
 		ScanLimit:       in.ScanLimit,
+		BackfillLimit:   in.BackfillLimit,
+		MaxPostsPerRun:  in.MaxPostsPerRun,
+		ClearMaxPosts:   in.ClearMaxPosts,
 		LlmApiSetID:     in.LLMAPISetID,
 		ClearWindow:     in.ClearWindow,
 	}
@@ -295,6 +319,9 @@ func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in Break
 			return repository.ListBreaking{}, err
 		}
 	}
+	if err := validateBackfillLimit(in.BackfillLimit); err != nil {
+		return repository.ListBreaking{}, err
+	}
 
 	after, err := l.q.UpdateListBreaking(ctx, params)
 	if err != nil {
@@ -345,8 +372,11 @@ type ScheduledInput struct {
 	Status         string
 	ScanLimit      *int32
 	MaxPostsPerRun *int32
-	LLMAPISetID    *uuid.UUID
-	Schedule       domain.ChannelSchedule
+	// BackfillLimit: số bài CŨ lấy về ở vòng quét đầu tiên. nil = 0 = chỉ lấy
+	// bài đăng sau khi thêm kênh.
+	BackfillLimit *int32
+	LLMAPISetID   *uuid.UUID
+	Schedule      domain.ChannelSchedule
 }
 
 func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in ScheduledInput) (repository.ListScheduled, error) {
@@ -354,7 +384,7 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 	if err != nil {
 		return repository.ListScheduled{}, err
 	}
-	if err := l.modes.Check(in.CollectMode); err != nil {
+	if err := l.modes.Check(ctx, in.CollectMode); err != nil {
 		return repository.ListScheduled{}, err
 	}
 	if err := validateMode(in.CollectMode, in.PromptID); err != nil {
@@ -368,6 +398,9 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 	// rate-limit, mà bắt nhập kèm một tần suất hợp lệ chỉ là thủ tục vô nghĩa.
 	freq, err := scheduledInterval(in.ScanFrequency, in.Schedule)
 	if err != nil {
+		return repository.ListScheduled{}, err
+	}
+	if err := validateBackfillLimit(in.BackfillLimit); err != nil {
 		return repository.ListScheduled{}, err
 	}
 
@@ -385,6 +418,7 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 		Status:         statusOr(in.Status),
 		ScanLimit:      l.scanLimitOr(in.ScanLimit),
 		MaxPostsPerRun: l.maxPostsOr(in.MaxPostsPerRun),
+		BackfillLimit:  backfillOr(in.BackfillLimit),
 		CreatedBy:      actor,
 		LlmApiSetID:    in.LLMAPISetID,
 		Timezone:       timezoneOr(in.Schedule.Timezone),
@@ -403,6 +437,7 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 		"collect_mode":   list.CollectMode,
 		"scan_frequency": in.ScanFrequency.String(),
 		"scan_limit":     list.ScanLimit,
+		"backfill_limit": list.BackfillLimit,
 	})
 	return list, nil
 }
@@ -459,9 +494,13 @@ type ScheduledUpdate struct {
 	Status         *string
 	ScanLimit      *int32
 	MaxPostsPerRun *int32
-	LLMAPISetID    *uuid.UUID
-	Schedule       *domain.ChannelSchedule
-	ClearWindow    bool
+	// ClearMaxPosts: cùng cách xử lý với khung giờ — NULL ở max_posts_per_run
+	// vừa nghĩa "không sửa" vừa nghĩa "bỏ trần", nên việc BỎ phải có cờ riêng.
+	ClearMaxPosts bool
+	BackfillLimit *int32
+	LLMAPISetID   *uuid.UUID
+	Schedule      *domain.ChannelSchedule
+	ClearWindow   bool
 }
 
 func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in ScheduledUpdate) (repository.ListScheduled, error) {
@@ -480,6 +519,8 @@ func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in Sche
 		Status:          in.Status,
 		ScanLimit:       in.ScanLimit,
 		MaxPostsPerRun:  in.MaxPostsPerRun,
+		ClearMaxPosts:   in.ClearMaxPosts,
+		BackfillLimit:   in.BackfillLimit,
 		LlmApiSetID:     in.LLMAPISetID,
 		ClearWindow:     in.ClearWindow,
 		// pgtype.Interval zero value = NULL -> COALESCE giữ giá trị cũ.
@@ -525,6 +566,9 @@ func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in Sche
 		if err := validateScanLimit(*in.ScanLimit); err != nil {
 			return repository.ListScheduled{}, err
 		}
+	}
+	if err := validateBackfillLimit(in.BackfillLimit); err != nil {
+		return repository.ListScheduled{}, err
 	}
 
 	after, err := l.q.UpdateListScheduled(ctx, params)
@@ -630,6 +674,29 @@ func validateMode(mode domain.CollectMode, promptID *uuid.UUID) error {
 	return nil
 }
 
+// backfillOr: nil = 0 = KHÔNG lấy bài cũ.
+//
+// Mặc định là 0 chứ không phải scan_limit: thêm một kênh mà lập tức sinh ra 20
+// voice từ bài đăng cũ là thứ không ai chủ động chọn, chỉ là hệ quả của việc
+// vòng quét đầu không có mốc đồng bộ nào để so.
+func backfillOr(v *int32) int32 {
+	if v == nil || *v < 0 {
+		return 0
+	}
+	return *v
+}
+
+func validateBackfillLimit(v *int32) error {
+	if v == nil {
+		return nil
+	}
+	if *v < 0 || *v > maxBackfillLimit {
+		return fmt.Errorf("%w: số bài cũ lấy về phải trong khoảng 0..%d",
+			domain.ErrInvalidInput, maxBackfillLimit)
+	}
+	return nil
+}
+
 func validateScanLimit(v int32) error {
 	if v < 1 || v > maxScanLimit {
 		return fmt.Errorf("%w: scan_limit phải trong khoảng 1..%d", domain.ErrInvalidInput, maxScanLimit)
@@ -706,6 +773,7 @@ func breakingSnapshot(l repository.ListBreaking) map[string]any {
 		"language_default": l.LanguageDefault, "auto_process": l.AutoProcess,
 		"auto_publish": l.AutoPublish, "status": l.Status,
 		"scan_limit": l.ScanLimit, "scan_interval": intervalDuration(l.ScanInterval).String(),
+		"backfill_limit": l.BackfillLimit, "max_posts_per_run": l.MaxPostsPerRun,
 	}
 }
 
@@ -716,5 +784,6 @@ func scheduledSnapshot(l repository.ListScheduled) map[string]any {
 		"language_default": l.LanguageDefault, "auto_process": l.AutoProcess,
 		"auto_publish": l.AutoPublish, "status": l.Status,
 		"scan_limit": l.ScanLimit, "max_posts_per_run": l.MaxPostsPerRun,
+		"backfill_limit": l.BackfillLimit,
 	}
 }

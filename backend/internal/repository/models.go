@@ -83,27 +83,31 @@ type Hashtag struct {
 }
 
 type ListBreaking struct {
-	ID              uuid.UUID       `json:"id"`
-	SourceUrl       string          `json:"source_url"`
-	Platform        string          `json:"platform"`
-	ContentType     *string         `json:"content_type"`
-	CollectMode     string          `json:"collect_mode"`
-	PromptID        *uuid.UUID      `json:"prompt_id"`
-	LanguageDefault string          `json:"language_default"`
-	AutoProcess     bool            `json:"auto_process"`
-	AutoPublish     bool            `json:"auto_publish"`
-	Status          string          `json:"status"`
-	CreatedBy       uuid.UUID       `json:"created_by"`
-	CreatedAt       time.Time       `json:"created_at"`
-	RegexPatterns   []string        `json:"regex_patterns"`
-	ScanLimit       int32           `json:"scan_limit"`
-	ScanInterval    pgtype.Interval `json:"scan_interval"`
-	LastScannedAt   *time.Time      `json:"last_scanned_at"`
-	LlmApiSetID     *uuid.UUID      `json:"llm_api_set_id"`
-	Timezone        string          `json:"timezone"`
-	ActiveFromMin   *int16          `json:"active_from_min"`
-	ActiveToMin     *int16          `json:"active_to_min"`
-	ActiveWeekdays  []int16         `json:"active_weekdays"`
+	ID                  uuid.UUID       `json:"id"`
+	SourceUrl           string          `json:"source_url"`
+	Platform            string          `json:"platform"`
+	ContentType         *string         `json:"content_type"`
+	CollectMode         string          `json:"collect_mode"`
+	PromptID            *uuid.UUID      `json:"prompt_id"`
+	LanguageDefault     string          `json:"language_default"`
+	AutoProcess         bool            `json:"auto_process"`
+	AutoPublish         bool            `json:"auto_publish"`
+	Status              string          `json:"status"`
+	CreatedBy           uuid.UUID       `json:"created_by"`
+	CreatedAt           time.Time       `json:"created_at"`
+	RegexPatterns       []string        `json:"regex_patterns"`
+	ScanLimit           int32           `json:"scan_limit"`
+	ScanInterval        pgtype.Interval `json:"scan_interval"`
+	LastScannedAt       *time.Time      `json:"last_scanned_at"`
+	LlmApiSetID         *uuid.UUID      `json:"llm_api_set_id"`
+	Timezone            string          `json:"timezone"`
+	ActiveFromMin       *int16          `json:"active_from_min"`
+	ActiveToMin         *int16          `json:"active_to_min"`
+	ActiveWeekdays      []int16         `json:"active_weekdays"`
+	BackfillLimit       int32           `json:"backfill_limit"`
+	BackfillDoneAt      *time.Time      `json:"backfill_done_at"`
+	BackfillExcludedIds []string        `json:"backfill_excluded_ids"`
+	MaxPostsPerRun      *int32          `json:"max_posts_per_run"`
 }
 
 type ListScheduled struct {
@@ -130,6 +134,8 @@ type ListScheduled struct {
 	ActiveToMin      *int16          `json:"active_to_min"`
 	ActiveWeekdays   []int16         `json:"active_weekdays"`
 	FixedTimesMin    []int16         `json:"fixed_times_min"`
+	BackfillLimit    int32           `json:"backfill_limit"`
+	BackfillDoneAt   *time.Time      `json:"backfill_done_at"`
 }
 
 type LlmApiKey struct {

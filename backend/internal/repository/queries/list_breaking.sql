@@ -3,11 +3,13 @@ INSERT INTO list_breaking (
   source_url, platform, content_type, collect_mode, prompt_id, regex_patterns,
   language_default, auto_process, auto_publish, status, scan_limit, scan_interval,
   created_by, llm_api_set_id,
-  timezone, active_from_min, active_to_min, active_weekdays
+  timezone, active_from_min, active_to_min, active_weekdays,
+  backfill_limit, max_posts_per_run
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   sqlc.narg('llm_api_set_id'), sqlc.arg('timezone'),
-  sqlc.narg('active_from_min'), sqlc.narg('active_to_min'), sqlc.arg('active_weekdays')
+  sqlc.narg('active_from_min'), sqlc.narg('active_to_min'), sqlc.arg('active_weekdays'),
+  sqlc.arg('backfill_limit'), sqlc.narg('max_posts_per_run')
 )
 RETURNING *;
 
@@ -67,9 +69,23 @@ SET source_url       = COALESCE(sqlc.narg('source_url'), source_url),
                             ELSE COALESCE(sqlc.narg('active_from_min'), active_from_min) END,
     active_to_min    = CASE WHEN sqlc.arg('clear_window')::bool THEN NULL
                             ELSE COALESCE(sqlc.narg('active_to_min'), active_to_min) END,
-    active_weekdays  = COALESCE(sqlc.narg('active_weekdays'), active_weekdays)
+    active_weekdays  = COALESCE(sqlc.narg('active_weekdays'), active_weekdays),
+    backfill_limit   = COALESCE(sqlc.narg('backfill_limit'), backfill_limit),
+    -- Cùng lý do với khung giờ: NULL ở max_posts_per_run nghĩa là "không giới
+    -- hạn", nên chỉ COALESCE thì người dùng đặt trần rồi không gỡ ra được nữa.
+    max_posts_per_run = CASE WHEN sqlc.arg('clear_max_posts')::bool THEN NULL
+                             ELSE COALESCE(sqlc.narg('max_posts_per_run'), max_posts_per_run) END
 WHERE id = sqlc.arg('id')
 RETURNING *;
+
+-- name: MarkListBreakingBackfilled :exec
+-- Đóng vòng quét đầu: ghi mốc và nhớ những id đã cố tình bỏ qua.
+--
+-- Kênh Breaking không có mốc đồng bộ nên nếu không nhớ, chính những bài này sẽ
+-- quay lại ở vòng sau như thể vừa đăng.
+UPDATE list_breaking
+SET backfill_done_at = now(), backfill_excluded_ids = sqlc.arg('excluded_ids')
+WHERE id = sqlc.arg('id');
 
 -- name: TouchListBreakingScanned :exec
 UPDATE list_breaking SET last_scanned_at = now() WHERE id = $1;

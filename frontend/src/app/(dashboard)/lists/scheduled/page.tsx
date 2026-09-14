@@ -5,9 +5,17 @@ import * as React from "react";
 import { BulkBar, SelectAllBox, useSelection } from "@/components/bulk";
 import { ErrorNote, PageHeader } from "@/components/page-header";
 import {
+  ChannelTuning,
+  emptyTuning,
+  tuningCreatePayload,
+  tuningDraftOf,
+  tuningUpdatePayload,
+} from "@/components/channel-tuning";
+import {
   ScheduleFields,
   describeSchedule,
   emptySchedule,
+  scheduleDraftOf,
   toChannelSchedule,
 } from "@/components/schedule-fields";
 import { Can } from "@/components/permission";
@@ -36,16 +44,29 @@ import {
   formatInterval,
   platformLabel,
 } from "@/lib/utils";
-import type { CollectMode } from "@/types/api";
+import type { CollectMode, ListScheduled, PgInterval } from "@/types/api";
 
 const FREQUENCIES = [
-  { value: "15m", label: "Mỗi 15 phút" },
-  { value: "30m", label: "Mỗi 30 phút" },
-  { value: "1h", label: "Mỗi giờ" },
-  { value: "6h", label: "Mỗi 6 giờ" },
-  { value: "12h", label: "Mỗi 12 giờ" },
-  { value: "24h", label: "Mỗi ngày" },
+  { value: "15m", label: "Mỗi 15 phút", seconds: 900 },
+  { value: "30m", label: "Mỗi 30 phút", seconds: 1800 },
+  { value: "1h", label: "Mỗi giờ", seconds: 3600 },
+  { value: "6h", label: "Mỗi 6 giờ", seconds: 21600 },
+  { value: "12h", label: "Mỗi 12 giờ", seconds: 43200 },
+  { value: "24h", label: "Mỗi ngày", seconds: 86400 },
 ];
+
+/**
+ * Đổi INTERVAL của Postgres về đúng giá trị trong ô chọn tần suất.
+ *
+ * Kênh cũ có thể mang tần suất không nằm trong danh sách (đặt qua API, hoặc
+ * danh sách này đổi sau đó). Trả về "<số giây>s" cho trường hợp ấy thay vì
+ * lặng lẽ nhảy về "1h" — sửa một thứ khác trên kênh không được phép đổi luôn
+ * nhịp quét của nó.
+ */
+function frequencyValue(iv: PgInterval | undefined): string {
+  const seconds = Math.round((iv?.Microseconds ?? 0) / 1_000_000) + (iv?.Days ?? 0) * 86_400;
+  return FREQUENCIES.find((f) => f.seconds === seconds)?.value ?? `${seconds}s`;
+}
 
 /** F3 — Danh sách Định kỳ: mỗi kênh có tần suất quét riêng (business rule #5). */
 export default function ScheduledListsPage() {
@@ -53,6 +74,9 @@ export default function ScheduledListsPage() {
   const [platform, setPlatform] = React.useState("");
   const [status, setStatus] = React.useState("");
   const [creating, setCreating] = React.useState(false);
+  // Kênh đang sửa. Giữ cả object chứ không chỉ id: dialog cần giá trị hiện tại
+  // để đổ vào form, và bảng đã có sẵn chúng rồi.
+  const [editing, setEditing] = React.useState<ListScheduled | null>(null);
   const paging = usePaging();
   const sorting = useSorting("created_at", paging.reset);
   // Nút "Xoá lọc" chỉ hiện khi thực sự có gì để xoá.
@@ -263,6 +287,11 @@ export default function ScheduledListsPage() {
                       <div className="text-slate-500">
                         trần: {list.max_posts_per_run ?? "không giới hạn"}
                       </div>
+                      <div className="text-slate-400">
+                        {list.backfill_done_at
+                          ? "bài cũ: đã xong"
+                          : `bài cũ: ${list.backfill_limit || "không lấy"}`}
+                      </div>
                       <div className="text-slate-400">lịch: {describeSchedule(list)}</div>
                       <div className="text-slate-400">
                         quét: {formatDateTime(list.last_scanned_at)}
@@ -277,6 +306,9 @@ export default function ScheduledListsPage() {
                     <Can permission="can_write">
                       <Td className="whitespace-nowrap text-right">
                         <RowActions>
+                          <Button size="sm" variant="secondary" onClick={() => setEditing(list)}>
+                            Sửa
+                          </Button>
                           <Button
                             size="sm"
                             variant="secondary"
@@ -318,41 +350,55 @@ export default function ScheduledListsPage() {
         </CardBody>
       </Card>
 
-      {creating ? <CreateScheduledDialog onClose={() => setCreating(false)} /> : null}
+      {creating ? <ScheduledDialog onClose={() => setCreating(false)} /> : null}
+      {editing ? <ScheduledDialog list={editing} onClose={() => setEditing(null)} /> : null}
     </>
   );
 }
 
-function CreateScheduledDialog({ onClose }: { onClose: () => void }) {
+/**
+ * Dialog dùng chung cho THÊM và SỬA kênh.
+ *
+ * Một form chứ không hai: mọi trường ở đây đều sửa được sau khi tạo, nên tách
+ * ra hai dialog chỉ tạo ra hai bản sao của cùng một danh sách trường — và bản
+ * "sửa" sẽ là bản thiếu trường mỗi lần thêm tính năng mới.
+ */
+function ScheduledDialog({ list, onClose }: { list?: ListScheduled; onClose: () => void }) {
+  const editing = list != null;
   const prompts = usePrompts();
   const modes = useCollectModes();
   const create = useCreateScheduledList();
+  const update = useUpdateScheduledList();
 
-  const [sourceUrl, setSourceUrl] = React.useState("");
+  const [sourceUrl, setSourceUrl] = React.useState(list?.source_url ?? "");
   // Giai đoạn hiện tại ưu tiên Mode A (extract audio gốc).
-  const [collectMode, setCollectMode] = React.useState<CollectMode>("A");
-  const [promptId, setPromptId] = React.useState("");
-  const [frequency, setFrequency] = React.useState("1h");
-  const [language, setLanguage] = React.useState("auto");
-  const [autoProcess, setAutoProcess] = React.useState(false);
-  const [autoPublish, setAutoPublish] = React.useState(false);
-  const [showTuning, setShowTuning] = React.useState(false);
-  const [scanLimit, setScanLimit] = React.useState("");
-  const [maxPostsPerRun, setMaxPostsPerRun] = React.useState("");
+  const [collectMode, setCollectMode] = React.useState<CollectMode>(list?.collect_mode ?? "A");
+  const [promptId, setPromptId] = React.useState(list?.prompt_id ?? "");
+  const [frequency, setFrequency] = React.useState(
+    list ? frequencyValue(list.scan_frequency) : "1h",
+  );
+  const [language, setLanguage] = React.useState(list?.language_default ?? "auto");
+  const [autoProcess, setAutoProcess] = React.useState(list?.auto_process ?? false);
+  const [autoPublish, setAutoPublish] = React.useState(list?.auto_publish ?? false);
+  // Sửa kênh thì mở sẵn phần tham số: người vào đây thường là để chỉnh đúng
+  // mấy con số đó, giấu đi lại bắt bấm thêm một lần.
+  const [showTuning, setShowTuning] = React.useState(editing);
+  const [tuning, setTuning] = React.useState(list ? tuningDraftOf(list) : emptyTuning);
   // Bộ API key cho hình thức C. Quét tự động không có ai bấm nút để chọn bộ,
   // nên bộ phải nằm sẵn trên kênh — không gán thì mode C của kênh không chạy.
-  const [llmSetId, setLlmSetId] = React.useState("");
-  const [schedule, setSchedule] = React.useState(emptySchedule);
+  const [llmSetId, setLlmSetId] = React.useState(list?.llm_api_set_id ?? "");
+  const [schedule, setSchedule] = React.useState(list ? scheduleDraftOf(list) : emptySchedule);
 
   const llmSets = useLLMAPISets();
   const needsPrompt = collectMode === "C";
   const modeMeta = modes.data?.collect_modes ?? [];
   const isEnabled = (mode: string) =>
     modeMeta.find((m) => m.mode === mode)?.enabled ?? mode === "A";
+  const pending = create.isPending || update.isPending;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    await create.mutateAsync({
+    const common = {
       source_url: sourceUrl.trim(),
       collect_mode: collectMode,
       prompt_id: needsPrompt && promptId ? promptId : null,
@@ -360,17 +406,20 @@ function CreateScheduledDialog({ onClose }: { onClose: () => void }) {
       language_default: language,
       auto_process: autoProcess,
       auto_publish: autoPublish,
-      scan_limit: scanLimit ? Number(scanLimit) : undefined,
-      max_posts_per_run: maxPostsPerRun ? Number(maxPostsPerRun) : undefined,
       llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
       schedule: toChannelSchedule(schedule),
-    });
+    };
+    if (list) {
+      await update.mutateAsync({ id: list.id, ...common, ...tuningUpdatePayload(tuning) });
+    } else {
+      await create.mutateAsync({ ...common, ...tuningCreatePayload(tuning) });
+    }
     onClose();
   }
 
   return (
     <Modal
-      title="Thêm kênh Định kỳ"
+      title={editing ? "Sửa kênh Định kỳ" : "Thêm kênh Định kỳ"}
       description="Kênh được quét theo tần suất riêng, lấy toàn bộ bài mới hơn mốc đã sync."
       width="2xl"
       onClose={onClose}
@@ -399,6 +448,10 @@ function CreateScheduledDialog({ onClose }: { onClose: () => void }) {
                   {f.label}
                 </option>
               ))}
+              {/* Tần suất cũ không nằm trong danh sách vẫn phải chọn lại được. */}
+              {FREQUENCIES.every((f) => f.value !== frequency) ? (
+                <option value={frequency}>{frequency} (đang đặt)</option>
+              ) : null}
             </Select>
           </Field>
 
@@ -478,41 +531,24 @@ function CreateScheduledDialog({ onClose }: { onClose: () => void }) {
             {showTuning ? "▾" : "▸"} Tham số quét (nâng cao)
           </button>
           {showTuning ? (
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <Field label="Số bài mỗi vòng quét" hint="Bỏ trống = mặc định hệ thống (20).">
-                <Input
-                  type="number"
-                  min={1}
-                  max={200}
-                  placeholder="20"
-                  value={scanLimit}
-                  onChange={(e) => setScanLimit(e.target.value)}
-                />
-              </Field>
-              <Field
-                label="Trần Bài Post mỗi vòng"
-                hint="Chặn nổ chi phí AI khi kênh đăng ồ ạt. Bỏ trống = mặc định hệ thống (50), 0 = không giới hạn."
-              >
-                <Input
-                  type="number"
-                  min={0}
-                  placeholder="50"
-                  value={maxPostsPerRun}
-                  onChange={(e) => setMaxPostsPerRun(e.target.value)}
-                />
-              </Field>
+            <div className="mt-3">
+              <ChannelTuning
+                value={tuning}
+                onChange={setTuning}
+                backfillDone={Boolean(list?.backfill_done_at)}
+              />
             </div>
           ) : null}
         </div>
 
-        <ErrorNote error={create.error} />
+        <ErrorNote error={create.error ?? update.error} />
 
         <div className="flex justify-end gap-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Huỷ
           </Button>
-          <Button type="submit" disabled={create.isPending}>
-            {create.isPending ? "Đang lưu…" : "Thêm kênh"}
+          <Button type="submit" disabled={pending}>
+            {pending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Thêm kênh"}
           </Button>
         </div>
       </form>
