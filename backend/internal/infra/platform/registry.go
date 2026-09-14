@@ -53,3 +53,19 @@ func (r *Registry) Supported() []domain.Platform {
 	}
 	return out
 }
+
+// ChannelScanSupport trả lời cho TỪNG nền tảng: có quét được cả kênh không, và
+// nếu không thì vì sao — form Thêm kênh đọc đây để nói trước thay vì để người
+// dùng dán URL rồi ăn lỗi.
+func (r *Registry) ChannelScanSupport() []domain.ChannelScan {
+	out := make([]domain.ChannelScan, 0, len(r.adapters))
+	for _, a := range r.adapters {
+		item := domain.ChannelScan{Platform: a.Name(), Enabled: true}
+		if err := a.CheckChannelScan(); err != nil {
+			item.Enabled = false
+			item.Reason = domain.UserMessage(err)
+		}
+		out = append(out, item)
+	}
+	return out
+}

@@ -338,6 +338,15 @@ func (e *Engine) buildVoice(
 		engineID *uuid.UUID
 		// llmModel: model THẬT đã viết lại nội dung (chỉ mode C mới có).
 		llmModel *string
+		// spokenText: ĐÚNG đoạn chữ đã đưa cho TTS. Mode C thì đây là bản LLM
+		// viết lại — thứ duy nhất mô tả được file audio vừa ghi. Mode A để NULL:
+		// không có chữ nào được đọc, audio là của bài gốc.
+		spokenText *string
+		// spoken là bản chuỗi của spokenText, dùng lại ở bước TTS và đặt tiêu đề.
+		spoken string
+		// llmHashtags: thẻ LLM đề xuất ở mode C. Trộn với thẻ của bài gốc bên
+		// dưới chứ không thay thế — bài gốc có thẻ riêng của kênh.
+		llmHashtags []string
 		// Tiêu đề Voice lấy từ tiêu đề Bài Post (= toàn bộ nội dung bài, trừ
 		// hashtag), gộp về 1 dòng và cắt theo giới hạn của multime. Metadata vừa
 		// fetch được ưu tiên hơn bản đã lưu vì nó mới hơn.
@@ -354,21 +363,26 @@ func (e *Engine) buildVoice(
 		title = nilIfEmpty(domain.VoiceTitle(firstNonEmpty(
 			fetched.Meta.Title, deref(post.Title), fetched.Text, deref(post.ExtractedText))))
 	} else {
-		sourceText, spoken, model, err := e.textFor(ctx, post, mode, fetched, current.LlmApiSetID, actor)
+		out, err := e.textFor(ctx, post, mode, fetched, current.LlmApiSetID, actor)
 		if err != nil {
 			return repository.Voice{}, err
 		}
-		llmModel = nilIfEmpty(model)
-		// Mode B/C: text dự phòng là nội dung TTS đọc ra (mode B là text gốc,
-		// mode C là bản LLM đã viết lại).
+		spoken = out.Spoken
+		llmModel = nilIfEmpty(out.Model)
+		spokenText = nilIfEmpty(spoken)
+		llmHashtags = out.Hashtags
+		// Tiêu đề: LLM đứng TRƯỚC tiêu đề bài gốc ở mode C. Nó vừa đọc xong cả
+		// bài và viết lại theo chỉ dẫn biên tập, nên tiêu đề nó đặt mô tả đúng
+		// thứ voice sắp đọc; tiêu đề bài gốc mô tả bản chưa viết lại. Mode B
+		// không có LLM nên nhánh này rơi về đúng thứ tự cũ.
 		title = nilIfEmpty(domain.VoiceTitle(firstNonEmpty(
-			fetched.Meta.Title, deref(post.Title), spoken)))
+			out.Title, fetched.Meta.Title, deref(post.Title), spoken)))
 
 		// Lưu text NGUỒN (không phải bản LLM viết lại) để chạy lại Voice khác
 		// với prompt khác mà không cần fetch URL lần nữa.
 		if _, err := e.q.UpdateSourcePost(ctx, repository.UpdateSourcePostParams{
 			ID:            post.ID,
-			ExtractedText: &sourceText,
+			ExtractedText: &out.Source,
 		}); err != nil {
 			e.log.WarnContext(ctx, "không lưu được extracted_text", "error", err, "source_post_id", post.ID)
 		}
@@ -413,7 +427,11 @@ func (e *Engine) buildVoice(
 		return repository.Voice{}, fmt.Errorf("lưu file voice lên storage: %w", err)
 	}
 
-	hashtag := nilIfEmpty(strings.Join(fetched.Meta.Hashtags, " "))
+	// Thẻ LLM đề xuất đứng TRƯỚC thẻ bài gốc: mergeHashtags giữ thứ tự và cắt ở
+	// trần của multime, nên cái đứng trước là cái sống sót khi phải cắt.
+	hashtag := nilIfEmpty(strings.Join(
+		domain.NormalizeHashtags(append(append([]string{}, llmHashtags...),
+			fetched.Meta.Hashtags...)), " "))
 	image := nilIfEmpty(fetched.Meta.ThumbnailURL)
 
 	// Có record `processing` tạo sẵn lúc enqueue -> điền vào đúng record đó để
@@ -439,6 +457,7 @@ func (e *Engine) buildVoice(
 			SizeBytes:       ptr(info.SizeBytes),
 			SampleRate:      nilIfZero(int32(info.SampleRate)),
 			LlmModelUsed:    llmModel,
+			SpokenText:      spokenText,
 		})
 		if err != nil {
 			e.cleanupOrphan(ctx, key)
@@ -466,6 +485,7 @@ func (e *Engine) buildVoice(
 		SizeBytes:       ptr(info.SizeBytes),
 		SampleRate:      nilIfZero(int32(info.SampleRate)),
 		CreatedBy:       actor,
+		SpokenText:      spokenText,
 	})
 	if err != nil {
 		e.cleanupOrphan(ctx, key)
@@ -573,8 +593,8 @@ func (e *Engine) audioFor(ctx context.Context, fetched domain.FetchedContent) ([
 //
 // Mode C viết lại phần text lấy được qua LLM theo Prompt mẫu.
 //
-// Trả về (text nguồn, text sẽ đọc). Mode B hai giá trị bằng nhau; mode C giá
-// trị thứ hai là bản LLM đã viết lại.
+// Trả về `rewritten`: mode B thì Source == Spoken; mode C thì Spoken là bản LLM
+// đã viết lại, kèm tiêu đề và hashtag model đề xuất.
 func (e *Engine) textFor(
 	ctx context.Context,
 	post repository.SourcePost,
@@ -582,13 +602,13 @@ func (e *Engine) textFor(
 	fetched domain.FetchedContent,
 	llmSetID *uuid.UUID,
 	owner uuid.UUID,
-) (sourceText string, spokenText string, model string, err error) {
-	sourceText = strings.TrimSpace(fetched.Text)
+) (rewritten, error) {
+	sourceText := strings.TrimSpace(fetched.Text)
 
 	if sourceText == "" && len(fetched.AudioBytes) > 0 {
 		transcribed, err := e.stt.Transcribe(ctx, fetched.AudioBytes, post.Language)
 		if err != nil {
-			return "", "", "", fmt.Errorf("STT (%s): %w", e.stt.Name(), err)
+			return rewritten{}, fmt.Errorf("STT (%s): %w", e.stt.Name(), err)
 		}
 		sourceText = strings.TrimSpace(transcribed)
 	}
@@ -597,10 +617,27 @@ func (e *Engine) textFor(
 		sourceText = strings.TrimSpace(deref(post.ExtractedText))
 	}
 	if sourceText == "" {
-		return "", "", "", domain.Permanent(domain.ErrNoTextExtracted)
+		return rewritten{}, domain.Permanent(domain.ErrNoTextExtracted)
 	}
 
 	return e.rewriteIfNeeded(ctx, post.PromptID, mode, sourceText, llmSetID, owner)
+}
+
+// rewritten gom mọi thứ bước viết-lại sinh ra, để hai luồng gọi nó (Bài Post
+// và Voice gõ tay) không phải bê một hàng bốn giá trị trả về đi khắp nơi.
+type rewritten struct {
+	// Source là text NGUỒN — đầu vào của prompt, không phải thứ được đọc.
+	Source string
+	// Spoken là lời đọc, thứ duy nhất đi vào TTS. Mode B bằng Source.
+	Spoken string
+	// Title, Hashtags: LLM đề xuất. Rỗng ở mode B và ở mode C khi model không
+	// trả đúng khuôn JSON.
+	Title    string
+	Hashtags []string
+	// Model là model THẬT đã chạy, lưu lên voice.llm_model_used: cùng một bộ
+	// API, hôm nay chạy model rẻ nhất, mai hết quota thì chạy mắt xích sau —
+	// không ghi lại thì không đối chiếu được chất lượng hay chi phí của voice.
+	Model string
 }
 
 // rewriteIfNeeded là bước cuối chung cho mọi nguồn text: mode B đọc nguyên
@@ -608,9 +645,6 @@ func (e *Engine) textFor(
 //
 // Tách riêng vì text giờ tới từ 2 đường (Bài Post và Voice gõ tay) nhưng luật
 // "mode C thì viết lại" chỉ được có một bản cài đặt.
-// Trả về thêm MODEL thật đã viết lại, để lưu lên voice.llm_model_used: cùng
-// một bộ API, hôm nay chạy model rẻ nhất, mai hết quota thì chạy mắt xích sau —
-// không ghi lại thì không đối chiếu được chất lượng hay chi phí của voice đó.
 func (e *Engine) rewriteIfNeeded(
 	ctx context.Context,
 	promptID *uuid.UUID,
@@ -618,28 +652,38 @@ func (e *Engine) rewriteIfNeeded(
 	sourceText string,
 	llmSetID *uuid.UUID,
 	owner uuid.UUID,
-) (string, string, string, error) {
+) (rewritten, error) {
 	if mode != domain.ModePromptToVoice {
-		return sourceText, sourceText, "", nil
+		return rewritten{Source: sourceText, Spoken: sourceText}, nil
 	}
 
 	if promptID == nil {
-		return "", "", "", domain.Permanent(domain.ErrPromptRequired)
+		return rewritten{}, domain.Permanent(domain.ErrPromptRequired)
 	}
 	prompt, err := e.q.GetPrompt(ctx, *promptID)
 	if err != nil {
-		return "", "", "", domain.Permanent(wrapNotFound(err, "prompt "+promptID.String()))
+		return rewritten{}, domain.Permanent(wrapNotFound(err, "prompt "+promptID.String()))
 	}
 
 	res, err := e.llm.Generate(ctx, llmSetID, owner, prompt.Content, sourceText)
 	if err != nil {
-		return "", "", "", fmt.Errorf("LLM: %w", err)
+		return rewritten{}, fmt.Errorf("LLM: %w", err)
 	}
-	generated := strings.TrimSpace(res.Text)
-	if generated == "" {
-		return "", "", "", fmt.Errorf("LLM trả về nội dung rỗng")
+	// Hợp đồng đầu ra là JSON {title, content, hashtags}, nhưng ParseRewrite
+	// không ép: model trả thẳng đoạn văn thì cả chuỗi là lời đọc. Prompt mẫu do
+	// người dùng viết nên chuyện lái model ra khỏi khuôn là chuyện sẽ xảy ra, và
+	// mất tiêu đề tự động vẫn tốt hơn hỏng voice.
+	parsed := domain.ParseRewrite(res.Text)
+	if parsed.Content == "" {
+		return rewritten{}, fmt.Errorf("LLM trả về nội dung rỗng")
 	}
-	return sourceText, generated, res.Model, nil
+	return rewritten{
+		Source:   sourceText,
+		Spoken:   parsed.Content,
+		Title:    parsed.Title,
+		Hashtags: parsed.Hashtags,
+		Model:    res.Model,
+	}, nil
 }
 
 // ttsFor chọn API key TTS dùng cho voice này: key của chính người tạo voice.
@@ -778,7 +822,7 @@ func (e *Engine) autoPublishFor(ctx context.Context, post repository.SourcePost)
 // từ Bài Post. Cả hai đều không fetch gì: nội dung đã nằm sẵn, đường đi chỉ còn
 // (LLM nếu mode C) -> TTS -> storage. Mọi bước dùng chung helper với luồng Bài
 // Post, kể cả luật "mode C thì viết lại" và cách chọn API key TTS.
-func (e *Engine) ProcessTextVoice(ctx context.Context, voiceID, actor uuid.UUID) error {
+func (e *Engine) ProcessTextVoice(ctx context.Context, voiceID, actor uuid.UUID, skipRewrite bool) error {
 	// Claim để idempotent khi Asynq retry hoặc 2 worker cùng nhận task; voice
 	// đã ra file rồi thì không đọc đè lên.
 	voice, err := e.q.ClaimVoiceForProcessing(ctx, voiceID)
@@ -791,7 +835,7 @@ func (e *Engine) ProcessTextVoice(ctx context.Context, voiceID, actor uuid.UUID)
 		return fmt.Errorf("claim voice %s: %w", voiceID, err)
 	}
 
-	if err := e.buildTextVoice(ctx, voice, actor); err != nil {
+	if err := e.buildTextVoice(ctx, voice, actor, skipRewrite); err != nil {
 		msg := domain.UserMessage(err)
 		e.log.ErrorContext(ctx, "voice:text thất bại", "error", err, "voice_id", voiceID)
 		if _, serr := e.q.SetVoicePublishStatus(ctx, repository.SetVoicePublishStatusParams{
@@ -816,6 +860,7 @@ func (e *Engine) buildTextVoice(
 	ctx context.Context,
 	voice repository.Voice,
 	actor uuid.UUID,
+	skipRewrite bool,
 ) error {
 	mode := domain.CollectMode(deref(voice.CollectMode))
 	if !mode.NeedsTTS() {
@@ -831,11 +876,29 @@ func (e *Engine) buildTextVoice(
 			fmt.Errorf("%w: voice %s có input_text rỗng", domain.ErrNoTextExtracted, voice.ID)))
 	}
 
-	_, spoken, llmModel, err := e.rewriteIfNeeded(
-		ctx, voice.PromptID, mode, sourceText, voice.LlmApiSetID, actor)
-	if err != nil {
-		return err
+	// skipRewrite: người dùng đã tự sửa LỜI ĐỌC ở tab Nội dung. Chạy prompt lần
+	// nữa lên đó nghĩa là viết lại một bản đã viết lại — và ghi đè đúng những
+	// chữ họ vừa sửa. Đọc thẳng chữ họ chốt, không đụng LLM.
+	var out rewritten
+	if skipRewrite {
+		spoken := domain.NormalizeTTSText(deref(voice.SpokenText))
+		if spoken == "" {
+			return domain.Permanent(domain.Explain(
+				"Voice này không có lời đọc đã chốt để đọc lại",
+				fmt.Errorf("%w: voice %s có spoken_text rỗng", domain.ErrNoTextExtracted, voice.ID)))
+		}
+		// Model giữ nguyên bản cũ (FinishVoice COALESCE): lần chạy này không
+		// gọi LLM, nhưng chữ đang đọc vẫn có gốc từ model đó.
+		out = rewritten{Source: sourceText, Spoken: spoken}
+	} else {
+		var err error
+		out, err = e.rewriteIfNeeded(
+			ctx, voice.PromptID, mode, sourceText, voice.LlmApiSetID, actor)
+		if err != nil {
+			return err
+		}
 	}
+	spoken, llmModel := out.Spoken, out.Model
 
 	provider, engine, err := e.ttsFor(ctx, actor, voice.Language)
 	if err != nil {
@@ -876,9 +939,28 @@ func (e *Engine) buildTextVoice(
 	// Voice tạo lại thì tiêu đề là thứ người dùng đã sửa tay ở tab Thông tin và
 	// sẽ hiện trên multime — đọc lại lời khác không phải lý do để xoá nó đi.
 	// nil ở đây nghĩa là giữ nguyên (query FinishVoice dùng COALESCE).
+	//
+	// Ngoại lệ: tiêu đề TẠM mà CreateFromText dựng từ chính đoạn người dùng gõ.
+	// Với mode C đoạn đó là ĐẦU VÀO của prompt, không phải thứ được đọc — giữ
+	// nó lại thì bảng Voice mô tả sai chính file audio của nó, và đó là lý do
+	// luồng "text + prompt" trông như thể LLM không hề chạy.
+	//
+	// Nhận ra tiêu đề tạm bằng cách dựng lại nó: khớp nghĩa là chưa ai sửa tay,
+	// lệch nghĩa là người dùng đã tự đặt và không được đụng vào.
 	var title *string
-	if strings.TrimSpace(deref(voice.Title)) == "" {
-		title = nilIfEmpty(domain.VoiceTitle(spoken))
+	autoTitle := domain.VoiceTitle(domain.TextPostMetadata(sourceText).Title)
+	if cur := strings.TrimSpace(deref(voice.Title)); cur == "" || cur == autoTitle {
+		// LLM đề xuất tiêu đề thì dùng của nó; không thì cắt từ chính lời đọc.
+		title = nilIfEmpty(domain.VoiceTitle(firstNonEmpty(out.Title, spoken)))
+	}
+
+	// Hashtag LLM đề xuất chỉ ĐIỀN VÀO CHỖ TRỐNG: voice gõ tay không có bài gốc
+	// nào để lấy thẻ, nên thứ đang nằm đó (nếu có) là do người dùng tự gõ ở tab
+	// Thông tin — ghi đè là xoá đúng thứ họ vừa chọn. FinishVoice dùng COALESCE
+	// nên nil = giữ nguyên.
+	var hashtag *string
+	if strings.TrimSpace(deref(voice.Hashtag)) == "" && len(out.Hashtags) > 0 {
+		hashtag = nilIfEmpty(strings.Join(out.Hashtags, " "))
 	}
 
 	if _, err := e.q.FinishVoice(ctx, repository.FinishVoiceParams{
@@ -887,11 +969,15 @@ func (e *Engine) buildTextVoice(
 		VoiceFileUrl:    &fileURL,
 		DurationSeconds: nilIfZero(int32(info.DurationSeconds)),
 		Title:           title,
+		Hashtag:         hashtag,
 		Language:        voice.Language,
 		MimeType:        nilIfEmpty(info.MimeType),
 		SizeBytes:       ptr(info.SizeBytes),
 		SampleRate:      nilIfZero(int32(info.SampleRate)),
 		LlmModelUsed:    nilIfEmpty(llmModel),
+		// Lời đọc THẬT. Mode C thì đây là bản LLM viết lại, khác hẳn
+		// `input_text` (đoạn người dùng gõ, và là đầu vào của prompt).
+		SpokenText: nilIfEmpty(spoken),
 	}); err != nil {
 		e.cleanupOrphan(ctx, key)
 		if errors.Is(err, pgx.ErrNoRows) {

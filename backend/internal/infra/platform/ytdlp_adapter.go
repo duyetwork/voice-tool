@@ -24,6 +24,9 @@ type YtDlpAdapter struct {
 	// channelSuffix nối thêm khi quét kênh (ví dụ TikTok không cần, Facebook
 	// dùng thẳng URL page).
 	channelSuffix string
+	// noChannelScan: yt-dlp KHÔNG có extractor nào liệt kê được bài của một
+	// kênh trên nền tảng này. Xem domain.PlatformAdapter.SupportsChannelScan.
+	noChannelScan string
 }
 
 type idPattern struct {
@@ -85,7 +88,21 @@ func (a *YtDlpAdapter) FetchMetadata(ctx context.Context, ref domain.PostRef) (d
 	return a.core.metadata(ctx, ref.URL)
 }
 
+func (a *YtDlpAdapter) CheckChannelScan() error {
+	if a.noChannelScan == "" {
+		return nil
+	}
+	return domain.Permanent(domain.Explain(a.noChannelScan,
+		fmt.Errorf("%w: %s không liệt kê được bài của kênh", domain.ErrUnsupportedType, a.name)))
+}
+
 func (a *YtDlpAdapter) FetchLatestPosts(ctx context.Context, channelURL string, limit int) ([]domain.RemotePost, error) {
+	// Chặn ngay ở đây chứ không chỉ ở tầng API: kênh thêm từ trước khi có kiểm
+	// tra này vẫn nằm trong DB, và để chúng chạy tiếp nghĩa là mỗi vòng quét lại
+	// một lần gọi yt-dlp chắc chắn hỏng cộng ba lần retry.
+	if err := a.CheckChannelScan(); err != nil {
+		return nil, err
+	}
 	target := strings.TrimRight(strings.TrimSpace(channelURL), "/") + a.channelSuffix
 	posts, err := a.core.latestPosts(ctx, target, limit)
 	if err != nil {
@@ -158,6 +175,11 @@ func NewFacebook(runner CommandRunner, tempDir string) *YtDlpAdapter {
 		},
 		core:          newCore(runner, tempDir, false),
 		channelSuffix: "/videos",
+		// Đo trực tiếp trên yt-dlp 2026.08.19: /videos, /reels và cả URL page
+		// trần đều trả "Unsupported URL". yt-dlp chỉ có extractor cho VIDEO
+		// Facebook lẻ, không có cái nào liệt kê bài của một page.
+		noChannelScan: "Facebook không quét được cả trang — yt-dlp chỉ lấy được từng " +
+			"bài một. Dán link từng bài ở màn Tạo voice, hoặc dùng kênh YouTube/TikTok.",
 	}
 }
 
@@ -192,6 +214,10 @@ func NewInstagram(runner CommandRunner, tempDir string) *YtDlpAdapter {
 		},
 		core:          newCore(runner, tempDir, false),
 		channelSuffix: "/reels",
+		// yt-dlp tự đánh dấu instagram:user là CURRENTLY BROKEN; thực tế
+		// /reels bị Instagram đá về trang đăng nhập.
+		noChannelScan: "Instagram không quét được cả tài khoản — Instagram bắt đăng nhập " +
+			"mới xem được danh sách bài. Dán link từng bài ở màn Tạo voice.",
 	}
 }
 
@@ -206,5 +232,10 @@ func NewX(runner CommandRunner, tempDir string) *YtDlpAdapter {
 			{domain.ContentTweet, regexp.MustCompile(`(?i)t\.co/([A-Za-z0-9]+)`)},
 		},
 		core: newCore(runner, tempDir, false),
+		// yt-dlp có twitter, twitter:card, twitter:spaces, twitter:broadcast —
+		// không có cái nào cho dòng thời gian của một tài khoản. /media cũng
+		// vậy. Đây là giới hạn của yt-dlp, không phải cấu hình sai.
+		noChannelScan: "X không quét được cả tài khoản — yt-dlp không đọc được dòng thời " +
+			"gian của X, chỉ lấy được từng tweet một. Dán link từng tweet ở màn Tạo voice.",
 	}
 }

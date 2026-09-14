@@ -175,6 +175,12 @@ export interface SourcePost {
   posted_at: string | null;
   /** Chỉ có trong danh sách (JOIN app_user). */
   created_by_email?: string;
+  /**
+   * URL của kênh đã lấy bài này về. Chỉ có trong danh sách (JOIN hai bảng
+   * kênh). Rỗng = bài F1 nhập tay, không thuộc kênh nào. Kênh không có cột
+   * tên nên URL chính là thứ nhận diện nó.
+   */
+  list_source_url?: string;
 }
 
 export interface Voice {
@@ -183,6 +189,14 @@ export interface Voice {
   source_post_id: string | null;
   /** Đoạn text người dùng gõ; chỉ có ở Voice tạo thẳng từ text. */
   input_text: string | null;
+  /**
+   * ĐÚNG đoạn chữ TTS đã đọc ra file audio này.
+   *
+   * Khác `input_text` ở hình thức C: ở đó `input_text` là ĐẦU VÀO của prompt,
+   * còn cái được đọc là bản LLM viết lại. null với hình thức A (không đọc chữ
+   * nào) và với voice tạo trước khi có cột này.
+   */
+  spoken_text: string | null;
   /** B/C của Voice gõ tay; null với Voice sinh từ Bài Post. */
   collect_mode: CollectMode | null;
   prompt_id: string | null;
@@ -292,6 +306,17 @@ export interface ListBreaking {
   created_by: string;
   created_at: string;
   created_by_email?: string;
+  /**
+   * Lỗi của vòng quét gần nhất. null = vòng quét gần nhất chạy sạch.
+   *
+   * Cần vì quét chạy trong worker: không có cột này thì "kênh hỏng" và "kênh
+   * khoẻ nhưng chưa có bài mới" trông giống hệt nhau trên bảng.
+   */
+  last_error: string | null;
+  /** Số Bài Post kênh này đã lấy về. Chỉ có trong danh sách (subquery đếm). */
+  post_count?: number;
+  /** Số Voice đã tạo từ các Bài Post của kênh này. Chỉ có trong danh sách. */
+  voice_count?: number;
   /** Bộ API key dùng cho hình thức C của kênh này. */
   llm_api_set_id: string | null;
   timezone: string;
@@ -334,6 +359,17 @@ export interface ListScheduled {
   created_by: string;
   created_at: string;
   created_by_email?: string;
+  /**
+   * Lỗi của vòng quét gần nhất. null = vòng quét gần nhất chạy sạch.
+   *
+   * Cần vì quét chạy trong worker: không có cột này thì "kênh hỏng" và "kênh
+   * khoẻ nhưng chưa có bài mới" trông giống hệt nhau trên bảng.
+   */
+  last_error: string | null;
+  /** Số Bài Post kênh này đã lấy về. Chỉ có trong danh sách (subquery đếm). */
+  post_count?: number;
+  /** Số Voice đã tạo từ các Bài Post của kênh này. Chỉ có trong danh sách. */
+  voice_count?: number;
   llm_api_set_id: string | null;
   timezone: string;
   active_from_min: number | null;

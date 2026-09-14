@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -57,6 +58,7 @@ type List struct {
 	defaultLanguage string
 	scanDefaults    ScanDefaults
 	modes           ModeGate
+	log             *slog.Logger
 }
 
 func NewList(
@@ -67,11 +69,12 @@ func NewList(
 	defaultLanguage string,
 	scanDefaults ScanDefaults,
 	modes ModeGate,
+	log *slog.Logger,
 ) *List {
 	return &List{
 		q: q, platforms: platforms, enq: enq, audit: audit,
 		defaultLanguage: defaultLanguage, scanDefaults: scanDefaults,
-		modes: modes,
+		modes: modes, log: log,
 	}
 }
 
@@ -328,6 +331,8 @@ func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in Break
 		return repository.ListBreaking{}, wrapNotFound(err, "list_breaking "+id.String())
 	}
 
+	l.cascadeBreakingLanguage(ctx, before, after)
+
 	l.audit.Record(ctx, actor, domain.AuditUpdate, domain.ObjectListBreaking, id, Diff(
 		breakingSnapshot(before), breakingSnapshot(after)))
 	return after, nil
@@ -576,9 +581,75 @@ func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in Sche
 		return repository.ListScheduled{}, wrapNotFound(err, "list_scheduled "+id.String())
 	}
 
+	l.cascadeScheduledLanguage(ctx, before, after)
+
 	l.audit.Record(ctx, actor, domain.AuditUpdate, domain.ObjectListScheduled, id, Diff(
 		scheduledSnapshot(before), scheduledSnapshot(after)))
 	return after, nil
+}
+
+// cascadeScheduledLanguage đẩy ngôn ngữ vừa chốt ở kênh xuống các Bài Post của
+// kênh và các Voice CHƯA có file của chúng.
+//
+// Vì sao cần: ngôn ngữ được chốt MỘT LẦN lúc bài được tạo (resolveLanguage đọc
+// language_default tại thời điểm đó). Sửa ở kênh mà không lan xuống thì mọi bài
+// đã nằm trong hàng đợi vẫn đọc bằng tiếng cũ — đúng thứ người dùng vừa sửa để
+// tránh, và họ không có cách nào sửa hàng loạt bằng tay.
+//
+// Ranh giới dừng ở Voice ĐÃ CÓ FILE: nhãn ngôn ngữ ở đó mô tả một file audio có
+// thật, đổi nhãn không đọc lại được file. Muốn đổi tiếng của voice đã ra file
+// thì phải tạo lại nó.
+//
+// 'auto' không lan: nó nghĩa là "chưa chốt, để hệ thống tự nhận diện" chứ không
+// phải một ngôn ngữ — ghi đè lựa chọn cụ thể của từng bài bằng nó là mất thông
+// tin.
+func (l *List) cascadeScheduledLanguage(ctx context.Context, before, after repository.ListScheduled) {
+	lang := after.LanguageDefault
+	if lang == before.LanguageDefault || domain.IsAutoLanguage(lang) {
+		return
+	}
+	posts, err := l.q.CascadeLanguageFromListScheduled(ctx,
+		repository.CascadeLanguageFromListScheduledParams{Language: lang, ListID: &after.ID})
+	if err != nil {
+		l.log.WarnContext(ctx, "không lan được ngôn ngữ xuống Bài Post của kênh",
+			"error", err, "list_scheduled_id", after.ID)
+		return
+	}
+	voices, err := l.q.CascadeVoiceLanguageFromListScheduled(ctx,
+		repository.CascadeVoiceLanguageFromListScheduledParams{Language: lang, ListID: &after.ID})
+	if err != nil {
+		l.log.WarnContext(ctx, "không lan được ngôn ngữ xuống Voice của kênh",
+			"error", err, "list_scheduled_id", after.ID)
+		return
+	}
+	l.log.InfoContext(ctx, "lan ngôn ngữ từ kênh Định kỳ xuống bài và voice",
+		"list_scheduled_id", after.ID, "language", lang, "bài", posts, "voice", voices)
+}
+
+// cascadeBreakingLanguage — đối xứng với cascadeScheduledLanguage. Hai loại kênh
+// dùng chung một form cấu hình, nên ngôn ngữ mà lan ở loại này và không lan ở
+// loại kia là một cái bẫy chứ không phải một lựa chọn.
+func (l *List) cascadeBreakingLanguage(ctx context.Context, before, after repository.ListBreaking) {
+	lang := after.LanguageDefault
+	if lang == before.LanguageDefault || domain.IsAutoLanguage(lang) {
+		return
+	}
+	posts, err := l.q.CascadeLanguageFromListBreaking(ctx,
+		repository.CascadeLanguageFromListBreakingParams{Language: lang, ListID: &after.ID})
+	if err != nil {
+		l.log.WarnContext(ctx, "không lan được ngôn ngữ xuống Bài Post của kênh",
+			"error", err, "list_breaking_id", after.ID)
+		return
+	}
+	voices, err := l.q.CascadeVoiceLanguageFromListBreaking(ctx,
+		repository.CascadeVoiceLanguageFromListBreakingParams{Language: lang, ListID: &after.ID})
+	if err != nil {
+		l.log.WarnContext(ctx, "không lan được ngôn ngữ xuống Voice của kênh",
+			"error", err, "list_breaking_id", after.ID)
+		return
+	}
+	l.log.InfoContext(ctx, "lan ngôn ngữ từ kênh Breaking xuống bài và voice",
+		"list_breaking_id", after.ID, "language", lang, "bài", posts, "voice", voices)
 }
 
 func (l *List) DeleteScheduled(ctx context.Context, actor, id uuid.UUID) error {
@@ -605,6 +676,12 @@ func (l *List) detect(rawURL string) (platform, contentType string, err error) {
 	}
 	adapter, err := l.platforms.Resolve(rawURL)
 	if err != nil {
+		return "", "", err
+	}
+	// Từ chối NGAY nền tảng không liệt kê được bài của kênh, thay vì nhận kênh
+	// rồi để nó hỏng lặng lẽ mỗi vòng quét. Câu trả lời là tĩnh (giới hạn của
+	// yt-dlp) nên không cần gọi mạng để biết.
+	if err := adapter.CheckChannelScan(); err != nil {
 		return "", "", err
 	}
 	// URL kênh (không phải 1 bài cụ thể) sẽ không parse ra content type — bỏ qua.

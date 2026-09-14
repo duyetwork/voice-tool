@@ -697,6 +697,39 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * LLMSetField — ô chọn Bộ API key cho hình thức C.
+ *
+ * Bắt buộc phải có mặt ở MỌI chỗ tạo voice bằng hình thức C, không chỉ ở màn
+ * tạo lại: bỏ trống thì router rơi về provider khai trong .env của server —
+ * ở production không có key nào ở đó, nên voice chạy tới bước LLM rồi hỏng.
+ * Người dùng khai key ở AI Engine > LLM Model nhưng không có ô nào để chọn thì
+ * đúng là "hình thức 3 không dùng được".
+ */
+function LLMSetField({
+  value,
+  onChange,
+  hint = "Túi key LLM dùng để viết lại nội dung.",
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  hint?: string;
+}) {
+  const llmSets = useLLMAPISets();
+  return (
+    <Field label="Bộ API" hint={hint}>
+      <Select value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">— Không chọn —</option>
+        {llmSets.data?.items.map((set) => (
+          <option key={set.id} value={set.id}>
+            {set.name}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
 /** useModeGate gom việc đọc /meta/collect-modes cho cả 2 tab. */
 function useModeGate() {
   const modes = useCollectModes();
@@ -798,6 +831,7 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
 
   const [collectMode, setCollectMode] = React.useState<CollectMode>("A");
   const [promptId, setPromptId] = React.useState("");
+  const [llmSetId, setLlmSetId] = React.useState("");
   const [sourceUrl, setSourceUrl] = React.useState("");
   const [title, setTitle] = React.useState("");
   const [hashtags, setHashtags] = React.useState<string[]>([]);
@@ -852,6 +886,9 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
         auto_process: true,
         allow_duplicate: allowDuplicate || undefined,
         voice: {
+          // Bộ API đi theo voice chứ không theo Bài Post: bài có thể được chạy
+          // lại nhiều lần với bộ khác nhau, và hạn mức bị trừ là của lần chạy.
+          llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
           title: title.trim() || undefined,
           hashtag: hashtags.join(" ") || undefined,
           language: language || undefined,
@@ -900,16 +937,19 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
       </Field>
 
       {needsPrompt ? (
-        <Field label="Prompt mẫu" required>
-          <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
-            <option value="">— Chọn prompt —</option>
-            {prompts.data?.items.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Prompt mẫu" required>
+            <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
+              <option value="">— Chọn prompt —</option>
+              {prompts.data?.items.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <LLMSetField value={llmSetId} onChange={setLlmSetId} />
+        </div>
       ) : null}
 
       <Field label="URL bài đăng" required>
@@ -1053,11 +1093,18 @@ function FromTextTab({ onClose }: { onClose: () => void }) {
   const prompts = usePrompts();
   const gate = useModeGate();
 
+  const catalog = useCatalog();
   const [text, setText] = React.useState("");
   const [collectMode, setCollectMode] = React.useState<"B" | "C">("B");
   const [promptId, setPromptId] = React.useState("");
+  const [llmSetId, setLlmSetId] = React.useState("");
+  // Ngôn ngữ chốt NGAY ở đây: gõ text tay thì không có bài gốc nào để nền tảng
+  // khai ngôn ngữ hộ, mà TTS lại cần biết đọc bằng tiếng gì. Không chọn thì
+  // voice rơi về mặc định hệ thống — đúng một lần, rồi phải vào sửa từng voice.
+  const [language, setLanguage] = React.useState("");
 
   const needsPrompt = collectMode === "C";
+  const languageOptions = useLanguageCombo(catalog.data?.language_order);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -1065,6 +1112,8 @@ function FromTextTab({ onClose }: { onClose: () => void }) {
       text: text.trim(),
       collect_mode: collectMode,
       prompt_id: needsPrompt && promptId ? promptId : null,
+      llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
+      language: language || undefined,
     });
     onClose();
   }
@@ -1088,19 +1137,46 @@ function FromTextTab({ onClose }: { onClose: () => void }) {
       </Field>
 
       {needsPrompt ? (
-        <Field label="Prompt mẫu" required>
-          <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
-            <option value="">— Chọn prompt —</option>
-            {prompts.data?.items.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Prompt mẫu" required>
+            <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
+              <option value="">— Chọn prompt —</option>
+              {prompts.data?.items.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <LLMSetField value={llmSetId} onChange={setLlmSetId} />
+        </div>
       ) : null}
 
-      <Field label="Nội dung TTS đọc" required>
+      <Field
+        label="Ngôn ngữ"
+        hint="Tiếng mà TTS sẽ đọc. Bỏ trống = mặc định của hệ thống."
+      >
+        <Combobox
+          value={language}
+          onChange={setLanguage}
+          options={languageOptions}
+          placeholder="— Mặc định hệ thống —"
+        />
+      </Field>
+
+      {/* Nhãn là "Nội dung", không phải "Nội dung TTS đọc": ở hình thức C thứ
+          gõ vào đây KHÔNG được đọc — nó là đầu vào của prompt, và lời đọc là
+          bản LLM viết ra. Gọi nó là "nội dung TTS đọc" là nói sai đúng nửa số
+          trường hợp. Dòng hint bên dưới nói rõ nửa nào đang xảy ra. */}
+      <Field
+        label="Nội dung"
+        required
+        hint={
+          needsPrompt
+            ? "Đây là ĐẦU VÀO cho LLM. Lời đọc thật là bản LLM viết lại theo Prompt mẫu — xem lại ở tab Nội dung của voice sau khi tạo xong."
+            : "TTS đọc đúng những gì bạn gõ ở đây."
+        }
+      >
         <Textarea
           className="min-h-40"
           placeholder="Bản tin sáng nay…"
@@ -1111,6 +1187,13 @@ function FromTextTab({ onClose }: { onClose: () => void }) {
         />
         <CharCount length={text.length} max={MAX_TTS_TEXT_LENGTH} />
       </Field>
+
+      {needsPrompt ? (
+        <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          Hình thức này còn nhờ LLM đặt luôn <b>tiêu đề</b> và <b>hashtag</b> cho voice — bạn
+          không phải gõ tay. Đã tự điền sẵn ở tab Thông tin thì hệ thống giữ của bạn.
+        </p>
+      ) : null}
 
       <ErrorNote error={createVoice.error} />
 
@@ -1490,15 +1573,24 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
   const prompts = usePrompts();
   const modes = useCollectModes();
 
-  // Thứ tự điền sẵn = thứ tự "gần với cái đã nghe" nhất:
-  //   input_text            — lời đọc người dùng tự chốt ở lần sửa trước;
-  //   source_extracted_text — đúng đoạn worker đã đưa cho TTS;
+  // Hai ô, hai vai trò khác nhau — và trước đây chúng bị gộp làm một, đó là gốc
+  // của chuyện "hình thức C hoạt động sai":
+  //
+  //   source — ĐẦU VÀO của Prompt mẫu. Chỉ hình thức C mới có.
+  //   spoken — ĐẦU VÀO của TTS, tức thứ thật sự được đọc. Hình thức C thì đây
+  //            là bản LLM viết ra; hình thức B thì nó chính là source.
+  //
+  // Thứ tự điền sẵn của source = thứ tự "gần với cái đã nghe" nhất:
+  //   input_text            — đoạn người dùng tự chốt ở lần sửa trước;
+  //   source_extracted_text — đúng đoạn worker đã lấy từ bài gốc;
   //   source_title/title    — voice cũ tạo trước khi lưu extracted_text.
-  const initialText =
+  const initialSource =
     voice.input_text ?? voice.source_extracted_text ?? voice.source_title ?? voice.title ?? "";
   const initialMode = voice.collect_mode ?? voice.source_collect_mode ?? "B";
+  const initialSpoken = voice.spoken_text ?? initialSource;
 
-  const [text, setText] = React.useState(initialText);
+  const [source, setSource] = React.useState(initialSource);
+  const [spoken, setSpoken] = React.useState(initialSpoken);
   // Mode A tách audio gốc, không đọc chữ nào -> tạo lại thì mặc định về B.
   const [collectMode, setCollectMode] = React.useState<"B" | "C">(initialMode === "C" ? "C" : "B");
   const [promptId, setPromptId] = React.useState(voice.prompt_id ?? voice.source_prompt_id ?? "");
@@ -1506,17 +1598,31 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
   // Giữ bộ API voice đang dùng; đổi ở đây là đổi cả hạn mức sẽ bị trừ.
   const [llmSetId, setLlmSetId] = React.useState(voice.llm_api_set_id ?? "");
 
-  const llmSets = useLLMAPISets();
   const needsPrompt = collectMode === "C";
   const modeMeta = modes.data?.collect_modes ?? [];
   const metaOf = (mode: string) => modeMeta.find((m) => m.mode === mode);
   const isEnabled = (mode: string) => metaOf(mode)?.enabled ?? mode === "A";
 
+  // Sửa ô nào thì ô đó quyết định chuyện gì xảy ra khi bấm Tạo lại:
+  //
+  //   sửa Nội dung đọc -> đọc ĐÚNG chữ đó, không gọi LLM. Chạy prompt lên một
+  //                       bản đã viết lại là ghi đè đúng thứ vừa sửa.
+  //   sửa Nội dung     -> chạy prompt lại từ đầu, lời đọc cũ bị thay.
+  //   không sửa gì     -> chạy lại như cũ (đổi prompt / đổi Bộ API rồi bấm).
+  //
+  // Suy ra từ thao tác thay vì bắt chọn thêm một ô radio, nhưng nói thẳng kết
+  // quả ra màn hình bên dưới để không ai phải đoán.
+  const sourceEdited = source !== initialSource;
+  const spokenEdited = spoken !== initialSpoken;
+  const keepSpoken = needsPrompt && spokenEdited && !sourceEdited;
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     await regenerate.mutateAsync({
       id: voice.id,
-      text: text.trim(),
+      // Hình thức B không có nguồn tách rời: ô lời đọc là tất cả.
+      text: (needsPrompt ? source : spoken).trim(),
+      spoken_text: keepSpoken ? spoken.trim() : null,
       collect_mode: collectMode,
       prompt_id: needsPrompt && promptId ? promptId : null,
       llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
@@ -1527,22 +1633,67 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
 
   return (
     <form onSubmit={submit} className="space-y-4">
+      {needsPrompt ? (
+        <Field
+          label={
+            voice.source_post_id
+              ? `Nội dung — lấy từ bài ${platformLabel(voice.platform)}`
+              : "Nội dung"
+          }
+          required
+          hint="Đầu vào của Prompt mẫu, KHÔNG phải thứ được đọc. Sửa ở đây rồi bấm Tạo lại là chạy prompt lần nữa."
+        >
+          <Textarea
+            className="min-h-32"
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            required
+          />
+          <CharCount length={source.length} max={MAX_TTS_TEXT_LENGTH} />
+        </Field>
+      ) : null}
+
       <Field
         label={
-          voice.source_post_id
-            ? `Nội dung đọc — lấy từ nội dung bài ${platformLabel(voice.platform)}`
-            : "Nội dung đọc"
+          needsPrompt
+            ? "Nội dung đọc — bản LLM viết lại"
+            : voice.source_post_id
+              ? `Nội dung đọc — lấy từ bài ${platformLabel(voice.platform)}`
+              : "Nội dung đọc"
         }
         required
+        hint={
+          needsPrompt
+            ? `Đúng đoạn TTS đã đọc ra file hiện tại${voice.llm_model_used ? ` (${voice.llm_model_used})` : ""}. Sửa tay ở đây thì lần tạo lại đọc nguyên văn, không gọi LLM nữa.`
+            : "TTS đọc đúng những gì có ở đây."
+        }
       >
         <Textarea
           className="min-h-48"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
+          value={spoken}
+          onChange={(e) => setSpoken(e.target.value)}
           required
         />
-        <CharCount length={text.length} max={MAX_TTS_TEXT_LENGTH} />
+        <CharCount length={spoken.length} max={MAX_TTS_TEXT_LENGTH} />
       </Field>
+
+      {/* Nói thẳng cái sắp xảy ra: hai ô trên dẫn tới hai hành vi khác nhau, và
+          không ai đoán được điều đó chỉ bằng cách nhìn form. */}
+      {needsPrompt ? (
+        <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          Bấm <b>Tạo lại voice</b> sẽ{" "}
+          {keepSpoken ? (
+            <>
+              đọc đúng phần <b>Nội dung đọc</b> bạn vừa sửa, không chạy lại LLM.
+            </>
+          ) : (
+            <>
+              chạy Prompt mẫu trên phần <b>Nội dung</b> rồi đọc bản LLM viết ra — phần Nội dung
+              đọc hiện tại sẽ bị thay.
+            </>
+          )}
+        </p>
+      ) : null}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Hình thức" required>
@@ -1586,23 +1737,15 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
               ))}
             </Select>
           </Field>
-          <Field
-            label="Bộ API"
+          <LLMSetField
+            value={llmSetId}
+            onChange={setLlmSetId}
             hint={
               voice.llm_model_used
                 ? `Lần trước chạy bằng ${voice.llm_model_used}.`
-                : "Túi key LLM dùng để viết lại nội dung."
+                : undefined
             }
-          >
-            <Select value={llmSetId} onChange={(e) => setLlmSetId(e.target.value)}>
-              <option value="">— Không chọn —</option>
-              {llmSets.data?.items.map((set) => (
-                <option key={set.id} value={set.id}>
-                  {set.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          />
         </div>
       ) : null}
 
@@ -1615,7 +1758,10 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
         <Button
           type="submit"
           disabled={
-            regenerate.isPending || !isEnabled(collectMode) || text.length > MAX_TTS_TEXT_LENGTH
+            regenerate.isPending ||
+            !isEnabled(collectMode) ||
+            source.length > MAX_TTS_TEXT_LENGTH ||
+            spoken.length > MAX_TTS_TEXT_LENGTH
           }
         >
           {regenerate.isPending ? "Đang xử lý…" : "Tạo lại voice"}

@@ -86,6 +86,18 @@ export function ChannelTuning({
 }) {
   const set = (patch: Partial<TuningDraft>) => onChange({ ...value, ...patch });
 
+  // Cửa sổ quét là TRẦN CỨNG của cả hai ô kia: vòng quét chỉ nhìn thấy bấy
+  // nhiêu bài, nên xin nhiều hơn không lấy thêm được bài nào — con số thừa ra
+  // chỉ im lặng không có tác dụng. Cảnh báo chứ không chặn: đặt trần 100 cho
+  // một kênh đang nhìn 20 bài là cách hợp lệ để nói "coi như không giới hạn".
+  const window = Number(value.scanLimit) || defaultScanLimit;
+  const over = (raw: string) => {
+    const n = Number(raw);
+    return raw !== "" && Number.isFinite(n) && n > window;
+  };
+  const overNote = (what: string) =>
+    `${what} (${window}) — phần vượt không có tác dụng vì mỗi vòng chỉ nhìn thấy ${window} bài. Tăng "Số bài nhìn mỗi vòng quét" nếu thật sự cần.`;
+
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       <Field
@@ -104,6 +116,11 @@ export function ChannelTuning({
 
       <Field
         label="Lấy bài cũ khi thêm kênh"
+        error={
+          !backfillDone && over(value.backfillLimit)
+            ? overNote("Lớn hơn cửa sổ quét")
+            : undefined
+        }
         hint={
           backfillDone
             ? "Vòng quét đầu đã chạy xong — đổi số này không còn tác dụng."
@@ -123,6 +140,7 @@ export function ChannelTuning({
 
       <Field
         label="Trần Bài Post mỗi vòng"
+        error={over(value.maxPostsPerRun) ? overNote("Lớn hơn cửa sổ quét") : undefined}
         hint="Bỏ trống = không giới hạn, lấy hết bài mới. Đặt số để chặn nổ chi phí AI khi kênh đăng ồ ạt — phần dư để vòng sau xử lý tiếp."
       >
         <Input

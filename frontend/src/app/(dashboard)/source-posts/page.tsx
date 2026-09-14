@@ -218,6 +218,7 @@ export default function SourcePostsPage() {
                 </Can>
                 <Th>Bài gốc</Th>
                 <Th>Nền tảng</Th>
+                <Th>Danh sách kênh</Th>
                 <Th>Hình thức tạo voice</Th>
                 <Th>Ngôn ngữ</Th>
                 <Th>Người tạo</Th>
@@ -232,7 +233,7 @@ export default function SourcePostsPage() {
             </thead>
             <tbody>
               {posts.isLoading ? (
-                <EmptyRow colSpan={9}>Đang tải…</EmptyRow>
+                <EmptyRow colSpan={10}>Đang tải…</EmptyRow>
               ) : posts.data?.items.length ? (
                 posts.data.items.map((post) => (
                   <tr key={post.id}>
@@ -290,6 +291,31 @@ export default function SourcePostsPage() {
                         </a>
                       ) : (
                         platformLabel(post.platform)
+                      )}
+                    </Td>
+
+                    {/* Bài này từ kênh nào ra. Kênh không có cột tên nên hiện
+                        URL của nó — cũng là thứ dùng để nhận ra kênh ở màn
+                        Danh sách kênh. Dòng trên là loại kênh (F2/F3) để phân
+                        biệt hai kênh trùng URL nhưng khác loại. */}
+                    <Td className="max-w-48 text-xs">
+                      {post.list_source_url ? (
+                        <>
+                          <div className="text-slate-500">
+                            {SOURCE_TYPE_LABELS[post.source_type] ?? post.source_type}
+                          </div>
+                          <a
+                            href={post.list_source_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block truncate text-indigo-700 hover:underline"
+                            title={post.list_source_url}
+                          >
+                            {post.list_source_url}
+                          </a>
+                        </>
+                      ) : (
+                        <span className="text-slate-400">Nhập tay</span>
                       )}
                     </Td>
 
@@ -398,7 +424,7 @@ export default function SourcePostsPage() {
                   </tr>
                 ))
               ) : (
-                <EmptyRow colSpan={9}>Không có Bài Post khớp bộ lọc.</EmptyRow>
+                <EmptyRow colSpan={10}>Không có Bài Post khớp bộ lọc.</EmptyRow>
               )}
             </tbody>
           </Table>

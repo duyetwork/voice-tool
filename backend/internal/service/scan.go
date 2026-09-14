@@ -79,7 +79,34 @@ type ScanResult struct {
 	Skipped int
 }
 
+// ScanBreaking bọc vòng quét thật để GHI LẠI kết quả lên chính kênh.
+//
+// Không gộp vào scanBreaking: hàm đó có nhiều đường thoát, và nhét việc ghi lỗi
+// vào từng đường là kiểu code mà chỉ cần thêm một `return` nữa là hỏng lặng lẽ.
 func (s *Scan) ScanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, error) {
+	res, err := s.scanBreaking(ctx, listID)
+	s.noteBreakingError(ctx, listID, err)
+	return res, err
+}
+
+// noteBreakingError ghi lỗi vòng quét lên kênh, hoặc xoá lỗi cũ khi vòng này
+// chạy sạch. Bản thân nó không bao giờ làm hỏng vòng quét: không ghi được thì
+// chỉ mất phần hiển thị.
+func (s *Scan) noteBreakingError(ctx context.Context, listID uuid.UUID, cause error) {
+	var msg *string
+	if cause != nil {
+		m := domain.UserMessage(cause)
+		msg = &m
+	}
+	if err := s.q.SetListBreakingScanError(ctx, repository.SetListBreakingScanErrorParams{
+		ID: listID, LastError: msg,
+	}); err != nil {
+		s.log.WarnContext(ctx, "không ghi được last_error của kênh Breaking",
+			"error", err, "list_id", listID)
+	}
+}
+
+func (s *Scan) scanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, error) {
 	var res ScanResult
 
 	list, err := s.q.GetListBreaking(ctx, listID)
@@ -199,7 +226,24 @@ func (s *Scan) ScanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 // scheduled:scan — lấy toàn bộ bài mới hơn last_synced_post_id
 // ---------------------------------------------------------------------------
 
+// ScanScheduled — đối xứng với ScanBreaking, xem lý do ở đó.
 func (s *Scan) ScanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult, error) {
+	res, err := s.scanScheduled(ctx, listID)
+	var msg *string
+	if err != nil {
+		m := domain.UserMessage(err)
+		msg = &m
+	}
+	if serr := s.q.SetListScheduledScanError(ctx, repository.SetListScheduledScanErrorParams{
+		ID: listID, LastError: msg,
+	}); serr != nil {
+		s.log.WarnContext(ctx, "không ghi được last_error của kênh Định kỳ",
+			"error", serr, "list_id", listID)
+	}
+	return res, err
+}
+
+func (s *Scan) scanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult, error) {
 	var res ScanResult
 
 	list, err := s.q.GetListScheduled(ctx, listID)
@@ -492,6 +536,22 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 			return false, nil
 		}
 		return false, fmt.Errorf("tạo source_post: %w", err)
+	}
+
+	// Metadata đầy đủ: vòng quét chạy `yt-dlp --flat-playlist`, và chế độ đó chỉ
+	// trả id + tiêu đề — không có ảnh bìa, tác giả, ngày đăng, hashtag. Nên bài
+	// lấy từ kênh vào bảng với metadata nghèo hơn hẳn bài tạo tay từ URL, dù là
+	// cùng một bài.
+	//
+	// Chữa bằng đúng task mà luồng tạo tay đang dùng (post:metadata) thay vì bỏ
+	// --flat-playlist: bỏ cờ đó nghĩa là yt-dlp mở từng bài ngay trong vòng quét
+	// — một kênh scan_limit=20 thành 20 request nặng mỗi vòng, kể cả với những
+	// bài sẽ bị loại vì trùng hoặc không khớp regex. Ở đây chỉ những bài THẬT SỰ
+	// vào hệ thống mới tốn một request, và nó chạy trong worker qua PlatformGate.
+	if err := s.enq.EnqueuePostMetadata(ctx, post.ID.String()); err != nil {
+		// Không chặn: bài vẫn chạy Voice được, chỉ là bảng thiếu phần điền sẵn.
+		s.log.WarnContext(ctx, "không enqueue được post:metadata cho bài từ kênh",
+			"error", err, "source_post_id", post.ID)
 	}
 
 	if in.AutoProcess {

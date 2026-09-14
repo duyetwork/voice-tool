@@ -288,6 +288,23 @@ func (s *SourcePost) Update(ctx context.Context, actor, id uuid.UUID, in UpdateI
 		return repository.SourcePost{}, wrapNotFound(err, "source_post "+id.String())
 	}
 
+	// Ngôn ngữ của bài lan xuống các Voice CHƯA có file của chính bài đó: ngôn
+	// ngữ được chốt lúc voice được tạo, nên sửa ở bài mà không lan thì voice
+	// đang chờ trong hàng đợi vẫn đọc bằng tiếng cũ. Voice đã ra file thì dừng —
+	// nhãn ở đó mô tả một file audio có thật (xem List.cascadeScheduledLanguage).
+	if after.Language != before.Language && !domain.IsAutoLanguage(after.Language) {
+		n, err := s.q.CascadeVoiceLanguageFromPost(ctx, repository.CascadeVoiceLanguageFromPostParams{
+			Language: after.Language, PostID: &after.ID,
+		})
+		if err != nil {
+			s.log.WarnContext(ctx, "không lan được ngôn ngữ xuống Voice của bài",
+				"error", err, "source_post_id", after.ID)
+		} else if n > 0 {
+			s.log.InfoContext(ctx, "lan ngôn ngữ từ Bài Post xuống voice chưa có file",
+				"source_post_id", after.ID, "language", after.Language, "voice", n)
+		}
+	}
+
 	s.audit.Record(ctx, actor, domain.AuditUpdate, domain.ObjectSourcePost, id, Diff(
 		map[string]any{"collect_mode": before.CollectMode, "prompt_id": before.PromptID, "language": before.Language},
 		map[string]any{"collect_mode": after.CollectMode, "prompt_id": after.PromptID, "language": after.Language},

@@ -234,7 +234,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			queries, platforms, enqueuer, audit, log, cfg.DefaultLanguage, modes),
 		Voice: service.NewVoice(queries, store, enqueuer, audit, cfg.DefaultLanguage, modes),
 		List: service.NewList(
-			queries, platforms, enqueuer, audit, cfg.DefaultLanguage, scanDefaults, modes),
+			queries, platforms, enqueuer, audit, cfg.DefaultLanguage, scanDefaults, modes, log),
 		Catalog:   service.NewCatalog(queries),
 		AIEngine:  service.NewAIEngineService(queries, box),
 		Settings:  settings,

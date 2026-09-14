@@ -21,6 +21,24 @@ type Querier interface {
 	// Câu hỏi của WORKER, không phải của UI: bộ này có thật sự dùng được cho người
 	// tạo voice không. Trả về bộ nếu được, không có dòng nào nếu không.
 	CanUseLLMAPISet(ctx context.Context, arg CanUseLLMAPISetParams) (LlmApiSet, error)
+	// Đối xứng với CascadeLanguageFromListScheduled — xem lý do ở đó.
+	CascadeLanguageFromListBreaking(ctx context.Context, arg CascadeLanguageFromListBreakingParams) (int64, error)
+	// Đổi ngôn ngữ của kênh thì các Bài Post của kênh đó đi theo.
+	//
+	// Vì sao phải lan xuống: ngôn ngữ được chốt MỘT LẦN lúc bài được tạo, nên sửa
+	// ở kênh mà không lan thì mọi bài đã lấy về vẫn đọc bằng tiếng cũ — đúng thứ
+	// người dùng vừa sửa để tránh.
+	CascadeLanguageFromListScheduled(ctx context.Context, arg CascadeLanguageFromListScheduledParams) (int64, error)
+	CascadeVoiceLanguageFromListBreaking(ctx context.Context, arg CascadeVoiceLanguageFromListBreakingParams) (int64, error)
+	// Chỉ những Voice CHƯA có file: ngôn ngữ của voice đã ghi xong là mô tả của
+	// một file audio có thật, đổi nhãn không đổi được tiếng trong file. Voice đang
+	// chờ/đang lỗi thì chạy lại sẽ đọc bằng tiếng mới, nên sửa là đúng.
+	CascadeVoiceLanguageFromListScheduled(ctx context.Context, arg CascadeVoiceLanguageFromListScheduledParams) (int64, error)
+	// Đổi ngôn ngữ của Bài Post thì các Voice CHƯA có file của bài đó đi theo.
+	//
+	// Cùng ranh giới với cascade từ kênh: voice đã ghi xong file là mô tả của một
+	// file audio có thật, đổi nhãn không đổi được tiếng đã đọc trong file.
+	CascadeVoiceLanguageFromPost(ctx context.Context, arg CascadeVoiceLanguageFromPostParams) (int64, error)
 	// Chỉ 1 worker được xử lý 1 bài tại 1 thời điểm (idempotent khi Asynq retry).
 	ClaimSourcePostForProcessing(ctx context.Context, id uuid.UUID) (SourcePost, error)
 	// Nhận Voice về để đọc. Chỉ nhận khi voice đang `processing` hoặc đã `failed`:
@@ -148,12 +166,31 @@ type Querier interface {
 	// chính id của họ vào, và chỉ thấy bộ mình tạo / được chia sẻ / admin đã bật
 	// hiển thị — chặn ở SQL chứ không chỉ ẩn trên UI.
 	ListLLMAPISets(ctx context.Context, viewer *uuid.UUID) ([]ListLLMAPISetsRow, error)
+	// Hai số đếm, cùng lý do và cùng cách dựng với ListListScheduleds.
 	// Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 	ListListBreakings(ctx context.Context, arg ListListBreakingsParams) ([]ListListBreakingsRow, error)
+	// Kèm hai số đếm để bảng trả lời được "kênh này có ra gì không" mà không phải
+	// mở màn Bài Post lọc theo kênh.
+	//
+	// Subquery vô hướng chứ không JOIN + GROUP BY: một kênh không có bài nào vẫn
+	// phải hiện 0 chứ không biến mất, và GROUP BY trên `ls.*` thì phải liệt kê lại
+	// toàn bộ cột mỗi lần thêm cột mới vào bảng. Cả hai đều đi qua chỉ mục riêng
+	// trên list_scheduled_id (migration 000021).
 	// Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 	ListListScheduleds(ctx context.Context, arg ListListScheduledsParams) ([]ListListScheduledsRow, error)
 	ListPrompts(ctx context.Context, arg ListPromptsParams) ([]Prompt, error)
 	ListSkippedLogs(ctx context.Context, arg ListSkippedLogsParams) ([]SkippedLog, error)
+	// Bài Post đi kèm URL của kênh đã đẻ ra nó. Kênh không có cột tên, nên thứ
+	// nhận diện được một kênh trên giao diện vẫn là source_url của nó.
+	//
+	// LEFT JOIN cả hai bảng kênh chứ không JOIN theo source_type: một bài chỉ
+	// gắn được vào ĐÚNG MỘT loại kênh (ck_source_post_origin ở migration 000001
+	// ép như vậy), nên COALESCE hai nhánh luôn ra nhiều nhất một giá trị, và bài
+	// F1 nhập tay thì cả hai nhánh đều NULL.
+	//
+	// Nhánh '' cuối cùng là để cột này KHÔNG BAO GIỜ NULL: sqlc suy ra COALESCE là
+	// NOT NULL nên sinh ra `string`, quét NULL vào đó là lỗi runtime ngay ở bài F1
+	// đầu tiên. Rỗng = không đến từ kênh nào.
 	// Sắp xếp động: chỉ có 1 cột thời gian nên chỉ cần chiều. Nhánh CASE toàn
 	// NULL khi dir='desc' -> rơi về mặc định mới nhất trước.
 	ListSourcePosts(ctx context.Context, arg ListSourcePostsParams) ([]ListSourcePostsRow, error)
@@ -199,6 +236,12 @@ type Querier interface {
 	// nằm trong bucket nên giữ nguyên link.
 	MarkVoicePublished(ctx context.Context, arg MarkVoicePublishedParams) (Voice, error)
 	SetLastSyncedPostID(ctx context.Context, arg SetLastSyncedPostIDParams) error
+	// Ghi lỗi của vòng quét gần nhất lên kênh, hoặc xoá nó khi vòng quét chạy sạch.
+	// Người dùng chỉ nhìn thấy bảng kênh, không nhìn thấy log worker.
+	SetListBreakingScanError(ctx context.Context, arg SetListBreakingScanErrorParams) error
+	// Ghi lỗi của vòng quét gần nhất lên kênh, hoặc xoá nó khi vòng quét chạy sạch.
+	// Người dùng chỉ nhìn thấy bảng kênh, không nhìn thấy log worker.
+	SetListScheduledScanError(ctx context.Context, arg SetListScheduledScanErrorParams) error
 	SetSourcePostStatus(ctx context.Context, arg SetSourcePostStatusParams) (SourcePost, error)
 	SetUserActive(ctx context.Context, arg SetUserActiveParams) (AppUser, error)
 	// Cập nhật access token sau khi refresh với strongbody.

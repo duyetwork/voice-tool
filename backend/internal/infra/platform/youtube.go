@@ -80,6 +80,8 @@ func (y *YouTube) videoURL(ref domain.PostRef) string {
 	return ref.URL
 }
 
+func (y *YouTube) CheckChannelScan() error { return nil }
+
 func (y *YouTube) FetchLatestPosts(ctx context.Context, channelURL string, limit int) ([]domain.RemotePost, error) {
 	posts, err := y.core.latestPosts(ctx, normalizeChannelURL(channelURL), limit)
 	if err != nil {

@@ -33,8 +33,10 @@ func (e *Enqueuer) EnqueueVoiceProcess(ctx context.Context, sourcePostID, actorI
 	return e.enqueue(ctx, t)
 }
 
-func (e *Enqueuer) EnqueueVoiceText(ctx context.Context, voiceID, actorID string) error {
-	t, err := task.NewVoiceText(task.VoiceTextPayload{VoiceID: voiceID, ActorID: actorID})
+func (e *Enqueuer) EnqueueVoiceText(ctx context.Context, voiceID, actorID string, skipRewrite bool) error {
+	t, err := task.NewVoiceText(task.VoiceTextPayload{
+		VoiceID: voiceID, ActorID: actorID, SkipRewrite: skipRewrite,
+	})
 	if err != nil {
 		return err
 	}

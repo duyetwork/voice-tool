@@ -97,7 +97,7 @@ export default function HuongDanPage() {
                   {
                     mode: "C",
                     name: "Text + Prompt → TTS",
-                    what: "Lấy nội dung, cho LLM viết lại theo Prompt mẫu, rồi AI đọc bản viết lại",
+                    what: "Lấy nội dung, cho LLM viết lại theo Prompt mẫu (kèm tiêu đề + hashtag), rồi AI đọc bản viết lại",
                     when: "Cần tóm tắt, đổi giọng văn, chuẩn hoá bản tin",
                   },
                 ].map((row) => {
@@ -132,6 +132,34 @@ export default function HuongDanPage() {
                   Hình thức <b>{m.mode}</b> đang tắt: {m.reason}
                 </Note>
               ))}
+
+            <Tip title="Hình thức C: bản LLM viết ra mới là thứ được đọc">
+              Ở mọi chỗ chọn hình thức C đều có ô <b>Bộ API</b> ngay cạnh ô Prompt — đó là túi key
+              LLM sẽ viết lại nội dung, nên hãy chọn một bộ: để trống thì hệ thống rơi về key khai
+              trong cấu hình server, mà trên production chỗ đó không có key nào. Đường đi là{" "}
+              <i>nội dung nguồn + prompt → LLM → bản mới → TTS đọc bản mới</i>. Ở modal tạo voice,
+              ô <b>Nội dung</b> là thứ đưa cho LLM, <u>không phải</u> thứ được đọc.
+            </Tip>
+
+            <Tip title="LLM đặt luôn tiêu đề và hashtag">
+              Một lần gọi LLM trả về ba thứ: <b>tiêu đề</b>, <b>nội dung đọc</b> và{" "}
+              <b>hashtag</b> — model vừa đọc xong cả bài nên nó biết bài nói gì rõ hơn bất kỳ ai
+              nhìn một dòng trong bảng, và gọi lần thứ hai chỉ để hỏi tiêu đề là trả tiền hai lần
+              cho cùng một ngữ cảnh. Thứ bạn đã tự điền thì hệ thống <b>giữ nguyên</b>: tiêu đề
+              hay hashtag gõ tay ở tab Thông tin luôn thắng đề xuất của LLM. Prompt mẫu của bạn
+              lái model ra khỏi khuôn JSON thì cũng không sao — lúc đó cả câu trả lời được coi là
+              lời đọc, chỉ mất phần tiêu đề tự động.
+            </Tip>
+
+            <Tip title="Tab Nội dung của voice: hai ô, hai vai trò">
+              Với hình thức C, tab <b>Nội dung</b> có hai ô và chúng khác nhau:{" "}
+              <b>Nội dung</b> là đầu vào của prompt, <b>Nội dung đọc</b> là đúng đoạn TTS đã đọc
+              ra file (bản LLM viết lại). Sửa ô nào thì <b>Tạo lại voice</b> làm việc đó: sửa{" "}
+              <b>Nội dung đọc</b> thì đọc nguyên văn chữ bạn chốt và không gọi LLM nữa; sửa{" "}
+              <b>Nội dung</b> thì chạy prompt lại từ đầu và lời đọc cũ bị thay. Form nói sẵn điều
+              sắp xảy ra ở dòng ngay trên nút bấm. Hình thức B chỉ có một ô — nó vừa là nguồn vừa
+              là lời đọc.
+            </Tip>
           </Section>
 
           <Section title="Các bước thao tác">
@@ -342,6 +370,14 @@ export default function HuongDanPage() {
               không còn gì để lấy nữa.
             </Tip>
 
+            <Tip title="Số bài nhìn mỗi vòng quét là trần cứng của hai ô kia">
+              Vòng quét chỉ <i>nhìn thấy</i> bấy nhiêu bài mới nhất, nên đặt <b>Lấy bài cũ</b> hay{" "}
+              <b>Trần Bài Post</b> lớn hơn con số đó không lấy thêm được bài nào — phần vượt chỉ
+              im lặng không có tác dụng. Form hiện cảnh báo đỏ ngay dưới ô khi điều đó xảy ra,
+              nhưng vẫn cho lưu: đặt trần 100 cho một kênh đang nhìn 20 bài là cách hợp lệ để nói
+              &quot;coi như không giới hạn&quot;.
+            </Tip>
+
             <Tip title="Trần Bài Post: bỏ trống là không giới hạn">
               Bỏ trống thì mọi bài mới trong cửa sổ quét đều được lấy. Đặt trần khi kênh đăng ồ ạt
               và bạn muốn giữ nhịp chi phí AI — phần vượt trần <b>không mất</b>, nó nằm lại cho vòng
@@ -349,10 +385,47 @@ export default function HuongDanPage() {
               Post thật sự tạo ra (bài không khớp regex không tính).
             </Tip>
 
+            <Tip title="Chỉ YouTube và TikTok quét được CẢ KÊNH">
+              Đây là giới hạn của yt-dlp chứ không phải cấu hình sai:{" "}
+              <b>X</b> không có cách nào đọc dòng thời gian của một tài khoản, <b>Facebook</b> chỉ
+              lấy được từng video lẻ chứ không liệt kê được bài của một trang, còn{" "}
+              <b>Instagram</b> bắt đăng nhập mới xem được danh sách. Thêm kênh trên ba nền tảng
+              này giờ bị từ chối ngay ở form kèm lý do, thay vì nhận vào rồi hỏng lặng lẽ mỗi vòng
+              quét. Lấy bài <b>lẻ từ URL</b> thì cả năm nền tảng đều chạy bình thường — dán link
+              từng bài ở màn <NavLink href="/on-demand">Tạo voice</NavLink>.
+            </Tip>
+
+            <Tip title="Vòng quét hỏng thì hiện ngay trên bảng">
+              Cột <b>Thời gian</b> có thêm dòng đỏ là lỗi của vòng quét gần nhất. Không có dòng đó
+              nghĩa là vòng gần nhất chạy sạch — kênh không ra bài chỉ vì chưa có bài mới (hoặc
+              với kênh Breaking là chưa bài nào khớp regex). Lỗi tự biến mất khi một vòng quét
+              chạy lại thành công.
+            </Tip>
+
+            <Tip title="Đổi ngôn ngữ của kênh thì các bài đã lấy về đi theo">
+              Ngôn ngữ được chốt một lần lúc Bài Post được tạo, nên trước đây sửa ở kênh chỉ có tác
+              dụng với bài lấy về <i>sau đó</i>. Giờ đổi ngôn ngữ của kênh là mọi <b>Bài Post</b>{" "}
+              của kênh đổi theo, kèm những <b>Voice chưa tạo xong file</b> của chúng. Voice{" "}
+              <b>đã có file audio</b> thì dừng lại ở đó — nhãn ngôn ngữ ở đấy mô tả một file có
+              thật, đổi nhãn không đọc lại được file; muốn đổi tiếng thì mở voice và bấm{" "}
+              <b>Tạo lại</b>. Chọn <b>Tự nhận diện</b> thì không lan gì cả: nó nghĩa là
+              &quot;chưa chốt&quot;, ghi đè lựa chọn cụ thể của từng bài bằng nó là mất thông tin.
+              Ngôn ngữ đặt ở từng Bài Post cũng lan xuống voice chưa có file của chính bài đó.
+            </Tip>
+
+            <Tip title="Cột Kết quả: kênh này đã ra được gì">
+              Bảng kênh có sẵn số <b>Bài Post</b> và số <b>Voice</b> của từng kênh, cạnh hai mốc{" "}
+              <b>tạo</b> và <b>quét gần nhất</b>. Kênh đã quét mà số bài vẫn 0 nghĩa là nó chạy
+              nhưng không bắt được gì — với kênh Breaking thường là regex không khớp, với kênh Định
+              kỳ là chưa có bài mới hơn mốc đồng bộ.
+            </Tip>
+
             <Tip title="Sửa kênh: nút Sửa trên từng dòng">
               Mọi thứ khai lúc thêm kênh đều sửa lại được — URL, regex, hình thức, prompt, Bộ API,
-              ngôn ngữ, lịch quét, cả ba tham số ở trên. Riêng <b>ngôn ngữ</b> và{" "}
-              <b>tạm dừng/kích hoạt</b> đổi nhanh ngay trên bảng không cần mở hộp thoại.
+              ngôn ngữ, lịch quét, cả ba tham số ở trên. Riêng <b>ngôn ngữ</b> đổi thẳng trong ô
+              chọn trên bảng, còn <b>bật/tắt kênh</b> là công tắc ở cột Trạng thái — gạt là có hiệu
+              lực ngay, không cần mở hộp thoại. Kênh tắt thì scheduler bỏ qua, không quét vòng nào
+              nữa cho tới khi bật lại.
             </Tip>
 
             <Note>

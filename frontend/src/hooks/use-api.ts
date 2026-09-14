@@ -279,12 +279,18 @@ export function useCreateTextVoice() {
  * "sửa lại cho đúng", còn tiêu đề/hashtag/ảnh bìa đã điền vẫn giữ nguyên.
  */
 export interface RegenerateVoiceInput {
+  /** Hình thức C: đầu vào của prompt. Hình thức B: chính là lời đọc. */
   text: string;
   collect_mode: Exclude<CollectMode, "A">;
   prompt_id?: string | null;
   language?: string;
   /** Bỏ trống = giữ bộ API voice đang dùng. */
   llm_api_set_id?: string | null;
+  /**
+   * Lời đọc người dùng tự chốt. Có giá trị thì lần này TTS đọc nguyên văn nó và
+   * KHÔNG gọi LLM — dùng khi họ sửa tay bản LLM đã viết ra.
+   */
+  spoken_text?: string | null;
 }
 
 export function useRegenerateVoice() {
@@ -775,12 +781,50 @@ export function useAuditLog(filters: AuditLogFilters = {}) {
 // ---------------------------------------------------------------------------
 
 /** Nền tảng nào đang nhận diện được — dùng cho ô chọn "Nền tảng". */
+/**
+ * ChannelScan — nền tảng này có quét được CẢ KÊNH không.
+ *
+ * Khác hẳn "nhận diện được URL": yt-dlp lấy từng bài X / Facebook / Instagram
+ * bình thường nhưng không có extractor nào đọc được dòng thời gian của chúng.
+ */
+export interface ChannelScan {
+  platform: Platform;
+  enabled: boolean;
+  /** Chỉ có khi enabled=false: vì sao không, và nên làm gì thay thế. */
+  reason?: string;
+}
+
 export function usePlatforms() {
   return useQuery({
     queryKey: keys.platforms,
-    queryFn: () => api.get<{ platforms: Platform[] }>("/meta/platforms"),
+    queryFn: () =>
+      api.get<{ platforms: Platform[]; channel_scan: ChannelScan[] }>("/meta/platforms"),
     staleTime: 60 * 60_000,
   });
+}
+
+/**
+ * useChannelScanSupport dựng sẵn hàm tra "URL này có quét được kênh không".
+ *
+ * Khớp theo HOST của URL người dùng đang gõ, vì form thêm kênh không có ô chọn
+ * nền tảng — nền tảng được suy ra từ chính URL, giống hệt cách backend làm.
+ */
+export function useChannelScanSupport() {
+  const meta = usePlatforms();
+  const items = meta.data?.channel_scan ?? [];
+  return (rawURL: string): ChannelScan | null => {
+    const url = rawURL.trim().toLowerCase();
+    if (!url) return null;
+    const blocked = items.find((p) => !p.enabled && hostMatches(url, p.platform));
+    return blocked ?? null;
+  };
+}
+
+/** hostMatches: tên nền tảng có xuất hiện trong phần host của URL không. */
+function hostMatches(url: string, platform: string): boolean {
+  const host = url.replace(/^https?:\/\//, "").split("/")[0] ?? "";
+  if (platform === "x") return /(^|\.)(x\.com|twitter\.com)$/.test(host);
+  return host.includes(platform);
 }
 
 /**

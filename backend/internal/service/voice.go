@@ -400,7 +400,7 @@ func (v *Voice) CreateFromText(
 
 	// Enqueue lỗi thì xoá record: thà không có dòng nào còn hơn để lại một
 	// voice treo ở "đang xử lý" mà không worker nào nhận.
-	if err := v.enq.EnqueueVoiceText(ctx, voice.ID.String(), actor.String()); err != nil {
+	if err := v.enq.EnqueueVoiceText(ctx, voice.ID.String(), actor.String(), false); err != nil {
 		if _, derr := v.q.DeleteVoice(ctx, voice.ID); derr != nil {
 			return repository.Voice{}, fmt.Errorf("enqueue voice:text: %w (dọn record lỗi: %v)", err, derr)
 		}
@@ -425,6 +425,13 @@ type RegenerateInput struct {
 	Language    string             // rỗng = giữ ngôn ngữ đang có
 	// LLMAPISetID rỗng = giữ bộ API voice đang dùng.
 	LLMAPISetID *uuid.UUID
+	// SpokenText là LỜI ĐỌC người dùng tự chốt ở tab Nội dung — khác `Text`,
+	// vốn là đầu vào của prompt ở hình thức C.
+	//
+	// Có giá trị thì lần chạy này KHÔNG gọi LLM: họ vừa sửa tay đúng những chữ
+	// muốn nghe, chạy prompt lên đó là ghi đè chính thứ họ vừa sửa. Ở hình thức
+	// B trường này vô nghĩa (Text đã là lời đọc) nên bị bỏ qua.
+	SpokenText *string
 }
 
 // Regenerate đọc lại Voice bằng nội dung mới, GHI ĐÈ lên chính bản ghi cũ.
@@ -480,6 +487,22 @@ func (v *Voice) Regenerate(
 		}
 	}
 
+	// Lời đọc chốt tay chỉ có nghĩa ở hình thức C — hình thức B thì `text` đã
+	// chính là lời đọc rồi, nhận thêm một đường nữa là hai nguồn sự thật.
+	var spoken *string
+	if in.CollectMode.NeedsPrompt() && in.SpokenText != nil {
+		sp := domain.NormalizeTTSText(*in.SpokenText)
+		if sp == "" {
+			return repository.Voice{}, fmt.Errorf(
+				"%w: lời đọc chốt tay không được rỗng", domain.ErrInvalidInput)
+		}
+		if n := len([]rune(sp)); n > domain.MaxTTSTextRunes {
+			return repository.Voice{}, fmt.Errorf("%w: lời đọc dài %d ký tự, tối đa %d",
+				domain.ErrInvalidInput, n, domain.MaxTTSTextRunes)
+		}
+		spoken = &sp
+	}
+
 	after, err := v.q.SetVoiceContent(ctx, repository.SetVoiceContentParams{
 		ID:          id,
 		InputText:   &text,
@@ -487,12 +510,13 @@ func (v *Voice) Regenerate(
 		PromptID:    in.PromptID,
 		Language:    nilIfEmpty(strings.ToLower(strings.TrimSpace(in.Language))),
 		LlmApiSetID: in.LLMAPISetID,
+		SpokenText:  spoken,
 	})
 	if err != nil {
 		return repository.Voice{}, wrapNotFound(err, "voice "+id.String())
 	}
 
-	if err := v.enq.EnqueueVoiceText(ctx, id.String(), actor.String()); err != nil {
+	if err := v.enq.EnqueueVoiceText(ctx, id.String(), actor.String(), spoken != nil); err != nil {
 		// Trả record về trạng thái cũ, không để treo ở "đang xử lý" mà không
 		// worker nào nhận.
 		msg := "không đưa được vào hàng đợi đọc lại"

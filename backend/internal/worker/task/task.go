@@ -59,10 +59,21 @@ type VoiceProcessPayload struct {
 }
 
 // VoiceTextPayload: mọi thứ cần để đọc đã nằm trên chính record voice
-// (input_text, collect_mode, prompt_id), nên payload chỉ cần trỏ tới nó.
+// (input_text, spoken_text, collect_mode, prompt_id), nên payload chỉ cần trỏ
+// tới nó — trừ một quyết định không suy ra được từ dữ liệu.
 type VoiceTextPayload struct {
 	VoiceID string `json:"voice_id"`
 	ActorID string `json:"actor_id"`
+	// SkipRewrite: đọc thẳng `spoken_text`, KHÔNG chạy lại LLM.
+	//
+	// Nằm ở payload chứ không phải ở bảng voice vì nó là quyết định của MỘT LẦN
+	// CHẠY, không phải thuộc tính của voice: người dùng sửa tay lời đọc rồi bấm
+	// Tạo lại thì lần này đọc đúng chữ họ chốt; lần sau sửa phần nội dung nguồn
+	// thì lại chạy prompt như thường. Lưu vào bảng nghĩa là một lần sửa tay
+	// khoá voice đó khỏi LLM vĩnh viễn.
+	//
+	// Asynq giữ nguyên payload qua mọi lần retry, nên quyết định không bị mất.
+	SkipRewrite bool `json:"skip_rewrite,omitempty"`
 }
 
 type PostMetadataPayload struct {

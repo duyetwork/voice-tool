@@ -16,7 +16,7 @@ const claimVoiceForProcessing = `-- name: ClaimVoiceForProcessing :one
 UPDATE voice
 SET publish_status = 'processing', last_error = NULL
 WHERE id = $1 AND publish_status IN ('processing', 'failed')
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 // Nhận Voice về để đọc. Chỉ nhận khi voice đang `processing` hoặc đã `failed`:
@@ -57,6 +57,7 @@ func (q *Queries) ClaimVoiceForProcessing(ctx context.Context, id uuid.UUID) (Vo
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }
@@ -134,7 +135,7 @@ INSERT INTO voice (
   $4, 'processing', $5, $6,
   $7
 )
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 type CreateTextVoiceParams struct {
@@ -192,6 +193,7 @@ func (q *Queries) CreateTextVoice(ctx context.Context, arg CreateTextVoiceParams
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }
@@ -202,14 +204,16 @@ INSERT INTO voice (
   hashtag, language, image_url, publish_status, title, mime_type, size_bytes,
   sample_rate, created_by,
   author_id, author_email, author_gender,
-  image_uploaded, no_image, publish_when_ready, llm_api_set_id, author_country_id
+  image_uploaded, no_image, publish_when_ready, llm_api_set_id, author_country_id,
+  spoken_text
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   $14, $15, $16,
   $17, $18, $19,
-  $20, $21
+  $20, $21,
+  $22
 )
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 type CreateVoiceParams struct {
@@ -234,6 +238,7 @@ type CreateVoiceParams struct {
 	PublishWhenReady bool       `json:"publish_when_ready"`
 	LlmApiSetID      *uuid.UUID `json:"llm_api_set_id"`
 	AuthorCountryID  *int64     `json:"author_country_id"`
+	SpokenText       *string    `json:"spoken_text"`
 }
 
 // Metadata người dùng điền sẵn ở màn tạo Voice đi vào ngay từ đây (title,
@@ -262,6 +267,7 @@ func (q *Queries) CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice
 		arg.PublishWhenReady,
 		arg.LlmApiSetID,
 		arg.AuthorCountryID,
+		arg.SpokenText,
 	)
 	var i Voice
 	err := row.Scan(
@@ -295,6 +301,7 @@ func (q *Queries) CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }
@@ -326,10 +333,13 @@ SET ai_engine_id     = $1,
     -- Model THẬT đã viết lại nội dung. COALESCE vì mode B không qua LLM: ghi
     -- thẳng NULL sẽ xoá mất model của lần chạy trước trên chính voice đó.
     llm_model_used   = COALESCE($11, llm_model_used),
+    -- Đoạn chữ TTS vừa đọc. KHÔNG dùng COALESCE: đây là kết quả của đúng lần
+    -- chạy này, giữ lại giá trị cũ nghĩa là mô tả sai file audio vừa ghi đè.
+    spoken_text      = $12,
     publish_status   = 'draft',
     last_error       = NULL
-WHERE id = $12
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id
+WHERE id = $13
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 type FinishVoiceParams struct {
@@ -344,6 +354,7 @@ type FinishVoiceParams struct {
 	SizeBytes       *int64     `json:"size_bytes"`
 	SampleRate      *int32     `json:"sample_rate"`
 	LlmModelUsed    *string    `json:"llm_model_used"`
+	SpokenText      *string    `json:"spoken_text"`
 	ID              uuid.UUID  `json:"id"`
 }
 
@@ -363,6 +374,7 @@ func (q *Queries) FinishVoice(ctx context.Context, arg FinishVoiceParams) (Voice
 		arg.SizeBytes,
 		arg.SampleRate,
 		arg.LlmModelUsed,
+		arg.SpokenText,
 		arg.ID,
 	)
 	var i Voice
@@ -397,12 +409,13 @@ func (q *Queries) FinishVoice(ctx context.Context, arg FinishVoiceParams) (Voice
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }
 
 const getVoice = `-- name: GetVoice :one
-SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id FROM voice WHERE id = $1
+SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text FROM voice WHERE id = $1
 `
 
 func (q *Queries) GetVoice(ctx context.Context, id uuid.UUID) (Voice, error) {
@@ -439,12 +452,13 @@ func (q *Queries) GetVoice(ctx context.Context, id uuid.UUID) (Voice, error) {
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }
 
 const listVoices = `-- name: ListVoices :many
-SELECT v.id, v.source_post_id, v.ai_engine_id, v.voice_file_url, v.duration_seconds, v.hashtag, v.language, v.image_url, v.publish_status, v.multime_post_url, v.last_error, v.created_by, v.created_at, v.published_at, v.title, v.mime_type, v.size_bytes, v.sample_rate, v.input_text, v.collect_mode, v.prompt_id, v.author_id, v.author_email, v.image_uploaded, v.author_gender, v.publish_when_ready, v.no_image, v.llm_api_set_id, v.llm_model_used, v.author_country_id,
+SELECT v.id, v.source_post_id, v.ai_engine_id, v.voice_file_url, v.duration_seconds, v.hashtag, v.language, v.image_url, v.publish_status, v.multime_post_url, v.last_error, v.created_by, v.created_at, v.published_at, v.title, v.mime_type, v.size_bytes, v.sample_rate, v.input_text, v.collect_mode, v.prompt_id, v.author_id, v.author_email, v.image_uploaded, v.author_gender, v.publish_when_ready, v.no_image, v.llm_api_set_id, v.llm_model_used, v.author_country_id, v.spoken_text,
        sp.platform     AS platform,
        sp.source_url   AS source_url,
        sp.title        AS source_title,
@@ -533,6 +547,7 @@ type ListVoicesRow struct {
 	LlmApiSetID         *uuid.UUID `json:"llm_api_set_id"`
 	LlmModelUsed        *string    `json:"llm_model_used"`
 	AuthorCountryID     *int64     `json:"author_country_id"`
+	SpokenText          *string    `json:"spoken_text"`
 	Platform            *string    `json:"platform"`
 	SourceUrl           *string    `json:"source_url"`
 	SourceTitle         *string    `json:"source_title"`
@@ -610,6 +625,7 @@ func (q *Queries) ListVoices(ctx context.Context, arg ListVoicesParams) ([]ListV
 			&i.LlmApiSetID,
 			&i.LlmModelUsed,
 			&i.AuthorCountryID,
+			&i.SpokenText,
 			&i.Platform,
 			&i.SourceUrl,
 			&i.SourceTitle,
@@ -629,7 +645,7 @@ func (q *Queries) ListVoices(ctx context.Context, arg ListVoicesParams) ([]ListV
 }
 
 const listVoicesBySourcePost = `-- name: ListVoicesBySourcePost :many
-SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id FROM voice WHERE source_post_id = $1 ORDER BY created_at DESC
+SELECT id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text FROM voice WHERE source_post_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListVoicesBySourcePost(ctx context.Context, sourcePostID *uuid.UUID) ([]Voice, error) {
@@ -672,6 +688,7 @@ func (q *Queries) ListVoicesBySourcePost(ctx context.Context, sourcePostID *uuid
 			&i.LlmApiSetID,
 			&i.LlmModelUsed,
 			&i.AuthorCountryID,
+			&i.SpokenText,
 		); err != nil {
 			return nil, err
 		}
@@ -693,7 +710,7 @@ SET publish_status   = 'published',
     last_error       = NULL,
     published_at     = now()
 WHERE id = $2
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 type MarkVoicePublishedParams struct {
@@ -740,6 +757,7 @@ func (q *Queries) MarkVoicePublished(ctx context.Context, arg MarkVoicePublished
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }
@@ -751,10 +769,14 @@ SET input_text     = $1,
     prompt_id      = $3,
     language       = COALESCE($4, language),
     llm_api_set_id = COALESCE($5, llm_api_set_id),
+    -- Lời đọc người dùng tự chốt ở tab Nội dung. Chỉ có giá trị khi họ sửa
+    -- thẳng vào ô lời đọc; NULL = để LLM (hoặc chính input_text) quyết định như
+    -- thường, nên COALESCE giữ nguyên bản cũ cho tới khi FinishVoice ghi đè.
+    spoken_text    = COALESCE($6, spoken_text),
     publish_status = 'processing',
     last_error     = NULL
-WHERE id = $6 AND publish_status <> 'published'
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id
+WHERE id = $7 AND publish_status <> 'published'
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 type SetVoiceContentParams struct {
@@ -763,6 +785,7 @@ type SetVoiceContentParams struct {
 	PromptID    *uuid.UUID `json:"prompt_id"`
 	Language    *string    `json:"language"`
 	LlmApiSetID *uuid.UUID `json:"llm_api_set_id"`
+	SpokenText  *string    `json:"spoken_text"`
 	ID          uuid.UUID  `json:"id"`
 }
 
@@ -778,6 +801,7 @@ func (q *Queries) SetVoiceContent(ctx context.Context, arg SetVoiceContentParams
 		arg.PromptID,
 		arg.Language,
 		arg.LlmApiSetID,
+		arg.SpokenText,
 		arg.ID,
 	)
 	var i Voice
@@ -812,6 +836,7 @@ func (q *Queries) SetVoiceContent(ctx context.Context, arg SetVoiceContentParams
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }
@@ -821,7 +846,7 @@ UPDATE voice
 SET image_url      = $1,
     image_uploaded = $2
 WHERE id = $3
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 type SetVoiceImageParams struct {
@@ -866,6 +891,7 @@ func (q *Queries) SetVoiceImage(ctx context.Context, arg SetVoiceImageParams) (V
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }
@@ -874,7 +900,7 @@ const setVoicePublishStatus = `-- name: SetVoicePublishStatus :one
 UPDATE voice
 SET publish_status = $1, last_error = $2
 WHERE id = $3
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 type SetVoicePublishStatusParams struct {
@@ -917,6 +943,7 @@ func (q *Queries) SetVoicePublishStatus(ctx context.Context, arg SetVoicePublish
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }
@@ -937,7 +964,7 @@ SET hashtag           = COALESCE($1, hashtag),
                              WHEN $9::bigint IS NULL THEN author_email
                              ELSE $10 END
 WHERE id = $11
-RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id
+RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 type UpdateVoiceMetadataParams struct {
@@ -1006,6 +1033,7 @@ func (q *Queries) UpdateVoiceMetadata(ctx context.Context, arg UpdateVoiceMetada
 		&i.LlmApiSetID,
 		&i.LlmModelUsed,
 		&i.AuthorCountryID,
+		&i.SpokenText,
 	)
 	return i, err
 }

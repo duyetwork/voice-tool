@@ -7,12 +7,14 @@ INSERT INTO voice (
   hashtag, language, image_url, publish_status, title, mime_type, size_bytes,
   sample_rate, created_by,
   author_id, author_email, author_gender,
-  image_uploaded, no_image, publish_when_ready, llm_api_set_id, author_country_id
+  image_uploaded, no_image, publish_when_ready, llm_api_set_id, author_country_id,
+  spoken_text
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   sqlc.narg('author_id'), sqlc.narg('author_email'), sqlc.narg('author_gender'),
   sqlc.arg('image_uploaded'), sqlc.arg('no_image'), sqlc.arg('publish_when_ready'),
-  sqlc.narg('llm_api_set_id'), sqlc.narg('author_country_id')
+  sqlc.narg('llm_api_set_id'), sqlc.narg('author_country_id'),
+  sqlc.narg('spoken_text')
 )
 RETURNING *;
 
@@ -42,6 +44,10 @@ SET input_text     = sqlc.arg('input_text'),
     prompt_id      = sqlc.narg('prompt_id'),
     language       = COALESCE(sqlc.narg('language'), language),
     llm_api_set_id = COALESCE(sqlc.narg('llm_api_set_id'), llm_api_set_id),
+    -- Lời đọc người dùng tự chốt ở tab Nội dung. Chỉ có giá trị khi họ sửa
+    -- thẳng vào ô lời đọc; NULL = để LLM (hoặc chính input_text) quyết định như
+    -- thường, nên COALESCE giữ nguyên bản cũ cho tới khi FinishVoice ghi đè.
+    spoken_text    = COALESCE(sqlc.narg('spoken_text'), spoken_text),
     publish_status = 'processing',
     last_error     = NULL
 WHERE id = sqlc.arg('id') AND publish_status <> 'published'
@@ -164,6 +170,9 @@ SET ai_engine_id     = sqlc.narg('ai_engine_id'),
     -- Model THẬT đã viết lại nội dung. COALESCE vì mode B không qua LLM: ghi
     -- thẳng NULL sẽ xoá mất model của lần chạy trước trên chính voice đó.
     llm_model_used   = COALESCE(sqlc.narg('llm_model_used'), llm_model_used),
+    -- Đoạn chữ TTS vừa đọc. KHÔNG dùng COALESCE: đây là kết quả của đúng lần
+    -- chạy này, giữ lại giá trị cũ nghĩa là mô tả sai file audio vừa ghi đè.
+    spoken_text      = sqlc.narg('spoken_text'),
     publish_status   = 'draft',
     last_error       = NULL
 WHERE id = sqlc.arg('id')

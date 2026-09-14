@@ -17,7 +17,13 @@ RETURNING *;
 SELECT * FROM list_breaking WHERE id = $1;
 
 -- name: ListListBreakings :many
-SELECT lb.*, u.email AS created_by_email
+-- Hai số đếm, cùng lý do và cùng cách dựng với ListListScheduleds.
+SELECT lb.*, u.email AS created_by_email,
+       (SELECT COUNT(*) FROM source_post sp
+         WHERE sp.list_breaking_id = lb.id) AS post_count,
+       (SELECT COUNT(*) FROM voice v
+          JOIN source_post sp2 ON sp2.id = v.source_post_id
+         WHERE sp2.list_breaking_id = lb.id) AS voice_count
 FROM list_breaking lb
 JOIN app_user u ON u.id = lb.created_by
 WHERE (sqlc.narg('status')::varchar   IS NULL OR lb.status     = sqlc.narg('status'))
@@ -101,3 +107,22 @@ WHERE (sqlc.narg('status')::varchar   IS NULL OR lb.status     = sqlc.narg('stat
   AND (sqlc.narg('platform')::varchar IS NULL OR lb.platform   = sqlc.narg('platform'))
   AND (sqlc.narg('created_by')::uuid  IS NULL OR lb.created_by = sqlc.narg('created_by'))
   AND (sqlc.narg('search')::text      IS NULL OR lb.source_url ~* sqlc.narg('search'));
+
+-- name: CascadeLanguageFromListBreaking :execrows
+-- Đối xứng với CascadeLanguageFromListScheduled — xem lý do ở đó.
+UPDATE source_post SET language = sqlc.arg('language')
+WHERE list_breaking_id = sqlc.arg('list_id')
+  AND language <> sqlc.arg('language');
+
+-- name: CascadeVoiceLanguageFromListBreaking :execrows
+UPDATE voice v SET language = sqlc.arg('language')
+FROM source_post sp
+WHERE sp.id = v.source_post_id
+  AND sp.list_breaking_id = sqlc.arg('list_id')
+  AND v.voice_file_url IS NULL
+  AND v.language <> sqlc.arg('language');
+
+-- name: SetListBreakingScanError :exec
+-- Ghi lỗi của vòng quét gần nhất lên kênh, hoặc xoá nó khi vòng quét chạy sạch.
+-- Người dùng chỉ nhìn thấy bảng kênh, không nhìn thấy log worker.
+UPDATE list_breaking SET last_error = sqlc.narg('last_error') WHERE id = sqlc.arg('id');

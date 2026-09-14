@@ -223,6 +223,9 @@ type regenerateVoiceRequest struct {
 	Language    string     `json:"language"`
 	// LLMAPISetID rỗng = giữ bộ API voice đang dùng.
 	LLMAPISetID *uuid.UUID `json:"llm_api_set_id"`
+	// SpokenText: lời đọc người dùng tự chốt. Có mặt thì lần này TTS đọc đúng
+	// chuỗi này và KHÔNG gọi LLM — xem service.RegenerateInput.SpokenText.
+	SpokenText *string `json:"spoken_text"`
 }
 
 func (h *Voice) Regenerate(c *gin.Context) {
@@ -243,6 +246,7 @@ func (h *Voice) Regenerate(c *gin.Context) {
 			PromptID:    req.PromptID,
 			Language:    req.Language,
 			LLMAPISetID: req.LLMAPISetID,
+			SpokenText:  req.SpokenText,
 		})
 	if err != nil {
 		httpx.Fail(c, err)

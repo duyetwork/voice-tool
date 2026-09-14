@@ -81,9 +81,9 @@ export const PUBLISH_STATUS_LABELS: Record<string, string> = {
 };
 
 export const SOURCE_TYPE_LABELS: Record<string, string> = {
-  F1: "F1 — On-demand",
-  BREAKING: "F2 — Breaking",
-  SCHEDULED: "F3 — Định kỳ",
+  F1: "On-demand",
+  BREAKING: "Kênh breaking",
+  SCHEDULED: "Kênh định kỳ",
 };
 
 export const PLATFORM_LABELS: Record<string, string> = {

@@ -13,6 +13,55 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cascadeLanguageFromListScheduled = `-- name: CascadeLanguageFromListScheduled :execrows
+UPDATE source_post SET language = $1
+WHERE list_scheduled_id = $2
+  AND language <> $1
+`
+
+type CascadeLanguageFromListScheduledParams struct {
+	Language string     `json:"language"`
+	ListID   *uuid.UUID `json:"list_id"`
+}
+
+// Đổi ngôn ngữ của kênh thì các Bài Post của kênh đó đi theo.
+//
+// Vì sao phải lan xuống: ngôn ngữ được chốt MỘT LẦN lúc bài được tạo, nên sửa
+// ở kênh mà không lan thì mọi bài đã lấy về vẫn đọc bằng tiếng cũ — đúng thứ
+// người dùng vừa sửa để tránh.
+func (q *Queries) CascadeLanguageFromListScheduled(ctx context.Context, arg CascadeLanguageFromListScheduledParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cascadeLanguageFromListScheduled, arg.Language, arg.ListID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const cascadeVoiceLanguageFromListScheduled = `-- name: CascadeVoiceLanguageFromListScheduled :execrows
+UPDATE voice v SET language = $1
+FROM source_post sp
+WHERE sp.id = v.source_post_id
+  AND sp.list_scheduled_id = $2
+  AND v.voice_file_url IS NULL
+  AND v.language <> $1
+`
+
+type CascadeVoiceLanguageFromListScheduledParams struct {
+	Language string     `json:"language"`
+	ListID   *uuid.UUID `json:"list_id"`
+}
+
+// Chỉ những Voice CHƯA có file: ngôn ngữ của voice đã ghi xong là mô tả của
+// một file audio có thật, đổi nhãn không đổi được tiếng trong file. Voice đang
+// chờ/đang lỗi thì chạy lại sẽ đọc bằng tiếng mới, nên sửa là đúng.
+func (q *Queries) CascadeVoiceLanguageFromListScheduled(ctx context.Context, arg CascadeVoiceLanguageFromListScheduledParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cascadeVoiceLanguageFromListScheduled, arg.Language, arg.ListID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countListScheduleds = `-- name: CountListScheduleds :one
 SELECT COUNT(*)
 FROM list_scheduled ls
@@ -56,7 +105,7 @@ INSERT INTO list_scheduled (
   $18, $19,
   $20
 )
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error
 `
 
 type CreateListScheduledParams struct {
@@ -132,6 +181,7 @@ func (q *Queries) CreateListScheduled(ctx context.Context, arg CreateListSchedul
 		&i.FixedTimesMin,
 		&i.BackfillLimit,
 		&i.BackfillDoneAt,
+		&i.LastError,
 	)
 	return i, err
 }
@@ -149,7 +199,7 @@ func (q *Queries) DeleteListScheduled(ctx context.Context, id uuid.UUID) (int64,
 }
 
 const getListScheduled = `-- name: GetListScheduled :one
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at FROM list_scheduled WHERE id = $1
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error FROM list_scheduled WHERE id = $1
 `
 
 func (q *Queries) GetListScheduled(ctx context.Context, id uuid.UUID) (ListScheduled, error) {
@@ -181,12 +231,13 @@ func (q *Queries) GetListScheduled(ctx context.Context, id uuid.UUID) (ListSched
 		&i.FixedTimesMin,
 		&i.BackfillLimit,
 		&i.BackfillDoneAt,
+		&i.LastError,
 	)
 	return i, err
 }
 
 const listActiveListScheduleds = `-- name: ListActiveListScheduleds :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at FROM list_scheduled WHERE status = 'active' ORDER BY created_at
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error FROM list_scheduled WHERE status = 'active' ORDER BY created_at
 `
 
 func (q *Queries) ListActiveListScheduleds(ctx context.Context) ([]ListScheduled, error) {
@@ -224,6 +275,7 @@ func (q *Queries) ListActiveListScheduleds(ctx context.Context) ([]ListScheduled
 			&i.FixedTimesMin,
 			&i.BackfillLimit,
 			&i.BackfillDoneAt,
+			&i.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -236,7 +288,12 @@ func (q *Queries) ListActiveListScheduleds(ctx context.Context) ([]ListScheduled
 }
 
 const listListScheduleds = `-- name: ListListScheduleds :many
-SELECT ls.id, ls.source_url, ls.platform, ls.content_type, ls.collect_mode, ls.prompt_id, ls.scan_frequency, ls.language_default, ls.last_synced_post_id, ls.auto_process, ls.auto_publish, ls.status, ls.created_by, ls.created_at, ls.scan_limit, ls.max_posts_per_run, ls.last_scanned_at, ls.llm_api_set_id, ls.timezone, ls.active_from_min, ls.active_to_min, ls.active_weekdays, ls.fixed_times_min, ls.backfill_limit, ls.backfill_done_at, u.email AS created_by_email
+SELECT ls.id, ls.source_url, ls.platform, ls.content_type, ls.collect_mode, ls.prompt_id, ls.scan_frequency, ls.language_default, ls.last_synced_post_id, ls.auto_process, ls.auto_publish, ls.status, ls.created_by, ls.created_at, ls.scan_limit, ls.max_posts_per_run, ls.last_scanned_at, ls.llm_api_set_id, ls.timezone, ls.active_from_min, ls.active_to_min, ls.active_weekdays, ls.fixed_times_min, ls.backfill_limit, ls.backfill_done_at, ls.last_error, u.email AS created_by_email,
+       (SELECT COUNT(*) FROM source_post sp
+         WHERE sp.list_scheduled_id = ls.id) AS post_count,
+       (SELECT COUNT(*) FROM voice v
+          JOIN source_post sp2 ON sp2.id = v.source_post_id
+         WHERE sp2.list_scheduled_id = ls.id) AS voice_count
 FROM list_scheduled ls
 JOIN app_user u ON u.id = ls.created_by
 WHERE ($1::varchar   IS NULL OR ls.status     = $1)
@@ -291,9 +348,19 @@ type ListListScheduledsRow struct {
 	FixedTimesMin    []int16         `json:"fixed_times_min"`
 	BackfillLimit    int32           `json:"backfill_limit"`
 	BackfillDoneAt   *time.Time      `json:"backfill_done_at"`
+	LastError        *string         `json:"last_error"`
 	CreatedByEmail   string          `json:"created_by_email"`
+	PostCount        int64           `json:"post_count"`
+	VoiceCount       int64           `json:"voice_count"`
 }
 
+// Kèm hai số đếm để bảng trả lời được "kênh này có ra gì không" mà không phải
+// mở màn Bài Post lọc theo kênh.
+//
+// Subquery vô hướng chứ không JOIN + GROUP BY: một kênh không có bài nào vẫn
+// phải hiện 0 chứ không biến mất, và GROUP BY trên `ls.*` thì phải liệt kê lại
+// toàn bộ cột mỗi lần thêm cột mới vào bảng. Cả hai đều đi qua chỉ mục riêng
+// trên list_scheduled_id (migration 000021).
 // Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 func (q *Queries) ListListScheduleds(ctx context.Context, arg ListListScheduledsParams) ([]ListListScheduledsRow, error) {
 	rows, err := q.db.Query(ctx, listListScheduleds,
@@ -339,7 +406,10 @@ func (q *Queries) ListListScheduleds(ctx context.Context, arg ListListScheduleds
 			&i.FixedTimesMin,
 			&i.BackfillLimit,
 			&i.BackfillDoneAt,
+			&i.LastError,
 			&i.CreatedByEmail,
+			&i.PostCount,
+			&i.VoiceCount,
 		); err != nil {
 			return nil, err
 		}
@@ -375,6 +445,22 @@ type SetLastSyncedPostIDParams struct {
 
 func (q *Queries) SetLastSyncedPostID(ctx context.Context, arg SetLastSyncedPostIDParams) error {
 	_, err := q.db.Exec(ctx, setLastSyncedPostID, arg.ID, arg.LastSyncedPostID)
+	return err
+}
+
+const setListScheduledScanError = `-- name: SetListScheduledScanError :exec
+UPDATE list_scheduled SET last_error = $1 WHERE id = $2
+`
+
+type SetListScheduledScanErrorParams struct {
+	LastError *string   `json:"last_error"`
+	ID        uuid.UUID `json:"id"`
+}
+
+// Ghi lỗi của vòng quét gần nhất lên kênh, hoặc xoá nó khi vòng quét chạy sạch.
+// Người dùng chỉ nhìn thấy bảng kênh, không nhìn thấy log worker.
+func (q *Queries) SetListScheduledScanError(ctx context.Context, arg SetListScheduledScanErrorParams) error {
+	_, err := q.db.Exec(ctx, setListScheduledScanError, arg.LastError, arg.ID)
 	return err
 }
 
@@ -417,7 +503,7 @@ SET source_url        = COALESCE($1, source_url),
     active_weekdays   = COALESCE($20, active_weekdays),
     fixed_times_min   = COALESCE($21, fixed_times_min)
 WHERE id = $22
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error
 `
 
 type UpdateListScheduledParams struct {
@@ -497,6 +583,7 @@ func (q *Queries) UpdateListScheduled(ctx context.Context, arg UpdateListSchedul
 		&i.FixedTimesMin,
 		&i.BackfillLimit,
 		&i.BackfillDoneAt,
+		&i.LastError,
 	)
 	return i, err
 }

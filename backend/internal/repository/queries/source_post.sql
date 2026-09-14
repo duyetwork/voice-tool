@@ -19,9 +19,23 @@ RETURNING *;
 SELECT * FROM source_post WHERE id = $1;
 
 -- name: ListSourcePosts :many
-SELECT sp.*, u.email AS created_by_email
+-- Bài Post đi kèm URL của kênh đã đẻ ra nó. Kênh không có cột tên, nên thứ
+-- nhận diện được một kênh trên giao diện vẫn là source_url của nó.
+--
+-- LEFT JOIN cả hai bảng kênh chứ không JOIN theo source_type: một bài chỉ
+-- gắn được vào ĐÚNG MỘT loại kênh (ck_source_post_origin ở migration 000001
+-- ép như vậy), nên COALESCE hai nhánh luôn ra nhiều nhất một giá trị, và bài
+-- F1 nhập tay thì cả hai nhánh đều NULL.
+--
+-- Nhánh '' cuối cùng là để cột này KHÔNG BAO GIỜ NULL: sqlc suy ra COALESCE là
+-- NOT NULL nên sinh ra `string`, quét NULL vào đó là lỗi runtime ngay ở bài F1
+-- đầu tiên. Rỗng = không đến từ kênh nào.
+SELECT sp.*, u.email AS created_by_email,
+       COALESCE(lb.source_url, ls.source_url, '') AS list_source_url
 FROM source_post sp
 JOIN app_user u ON u.id = sp.created_by
+LEFT JOIN list_breaking  lb ON lb.id = sp.list_breaking_id
+LEFT JOIN list_scheduled ls ON ls.id = sp.list_scheduled_id
 WHERE (sqlc.narg('source_type')::varchar IS NULL OR sp.source_type = sqlc.narg('source_type'))
   AND (sqlc.narg('status')::varchar       IS NULL OR sp.status       = sqlc.narg('status'))
   AND (sqlc.narg('platform')::varchar     IS NULL OR sp.platform     = sqlc.narg('platform'))
@@ -101,3 +115,13 @@ SELECT * FROM source_post
 WHERE platform = $1 AND post_id_extracted = $2
 ORDER BY created_at ASC
 LIMIT 1;
+
+-- name: CascadeVoiceLanguageFromPost :execrows
+-- Đổi ngôn ngữ của Bài Post thì các Voice CHƯA có file của bài đó đi theo.
+--
+-- Cùng ranh giới với cascade từ kênh: voice đã ghi xong file là mô tả của một
+-- file audio có thật, đổi nhãn không đổi được tiếng đã đọc trong file.
+UPDATE voice SET language = sqlc.arg('language')
+WHERE source_post_id = sqlc.arg('post_id')
+  AND voice_file_url IS NULL
+  AND language <> sqlc.arg('language');

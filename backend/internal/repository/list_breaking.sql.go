@@ -13,6 +13,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cascadeLanguageFromListBreaking = `-- name: CascadeLanguageFromListBreaking :execrows
+UPDATE source_post SET language = $1
+WHERE list_breaking_id = $2
+  AND language <> $1
+`
+
+type CascadeLanguageFromListBreakingParams struct {
+	Language string     `json:"language"`
+	ListID   *uuid.UUID `json:"list_id"`
+}
+
+// Đối xứng với CascadeLanguageFromListScheduled — xem lý do ở đó.
+func (q *Queries) CascadeLanguageFromListBreaking(ctx context.Context, arg CascadeLanguageFromListBreakingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cascadeLanguageFromListBreaking, arg.Language, arg.ListID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const cascadeVoiceLanguageFromListBreaking = `-- name: CascadeVoiceLanguageFromListBreaking :execrows
+UPDATE voice v SET language = $1
+FROM source_post sp
+WHERE sp.id = v.source_post_id
+  AND sp.list_breaking_id = $2
+  AND v.voice_file_url IS NULL
+  AND v.language <> $1
+`
+
+type CascadeVoiceLanguageFromListBreakingParams struct {
+	Language string     `json:"language"`
+	ListID   *uuid.UUID `json:"list_id"`
+}
+
+func (q *Queries) CascadeVoiceLanguageFromListBreaking(ctx context.Context, arg CascadeVoiceLanguageFromListBreakingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cascadeVoiceLanguageFromListBreaking, arg.Language, arg.ListID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countListBreakings = `-- name: CountListBreakings :one
 SELECT COUNT(*)
 FROM list_breaking lb
@@ -55,7 +97,7 @@ INSERT INTO list_breaking (
   $16, $17, $18,
   $19, $20
 )
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error
 `
 
 type CreateListBreakingParams struct {
@@ -131,6 +173,7 @@ func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreaking
 		&i.BackfillDoneAt,
 		&i.BackfillExcludedIds,
 		&i.MaxPostsPerRun,
+		&i.LastError,
 	)
 	return i, err
 }
@@ -148,7 +191,7 @@ func (q *Queries) DeleteListBreaking(ctx context.Context, id uuid.UUID) (int64, 
 }
 
 const getListBreaking = `-- name: GetListBreaking :one
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run FROM list_breaking WHERE id = $1
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error FROM list_breaking WHERE id = $1
 `
 
 func (q *Queries) GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaking, error) {
@@ -180,12 +223,13 @@ func (q *Queries) GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaki
 		&i.BackfillDoneAt,
 		&i.BackfillExcludedIds,
 		&i.MaxPostsPerRun,
+		&i.LastError,
 	)
 	return i, err
 }
 
 const listActiveListBreakings = `-- name: ListActiveListBreakings :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run FROM list_breaking WHERE status = 'active' ORDER BY created_at
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error FROM list_breaking WHERE status = 'active' ORDER BY created_at
 `
 
 func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, error) {
@@ -223,6 +267,7 @@ func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, 
 			&i.BackfillDoneAt,
 			&i.BackfillExcludedIds,
 			&i.MaxPostsPerRun,
+			&i.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -235,7 +280,7 @@ func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, 
 }
 
 const listDueListBreakings = `-- name: ListDueListBreakings :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run FROM list_breaking
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error FROM list_breaking
 WHERE status = 'active'
   AND (
     last_scanned_at IS NULL
@@ -281,6 +326,7 @@ func (q *Queries) ListDueListBreakings(ctx context.Context, defaultInterval pgty
 			&i.BackfillDoneAt,
 			&i.BackfillExcludedIds,
 			&i.MaxPostsPerRun,
+			&i.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -293,7 +339,12 @@ func (q *Queries) ListDueListBreakings(ctx context.Context, defaultInterval pgty
 }
 
 const listListBreakings = `-- name: ListListBreakings :many
-SELECT lb.id, lb.source_url, lb.platform, lb.content_type, lb.collect_mode, lb.prompt_id, lb.language_default, lb.auto_process, lb.auto_publish, lb.status, lb.created_by, lb.created_at, lb.regex_patterns, lb.scan_limit, lb.scan_interval, lb.last_scanned_at, lb.llm_api_set_id, lb.timezone, lb.active_from_min, lb.active_to_min, lb.active_weekdays, lb.backfill_limit, lb.backfill_done_at, lb.backfill_excluded_ids, lb.max_posts_per_run, u.email AS created_by_email
+SELECT lb.id, lb.source_url, lb.platform, lb.content_type, lb.collect_mode, lb.prompt_id, lb.language_default, lb.auto_process, lb.auto_publish, lb.status, lb.created_by, lb.created_at, lb.regex_patterns, lb.scan_limit, lb.scan_interval, lb.last_scanned_at, lb.llm_api_set_id, lb.timezone, lb.active_from_min, lb.active_to_min, lb.active_weekdays, lb.backfill_limit, lb.backfill_done_at, lb.backfill_excluded_ids, lb.max_posts_per_run, lb.last_error, u.email AS created_by_email,
+       (SELECT COUNT(*) FROM source_post sp
+         WHERE sp.list_breaking_id = lb.id) AS post_count,
+       (SELECT COUNT(*) FROM voice v
+          JOIN source_post sp2 ON sp2.id = v.source_post_id
+         WHERE sp2.list_breaking_id = lb.id) AS voice_count
 FROM list_breaking lb
 JOIN app_user u ON u.id = lb.created_by
 WHERE ($1::varchar   IS NULL OR lb.status     = $1)
@@ -348,9 +399,13 @@ type ListListBreakingsRow struct {
 	BackfillDoneAt      *time.Time      `json:"backfill_done_at"`
 	BackfillExcludedIds []string        `json:"backfill_excluded_ids"`
 	MaxPostsPerRun      *int32          `json:"max_posts_per_run"`
+	LastError           *string         `json:"last_error"`
 	CreatedByEmail      string          `json:"created_by_email"`
+	PostCount           int64           `json:"post_count"`
+	VoiceCount          int64           `json:"voice_count"`
 }
 
+// Hai số đếm, cùng lý do và cùng cách dựng với ListListScheduleds.
 // Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 func (q *Queries) ListListBreakings(ctx context.Context, arg ListListBreakingsParams) ([]ListListBreakingsRow, error) {
 	rows, err := q.db.Query(ctx, listListBreakings,
@@ -396,7 +451,10 @@ func (q *Queries) ListListBreakings(ctx context.Context, arg ListListBreakingsPa
 			&i.BackfillDoneAt,
 			&i.BackfillExcludedIds,
 			&i.MaxPostsPerRun,
+			&i.LastError,
 			&i.CreatedByEmail,
+			&i.PostCount,
+			&i.VoiceCount,
 		); err != nil {
 			return nil, err
 		}
@@ -425,6 +483,22 @@ type MarkListBreakingBackfilledParams struct {
 // quay lại ở vòng sau như thể vừa đăng.
 func (q *Queries) MarkListBreakingBackfilled(ctx context.Context, arg MarkListBreakingBackfilledParams) error {
 	_, err := q.db.Exec(ctx, markListBreakingBackfilled, arg.ExcludedIds, arg.ID)
+	return err
+}
+
+const setListBreakingScanError = `-- name: SetListBreakingScanError :exec
+UPDATE list_breaking SET last_error = $1 WHERE id = $2
+`
+
+type SetListBreakingScanErrorParams struct {
+	LastError *string   `json:"last_error"`
+	ID        uuid.UUID `json:"id"`
+}
+
+// Ghi lỗi của vòng quét gần nhất lên kênh, hoặc xoá nó khi vòng quét chạy sạch.
+// Người dùng chỉ nhìn thấy bảng kênh, không nhìn thấy log worker.
+func (q *Queries) SetListBreakingScanError(ctx context.Context, arg SetListBreakingScanErrorParams) error {
+	_, err := q.db.Exec(ctx, setListBreakingScanError, arg.LastError, arg.ID)
 	return err
 }
 
@@ -464,7 +538,7 @@ SET source_url       = COALESCE($1, source_url),
     max_posts_per_run = CASE WHEN $20::bool THEN NULL
                              ELSE COALESCE($21, max_posts_per_run) END
 WHERE id = $22
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error
 `
 
 type UpdateListBreakingParams struct {
@@ -544,6 +618,7 @@ func (q *Queries) UpdateListBreaking(ctx context.Context, arg UpdateListBreaking
 		&i.BackfillDoneAt,
 		&i.BackfillExcludedIds,
 		&i.MaxPostsPerRun,
+		&i.LastError,
 	)
 	return i, err
 }

@@ -39,7 +39,10 @@ type RouterDeps struct {
 	// CatalogCache: danh mục quốc gia/hashtag đã lưu trong DB cho modal Tạo
 	// Voice. Khác `Catalog` ở trên — cái đó là CRUD Prompt mẫu.
 	CatalogCache *service.CatalogCache
-	Platforms    interface{ Supported() []domain.Platform }
+	Platforms    interface {
+		Supported() []domain.Platform
+		ChannelScanSupport() []domain.ChannelScan
+	}
 	// Modes: hình thức thu thập đang bật + lý do cái còn lại bị tắt.
 	Modes service.ModeGate
 }
@@ -99,7 +102,14 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	// FE đọc đây để biết nền tảng nào nhận diện được và hình thức thu thập nào
 	// đang bật (B/C chưa hỗ trợ thì hiển thị mờ).
 	authed.GET("/meta/platforms", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"platforms": d.Platforms.Supported()})
+		c.JSON(http.StatusOK, gin.H{
+			"platforms": d.Platforms.Supported(),
+			// Nhận diện được URL của một nền tảng KHÔNG có nghĩa là quét được
+			// cả kênh của nó: yt-dlp lấy từng bài X/Facebook/Instagram bình
+			// thường nhưng không liệt kê được dòng thời gian. Form Thêm kênh
+			// đọc đây để nói trước, thay vì để người dùng dán URL rồi ăn lỗi.
+			"channel_scan": d.Platforms.ChannelScanSupport(),
+		})
 	})
 	// Điều kiện multime.ai đòi hỏi ở 1 bài đăng — FE dùng để biết khi nào được
 	// phép bấm Đăng. Không còn hashtag mặc định: mỗi voice phải có hashtag của

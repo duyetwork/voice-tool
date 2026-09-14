@@ -22,12 +22,13 @@ import { Can } from "@/components/permission";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
-import { Checkbox, Field, Input, Select } from "@/components/ui/field";
+import { Checkbox, Field, Input, Select, Toggle } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { Pagination, usePaging } from "@/components/ui/pagination";
 import { EmptyRow, RowActions, SortableTh, Table, Td, Th, useSorting } from "@/components/ui/table";
 import {
   useBreakingLists,
+  useChannelScanSupport,
   useCollectModes,
   useCreateBreakingList,
   useLLMAPISets,
@@ -211,9 +212,11 @@ export default function BreakingListsPage() {
                 <Th>Regex (OR)</Th>
                 <Th>Ngôn ngữ</Th>
                 <Th>Người tạo</Th>
+                <Th>Kết quả</Th>
                 <SortableTh sorting={sorting} column="last_scanned_at">
-                  Quét
+                  Thời gian
                 </SortableTh>
+                <Th>Cấu hình quét</Th>
                 <Th>Auto</Th>
                 <Th>Trạng thái</Th>
                 <Can permission="can_write">
@@ -223,7 +226,7 @@ export default function BreakingListsPage() {
             </thead>
             <tbody>
               {lists.isLoading ? (
-                <EmptyRow colSpan={9}>Đang tải…</EmptyRow>
+                <EmptyRow colSpan={11}>Đang tải…</EmptyRow>
               ) : lists.data?.items.length ? (
                 lists.data.items.map((list) => (
                   <tr key={list.id}>
@@ -283,6 +286,27 @@ export default function BreakingListsPage() {
                     <Td className="whitespace-nowrap text-xs text-slate-600">
                       {list.created_by_email ?? "—"}
                     </Td>
+
+                    {/* Cùng hai cột với màn Định kỳ — xem lý do ở đó. */}
+                    <Td className="whitespace-nowrap text-xs">
+                      <div className="text-slate-900">{list.post_count ?? 0} bài post</div>
+                      <div className="text-slate-500">{list.voice_count ?? 0} voice</div>
+                    </Td>
+
+                    <Td className="max-w-56 text-xs">
+                      <div className="whitespace-nowrap text-slate-500">
+                        tạo: {formatDateTime(list.created_at)}
+                      </div>
+                      <div className="whitespace-nowrap text-slate-900">
+                        quét: {formatDateTime(list.last_scanned_at)}
+                      </div>
+                      {/* Lỗi vòng quét gần nhất. Không có dòng này thì kênh
+                          hỏng và kênh chưa có bài mới trông y hệt nhau. */}
+                      {list.last_error ? (
+                        <p className="mt-1 font-medium text-red-700">{list.last_error}</p>
+                      ) : null}
+                    </Td>
+
                     <Td className="whitespace-nowrap text-xs">
                       <div>{list.scan_limit} bài/vòng</div>
                       <div className="text-slate-500">
@@ -299,16 +323,26 @@ export default function BreakingListsPage() {
                           : `bài cũ: ${list.backfill_limit || "không lấy"}`}
                       </div>
                       <div className="text-slate-400">lịch: {describeSchedule(list)}</div>
-                      <div className="text-slate-400">
-                        quét: {formatDateTime(list.last_scanned_at)}
-                      </div>
                     </Td>
                     <Td className="text-xs">
                       <div>process: {list.auto_process ? "bật" : "tắt"}</div>
                       <div>publish: {list.auto_publish ? "bật" : "tắt"}</div>
                     </Td>
                     <Td>
-                      <Badge tone={statusTone(list.status)}>{list.status}</Badge>
+                      {/* Công tắc thay vì nhãn: xem mục tương ứng ở màn Định kỳ. */}
+                      <Can
+                        permission="can_write"
+                        fallback={<Badge tone={statusTone(list.status)}>{list.status}</Badge>}
+                      >
+                        <Toggle
+                          checked={list.status === "active"}
+                          disabled={update.isPending}
+                          onChange={(next) =>
+                            update.mutate({ id: list.id, status: next ? "active" : "paused" })
+                          }
+                          label={list.status === "active" ? "Bật" : "Tắt"}
+                        />
+                      </Can>
                     </Td>
                     <Can permission="can_write">
                       <Td className="whitespace-nowrap text-right">
@@ -323,19 +357,6 @@ export default function BreakingListsPage() {
                             onClick={() => run.mutate(list.id)}
                           >
                             Quét thử
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={update.isPending}
-                            onClick={() =>
-                              update.mutate({
-                                id: list.id,
-                                status: list.status === "active" ? "paused" : "active",
-                              })
-                            }
-                          >
-                            {list.status === "active" ? "Tạm dừng" : "Kích hoạt"}
                           </Button>
                           <Can permission="can_delete">
                             <Button
@@ -356,7 +377,7 @@ export default function BreakingListsPage() {
                   </tr>
                 ))
               ) : (
-                <EmptyRow colSpan={9}>Chưa có kênh nào.</EmptyRow>
+                <EmptyRow colSpan={11}>Chưa có kênh nào.</EmptyRow>
               )}
             </tbody>
           </Table>
@@ -386,6 +407,10 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
   const update = useUpdateBreakingList();
 
   const [sourceUrl, setSourceUrl] = React.useState(list?.source_url ?? "");
+  // Nền tảng của URL đang gõ có quét được cả kênh không (backend cũng từ chối,
+  // đây chỉ là để biết trước khi bấm Lưu).
+  const checkScan = useChannelScanSupport();
+  const blocked = checkScan(sourceUrl);
   const [patterns, setPatterns] = React.useState<string[]>(
     list?.regex_patterns?.length ? list.regex_patterns : [""],
   );
@@ -450,7 +475,11 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
       onClose={onClose}
     >
       <form onSubmit={submit} className="space-y-4">
-        <Field label="URL kênh nguồn" required>
+        {/* Nhận diện được URL của một nền tảng không có nghĩa là quét được
+            kênh của nó: yt-dlp lấy từng bài X/Facebook/Instagram bình thường
+            nhưng không đọc được dòng thời gian. Nói ngay lúc gõ URL, chứ để
+            người dùng bấm Lưu rồi mới báo thì họ đã điền xong cả form. */}
+        <Field label="URL kênh nguồn" required error={blocked?.reason}>
           <Input
             type="url"
             placeholder="https://www.youtube.com/@kenh"
@@ -503,7 +532,6 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label="Hình thức thu thập"
-            hint="B và C đọc bằng TTS 3voices — cần API key khai ở mục AI Engine (C cần thêm Prompt mẫu)."
           >
             <Select
               value={collectMode}
@@ -520,7 +548,6 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
 
           <Field
             label="Ngôn ngữ mặc định"
-            hint="Bài lẻ trong kênh vẫn sửa lại được ở bảng Bài Post."
           >
             <Select value={language} onChange={(e) => setLanguage(e.target.value)}>
               {LANGUAGE_OPTIONS.map((o) => (

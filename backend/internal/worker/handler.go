@@ -111,8 +111,8 @@ func (h *Handler) voiceText(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 
-	h.log.InfoContext(ctx, "voice:text bắt đầu", "voice_id", voiceID)
-	if err := h.engine.ProcessTextVoice(ctx, voiceID, actor); err != nil {
+	h.log.InfoContext(ctx, "voice:text bắt đầu", "voice_id", voiceID, "skip_rewrite", p.SkipRewrite)
+	if err := h.engine.ProcessTextVoice(ctx, voiceID, actor, p.SkipRewrite); err != nil {
 		return skipIfPermanent(err)
 	}
 	return nil

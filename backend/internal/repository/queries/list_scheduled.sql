@@ -18,7 +18,19 @@ RETURNING *;
 SELECT * FROM list_scheduled WHERE id = $1;
 
 -- name: ListListScheduleds :many
-SELECT ls.*, u.email AS created_by_email
+-- Kèm hai số đếm để bảng trả lời được "kênh này có ra gì không" mà không phải
+-- mở màn Bài Post lọc theo kênh.
+--
+-- Subquery vô hướng chứ không JOIN + GROUP BY: một kênh không có bài nào vẫn
+-- phải hiện 0 chứ không biến mất, và GROUP BY trên `ls.*` thì phải liệt kê lại
+-- toàn bộ cột mỗi lần thêm cột mới vào bảng. Cả hai đều đi qua chỉ mục riêng
+-- trên list_scheduled_id (migration 000021).
+SELECT ls.*, u.email AS created_by_email,
+       (SELECT COUNT(*) FROM source_post sp
+         WHERE sp.list_scheduled_id = ls.id) AS post_count,
+       (SELECT COUNT(*) FROM voice v
+          JOIN source_post sp2 ON sp2.id = v.source_post_id
+         WHERE sp2.list_scheduled_id = ls.id) AS voice_count
 FROM list_scheduled ls
 JOIN app_user u ON u.id = ls.created_by
 WHERE (sqlc.narg('status')::varchar   IS NULL OR ls.status     = sqlc.narg('status'))
@@ -95,3 +107,29 @@ WHERE (sqlc.narg('status')::varchar   IS NULL OR ls.status     = sqlc.narg('stat
   AND (sqlc.narg('platform')::varchar IS NULL OR ls.platform   = sqlc.narg('platform'))
   AND (sqlc.narg('created_by')::uuid  IS NULL OR ls.created_by = sqlc.narg('created_by'))
   AND (sqlc.narg('search')::text      IS NULL OR ls.source_url ~* sqlc.narg('search'));
+
+-- name: CascadeLanguageFromListScheduled :execrows
+-- Đổi ngôn ngữ của kênh thì các Bài Post của kênh đó đi theo.
+--
+-- Vì sao phải lan xuống: ngôn ngữ được chốt MỘT LẦN lúc bài được tạo, nên sửa
+-- ở kênh mà không lan thì mọi bài đã lấy về vẫn đọc bằng tiếng cũ — đúng thứ
+-- người dùng vừa sửa để tránh.
+UPDATE source_post SET language = sqlc.arg('language')
+WHERE list_scheduled_id = sqlc.arg('list_id')
+  AND language <> sqlc.arg('language');
+
+-- name: CascadeVoiceLanguageFromListScheduled :execrows
+-- Chỉ những Voice CHƯA có file: ngôn ngữ của voice đã ghi xong là mô tả của
+-- một file audio có thật, đổi nhãn không đổi được tiếng trong file. Voice đang
+-- chờ/đang lỗi thì chạy lại sẽ đọc bằng tiếng mới, nên sửa là đúng.
+UPDATE voice v SET language = sqlc.arg('language')
+FROM source_post sp
+WHERE sp.id = v.source_post_id
+  AND sp.list_scheduled_id = sqlc.arg('list_id')
+  AND v.voice_file_url IS NULL
+  AND v.language <> sqlc.arg('language');
+
+-- name: SetListScheduledScanError :exec
+-- Ghi lỗi của vòng quét gần nhất lên kênh, hoặc xoá nó khi vòng quét chạy sạch.
+-- Người dùng chỉ nhìn thấy bảng kênh, không nhìn thấy log worker.
+UPDATE list_scheduled SET last_error = sqlc.narg('last_error') WHERE id = sqlc.arg('id');

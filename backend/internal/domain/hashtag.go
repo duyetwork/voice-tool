@@ -45,6 +45,23 @@ func ExtractHashtags(text string, tags []string) []string {
 	return out
 }
 
+// NormalizeHashtags chuẩn hoá một danh sách thẻ ĐÃ TÁCH SẴN (LLM trả về, người
+// dùng gõ), theo đúng luật của ExtractHashtags: thêm '#', bỏ ký tự lạ, khử
+// trùng không phân biệt hoa thường, cắt ở maxHashtags.
+func NormalizeHashtags(tags []string) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, maxHashtags)
+	for _, t := range tags {
+		tag := normalizeHashtag(t)
+		if tag == "" || seen[strings.ToLower(tag)] || len(out) >= maxHashtags {
+			continue
+		}
+		seen[strings.ToLower(tag)] = true
+		out = append(out, tag)
+	}
+	return out
+}
+
 // StripHashtags bỏ hashtag khỏi text mô tả — chúng đã được tách ra thành
 // trường hashtag riêng, để lại trong caption là lặp nội dung.
 //

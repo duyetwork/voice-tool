@@ -8,23 +8,50 @@ import (
 	"github.com/strongbody/voice-tool/backend/internal/domain"
 )
 
-// systemPrompt cố định phần "khung" của Mode C; nội dung Prompt mẫu do user
+// baseRules là phần "khung" cố định của Mode C; nội dung Prompt mẫu do user
 // cấu hình được đưa vào như chỉ dẫn biên tập.
 //
 // Dùng chung cho cả 3 nhà: đổi cách nói theo từng nhà nghĩa là cùng một Prompt
 // mẫu cho ra giọng văn khác nhau tuỳ key nào còn quota — mà người dùng thì
 // không biết hôm nay chạy bằng nhà nào.
-const systemPrompt = `Bạn là biên tập viên viết kịch bản đọc (voice-over) cho nội dung mạng xã hội.
+const baseRules = `Bạn là biên tập viên viết kịch bản đọc (voice-over) cho nội dung mạng xã hội.
 Nhiệm vụ: viết lại văn bản nguồn theo đúng chỉ dẫn biên tập được cung cấp.
 
-Yêu cầu đầu ra:
-- Chỉ trả về nội dung kịch bản để đọc, không thêm lời dẫn, tiêu đề hay giải thích.
+Yêu cầu về lời đọc:
+- Chỉ là nội dung để đọc thành tiếng, không thêm lời dẫn hay giải thích.
 - Không dùng markdown, emoji, hay ký tự đặc biệt gây khó cho hệ thống đọc.
 - Viết số, ngày tháng, viết tắt dưới dạng chữ để đọc tự nhiên.
 - Giữ nguyên ngôn ngữ của văn bản nguồn, trừ khi chỉ dẫn yêu cầu khác.`
 
+// systemPrompt của hình thức C: một lần gọi trả về CẢ BA thứ cần để đăng bài.
+//
+// Vì sao gộp vào một lần gọi thay vì để người dùng tự gõ tiêu đề và hashtag:
+// model vừa đọc xong toàn bộ nội dung, nó biết bài này nói gì rõ hơn bất kỳ ai
+// nhìn vào một dòng trong bảng. Tách thành lần gọi thứ hai thì trả tiền hai lần
+// cho cùng một ngữ cảnh.
+//
+// Hợp đồng là JSON, nhưng phía đọc kết quả (domain.ParseRewrite) không bắt buộc
+// model tuân thủ: không ra JSON thì cả chuỗi được coi là lời đọc. Prompt mẫu do
+// người dùng tự viết nên hoàn toàn có thể lái model ra khỏi khuôn này, và khi đó
+// mất tiêu đề tự động vẫn tốt hơn là hỏng voice.
+const systemPrompt = baseRules + `
+
+Trả về DUY NHẤT một object JSON, không bọc trong rào code, theo đúng khuôn:
+{"title": "...", "content": "...", "hashtags": ["...", "..."]}
+
+- "content": lời đọc đã viết lại. Bắt buộc, và là thứ duy nhất được đọc thành tiếng.
+- "title": tiêu đề ngắn gọn cho bài đăng, tối đa 200 ký tự, không hashtag, không emoji.
+- "hashtags": 3 đến 8 thẻ chủ đề, không có dấu '#', không dấu cách trong từng thẻ.
+- "title" và "hashtags" cùng ngôn ngữ với "content".`
+
 // batchSystemPrompt thêm luật riêng của batch lên trên khung chung.
-const batchSystemPrompt = systemPrompt + `
+//
+// Dựng từ baseRules chứ không từ systemPrompt: batch có schema JSON riêng của
+// nó (batchSchema), dán thêm hợp đồng title/hashtag vào là hai khuôn JSON đánh
+// nhau trong cùng một request.
+const batchSystemPrompt = baseRules + `
+
+Chỉ trả về nội dung kịch bản để đọc, không thêm tiêu đề hay hashtag.
 
 Lần này bạn nhận NHIỀU văn bản nguồn cùng lúc, mỗi văn bản có một số thứ tự.
 Viết lại TỪNG văn bản một cách độc lập — không gộp, không tóm tắt chéo, không

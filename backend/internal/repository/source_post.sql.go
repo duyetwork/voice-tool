@@ -12,6 +12,30 @@ import (
 	"github.com/google/uuid"
 )
 
+const cascadeVoiceLanguageFromPost = `-- name: CascadeVoiceLanguageFromPost :execrows
+UPDATE voice SET language = $1
+WHERE source_post_id = $2
+  AND voice_file_url IS NULL
+  AND language <> $1
+`
+
+type CascadeVoiceLanguageFromPostParams struct {
+	Language string     `json:"language"`
+	PostID   *uuid.UUID `json:"post_id"`
+}
+
+// Đổi ngôn ngữ của Bài Post thì các Voice CHƯA có file của bài đó đi theo.
+//
+// Cùng ranh giới với cascade từ kênh: voice đã ghi xong file là mô tả của một
+// file audio có thật, đổi nhãn không đổi được tiếng đã đọc trong file.
+func (q *Queries) CascadeVoiceLanguageFromPost(ctx context.Context, arg CascadeVoiceLanguageFromPostParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cascadeVoiceLanguageFromPost, arg.Language, arg.PostID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const claimSourcePostForProcessing = `-- name: ClaimSourcePostForProcessing :one
 UPDATE source_post
 SET status = 'processing', last_error = NULL
@@ -271,9 +295,12 @@ func (q *Queries) GetSourcePost(ctx context.Context, id uuid.UUID) (SourcePost, 
 }
 
 const listSourcePosts = `-- name: ListSourcePosts :many
-SELECT sp.id, sp.source_type, sp.list_breaking_id, sp.list_scheduled_id, sp.source_url, sp.platform, sp.content_type, sp.post_id_extracted, sp.extracted_text, sp.collect_mode, sp.prompt_id, sp.language, sp.status, sp.last_error, sp.created_by, sp.created_at, sp.title, sp.hashtags, sp.thumbnail_url, sp.author_name, sp.posted_at, u.email AS created_by_email
+SELECT sp.id, sp.source_type, sp.list_breaking_id, sp.list_scheduled_id, sp.source_url, sp.platform, sp.content_type, sp.post_id_extracted, sp.extracted_text, sp.collect_mode, sp.prompt_id, sp.language, sp.status, sp.last_error, sp.created_by, sp.created_at, sp.title, sp.hashtags, sp.thumbnail_url, sp.author_name, sp.posted_at, u.email AS created_by_email,
+       COALESCE(lb.source_url, ls.source_url, '') AS list_source_url
 FROM source_post sp
 JOIN app_user u ON u.id = sp.created_by
+LEFT JOIN list_breaking  lb ON lb.id = sp.list_breaking_id
+LEFT JOIN list_scheduled ls ON ls.id = sp.list_scheduled_id
 WHERE ($1::varchar IS NULL OR sp.source_type = $1)
   AND ($2::varchar       IS NULL OR sp.status       = $2)
   AND ($3::varchar     IS NULL OR sp.platform     = $3)
@@ -329,8 +356,20 @@ type ListSourcePostsRow struct {
 	AuthorName      *string    `json:"author_name"`
 	PostedAt        *time.Time `json:"posted_at"`
 	CreatedByEmail  string     `json:"created_by_email"`
+	ListSourceUrl   string     `json:"list_source_url"`
 }
 
+// Bài Post đi kèm URL của kênh đã đẻ ra nó. Kênh không có cột tên, nên thứ
+// nhận diện được một kênh trên giao diện vẫn là source_url của nó.
+//
+// LEFT JOIN cả hai bảng kênh chứ không JOIN theo source_type: một bài chỉ
+// gắn được vào ĐÚNG MỘT loại kênh (ck_source_post_origin ở migration 000001
+// ép như vậy), nên COALESCE hai nhánh luôn ra nhiều nhất một giá trị, và bài
+// F1 nhập tay thì cả hai nhánh đều NULL.
+//
+// Nhánh ” cuối cùng là để cột này KHÔNG BAO GIỜ NULL: sqlc suy ra COALESCE là
+// NOT NULL nên sinh ra `string`, quét NULL vào đó là lỗi runtime ngay ở bài F1
+// đầu tiên. Rỗng = không đến từ kênh nào.
 // Sắp xếp động: chỉ có 1 cột thời gian nên chỉ cần chiều. Nhánh CASE toàn
 // NULL khi dir='desc' -> rơi về mặc định mới nhất trước.
 func (q *Queries) ListSourcePosts(ctx context.Context, arg ListSourcePostsParams) ([]ListSourcePostsRow, error) {
@@ -379,6 +418,7 @@ func (q *Queries) ListSourcePosts(ctx context.Context, arg ListSourcePostsParams
 			&i.AuthorName,
 			&i.PostedAt,
 			&i.CreatedByEmail,
+			&i.ListSourceUrl,
 		); err != nil {
 			return nil, err
 		}

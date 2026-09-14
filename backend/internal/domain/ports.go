@@ -29,6 +29,22 @@ type PlatformAdapter interface {
 	FetchMetadata(ctx context.Context, ref PostRef) (PostMetadata, error)
 	// FetchLatestPosts: liệt kê bài mới của 1 kênh — dùng cho breaking/scheduled scan.
 	FetchLatestPosts(ctx context.Context, channelURL string, limit int) ([]RemotePost, error)
+	// CheckChannelScan: nil nếu nền tảng này LIỆT KÊ được bài của một kênh,
+	// ngược lại là lỗi đã kèm sẵn câu giải thích cho người dùng.
+	//
+	// Trả lỗi chứ không trả bool vì chỗ gọi luôn cần cả hai: "được hay không"
+	// và "vì sao không" — hai nền tảng không quét được vì hai lý do khác nhau,
+	// và người dùng cần biết nên làm gì thay thế.
+	//
+	// Tách khỏi FetchLatestPosts vì đây là câu hỏi phải trả lời được TRƯỚC khi
+	// gọi, ở tầng API, lúc người dùng bấm Thêm kênh. yt-dlp không có extractor
+	// nào cho dòng thời gian của X hay trang Facebook — thêm một kênh như thế
+	// là tạo ra một job lặng lẽ hỏng mỗi vòng quét, retry ba lần, và không có gì
+	// trên giao diện nói vì sao.
+	//
+	// Lấy bài LẺ từ URL vẫn chạy bình thường trên mọi nền tảng — đây chỉ là
+	// giới hạn của việc quét cả kênh.
+	CheckChannelScan() error
 }
 
 // PostRef trỏ tới 1 bài đăng cụ thể trên nền tảng nguồn.
@@ -324,11 +340,23 @@ type Enqueuer interface {
 	EnqueueVoiceProcess(ctx context.Context, sourcePostID, actorID, voiceID string) error
 	// EnqueueVoiceText đọc đoạn text gõ tay đã lưu trên chính Voice — luồng
 	// này không có Bài Post nào để trỏ tới.
-	EnqueueVoiceText(ctx context.Context, voiceID, actorID string) error
+	EnqueueVoiceText(ctx context.Context, voiceID, actorID string, skipRewrite bool) error
 	// EnqueuePostMetadata lấy metadata gốc của Bài Post vừa tạo. Tách khỏi
 	// voice:process vì nó chạy trong worker (chỉ worker có yt-dlp) nhưng không
 	// được để API phải chờ.
 	EnqueuePostMetadata(ctx context.Context, sourcePostID string) error
 	EnqueueVoicePublish(ctx context.Context, voiceID, actorID string) error
 	EnqueueBreakingScan(ctx context.Context, listID string) error
+}
+
+// ChannelScan mô tả khả năng quét CẢ KÊNH của một nền tảng.
+//
+// Nhận diện được URL của một nền tảng KHÔNG có nghĩa là quét được kênh của nó:
+// yt-dlp lấy từng bài X / Facebook / Instagram bình thường, nhưng không có
+// extractor nào liệt kê được dòng thời gian của chúng.
+type ChannelScan struct {
+	Platform Platform `json:"platform"`
+	Enabled  bool     `json:"enabled"`
+	// Reason chỉ có khi Enabled=false: vì sao không, và nên làm gì thay thế.
+	Reason string `json:"reason,omitempty"`
 }

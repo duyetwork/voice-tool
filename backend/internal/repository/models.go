@@ -108,6 +108,7 @@ type ListBreaking struct {
 	BackfillDoneAt      *time.Time      `json:"backfill_done_at"`
 	BackfillExcludedIds []string        `json:"backfill_excluded_ids"`
 	MaxPostsPerRun      *int32          `json:"max_posts_per_run"`
+	LastError           *string         `json:"last_error"`
 }
 
 type ListScheduled struct {
@@ -136,6 +137,7 @@ type ListScheduled struct {
 	FixedTimesMin    []int16         `json:"fixed_times_min"`
 	BackfillLimit    int32           `json:"backfill_limit"`
 	BackfillDoneAt   *time.Time      `json:"backfill_done_at"`
+	LastError        *string         `json:"last_error"`
 }
 
 type LlmApiKey struct {
@@ -239,4 +241,5 @@ type Voice struct {
 	LlmApiSetID      *uuid.UUID `json:"llm_api_set_id"`
 	LlmModelUsed     *string    `json:"llm_model_used"`
 	AuthorCountryID  *int64     `json:"author_country_id"`
+	SpokenText       *string    `json:"spoken_text"`
 }

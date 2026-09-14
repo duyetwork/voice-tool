@@ -22,11 +22,12 @@ import { Can } from "@/components/permission";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
-import { Checkbox, Field, Input, Select } from "@/components/ui/field";
+import { Checkbox, Field, Input, Select, Toggle } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { Pagination, usePaging } from "@/components/ui/pagination";
 import { EmptyRow, RowActions, SortableTh, Table, Td, Th, useSorting } from "@/components/ui/table";
 import {
+  useChannelScanSupport,
   useCollectModes,
   useCreateScheduledList,
   useDeleteScheduledList,
@@ -222,9 +223,11 @@ export default function ScheduledListsPage() {
                 <Th>Hình thức</Th>
                 <Th>Ngôn ngữ</Th>
                 <Th>Người tạo</Th>
+                <Th>Kết quả</Th>
                 <SortableTh sorting={sorting} column="last_scanned_at">
-                  Quét
+                  Thời gian
                 </SortableTh>
+                <Th>Cấu hình quét</Th>
                 <Th>Trạng thái</Th>
                 <Can permission="can_write">
                   <Th className="text-right">Hành động</Th>
@@ -233,7 +236,7 @@ export default function ScheduledListsPage() {
             </thead>
             <tbody>
               {lists.isLoading ? (
-                <EmptyRow colSpan={9}>Đang tải…</EmptyRow>
+                <EmptyRow colSpan={11}>Đang tải…</EmptyRow>
               ) : lists.data?.items.length ? (
                 lists.data.items.map((list) => (
                   <tr key={list.id}>
@@ -255,9 +258,7 @@ export default function ScheduledListsPage() {
                       >
                         {list.source_url}
                       </a>
-                      <p className="text-xs text-slate-500">
-                        {platformLabel(list.platform)} · {formatDateTime(list.created_at)}
-                      </p>
+                      <p className="text-xs text-slate-500">{platformLabel(list.platform)}</p>
                     </Td>
                     <Td className="whitespace-nowrap">{formatInterval(list.scan_frequency)}</Td>
                     <Td className="text-xs">{collectModeLabel(list.collect_mode)}</Td>
@@ -282,6 +283,34 @@ export default function ScheduledListsPage() {
                     <Td className="whitespace-nowrap text-xs text-slate-600">
                       {list.created_by_email ?? "—"}
                     </Td>
+
+                    {/* Kênh này đã ra được gì. Không có số ở đây thì câu hỏi
+                        "kênh chạy chưa" phải trả lời bằng cách sang màn Bài
+                        Post lọc theo kênh — mà cột Quét chỉ nói kênh đã chạy,
+                        không nói nó có bắt được bài nào. */}
+                    <Td className="whitespace-nowrap text-xs">
+                      <div className="text-slate-900">{list.post_count ?? 0} bài post</div>
+                      <div className="text-slate-500">{list.voice_count ?? 0} voice</div>
+                    </Td>
+
+                    {/* Hai mốc thời gian đứng cạnh nhau: "thêm lúc nào" và
+                        "chạy lần cuối lúc nào" chỉ có nghĩa khi đọc cùng lúc —
+                        kênh thêm hôm qua mà chưa quét lần nào là một vấn đề,
+                        kênh thêm 5 phút trước thì không. */}
+                    <Td className="max-w-56 text-xs">
+                      <div className="whitespace-nowrap text-slate-500">
+                        tạo: {formatDateTime(list.created_at)}
+                      </div>
+                      <div className="whitespace-nowrap text-slate-900">
+                        quét: {formatDateTime(list.last_scanned_at)}
+                      </div>
+                      {/* Lỗi vòng quét gần nhất. Không có dòng này thì kênh
+                          hỏng và kênh chưa có bài mới trông y hệt nhau. */}
+                      {list.last_error ? (
+                        <p className="mt-1 font-medium text-red-700">{list.last_error}</p>
+                      ) : null}
+                    </Td>
+
                     <Td className="whitespace-nowrap text-xs">
                       <div>{list.scan_limit} bài/vòng</div>
                       <div className="text-slate-500">
@@ -293,34 +322,34 @@ export default function ScheduledListsPage() {
                           : `bài cũ: ${list.backfill_limit || "không lấy"}`}
                       </div>
                       <div className="text-slate-400">lịch: {describeSchedule(list)}</div>
-                      <div className="text-slate-400">
-                        quét: {formatDateTime(list.last_scanned_at)}
-                      </div>
                       <div className="max-w-32 truncate text-slate-400">
                         sync: {list.last_synced_post_id ?? "—"}
                       </div>
                     </Td>
                     <Td>
-                      <Badge tone={statusTone(list.status)}>{list.status}</Badge>
+                      {/* Trạng thái là công tắc, không phải nhãn đọc-rồi-đi-tìm-nút:
+                          thứ người ta muốn làm với cột này gần như luôn là bật/tắt
+                          nó. Người chỉ có quyền đọc vẫn thấy đúng trạng thái, chỉ
+                          là không gạt được. */}
+                      <Can
+                        permission="can_write"
+                        fallback={<Badge tone={statusTone(list.status)}>{list.status}</Badge>}
+                      >
+                        <Toggle
+                          checked={list.status === "active"}
+                          disabled={update.isPending}
+                          onChange={(next) =>
+                            update.mutate({ id: list.id, status: next ? "active" : "paused" })
+                          }
+                          label={list.status === "active" ? "Bật" : "Tắt"}
+                        />
+                      </Can>
                     </Td>
                     <Can permission="can_write">
                       <Td className="whitespace-nowrap text-right">
                         <RowActions>
                           <Button size="sm" variant="secondary" onClick={() => setEditing(list)}>
                             Sửa
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={update.isPending}
-                            onClick={() =>
-                              update.mutate({
-                                id: list.id,
-                                status: list.status === "active" ? "paused" : "active",
-                              })
-                            }
-                          >
-                            {list.status === "active" ? "Tạm dừng" : "Kích hoạt"}
                           </Button>
                           <Can permission="can_delete">
                             <Button
@@ -341,7 +370,7 @@ export default function ScheduledListsPage() {
                   </tr>
                 ))
               ) : (
-                <EmptyRow colSpan={9}>Chưa có kênh nào.</EmptyRow>
+                <EmptyRow colSpan={11}>Chưa có kênh nào.</EmptyRow>
               )}
             </tbody>
           </Table>
@@ -371,6 +400,10 @@ function ScheduledDialog({ list, onClose }: { list?: ListScheduled; onClose: () 
   const update = useUpdateScheduledList();
 
   const [sourceUrl, setSourceUrl] = React.useState(list?.source_url ?? "");
+  // Nền tảng của URL đang gõ có quét được cả kênh không (backend cũng từ chối,
+  // đây chỉ là để biết trước khi bấm Lưu).
+  const checkScan = useChannelScanSupport();
+  const blocked = checkScan(sourceUrl);
   // Giai đoạn hiện tại ưu tiên Mode A (extract audio gốc).
   const [collectMode, setCollectMode] = React.useState<CollectMode>(list?.collect_mode ?? "A");
   const [promptId, setPromptId] = React.useState(list?.prompt_id ?? "");
@@ -420,12 +453,15 @@ function ScheduledDialog({ list, onClose }: { list?: ListScheduled; onClose: () 
   return (
     <Modal
       title={editing ? "Sửa kênh Định kỳ" : "Thêm kênh Định kỳ"}
-      description="Kênh được quét theo tần suất riêng, lấy toàn bộ bài mới hơn mốc đã sync."
       width="2xl"
       onClose={onClose}
     >
       <form onSubmit={submit} className="space-y-4">
-        <Field label="URL kênh nguồn" required>
+        {/* Nhận diện được URL của một nền tảng không có nghĩa là quét được
+            kênh của nó: yt-dlp lấy từng bài X/Facebook/Instagram bình thường
+            nhưng không đọc được dòng thời gian. Nói ngay lúc gõ URL, chứ để
+            người dùng bấm Lưu rồi mới báo thì họ đã điền xong cả form. */}
+        <Field label="URL kênh nguồn" required error={blocked?.reason}>
           <Input
             type="url"
             placeholder="https://www.youtube.com/@kenh"
@@ -457,7 +493,6 @@ function ScheduledDialog({ list, onClose }: { list?: ListScheduled; onClose: () 
 
           <Field
             label="Hình thức thu thập"
-            hint="B và C đọc bằng TTS 3voices — cần API key khai ở mục AI Engine (C cần thêm Prompt mẫu)."
           >
             <Select
               value={collectMode}
@@ -501,7 +536,7 @@ function ScheduledDialog({ list, onClose }: { list?: ListScheduled; onClose: () 
           </div>
         ) : null}
 
-        <Field label="Ngôn ngữ mặc định" hint="Bài lẻ trong kênh vẫn sửa lại được ở bảng Bài Post.">
+        <Field label="Ngôn ngữ mặc định">
           <Select value={language} onChange={(e) => setLanguage(e.target.value)}>
             {LANGUAGE_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
