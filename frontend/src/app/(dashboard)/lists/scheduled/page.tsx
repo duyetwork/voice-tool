@@ -412,7 +412,10 @@ function ScheduledDialog({ list, onClose }: { list?: ListScheduled; onClose: () 
   );
   const [language, setLanguage] = React.useState(list?.language_default ?? "auto");
   const [autoProcess, setAutoProcess] = React.useState(list?.auto_process ?? false);
-  const [autoPublish, setAutoPublish] = React.useState(list?.auto_publish ?? false);
+  // auto_publish không còn ô riêng — nó đi theo autoProcess (xem CreateScheduled
+  // ở backend). randomAuthor mới là thứ quyết định voice của kênh có đứng tên
+  // được ai không.
+  const [randomAuthor, setRandomAuthor] = React.useState(list?.random_author ?? false);
   // Sửa kênh thì mở sẵn phần tham số: người vào đây thường là để chỉnh đúng
   // mấy con số đó, giấu đi lại bắt bấm thêm một lần.
   const [showTuning, setShowTuning] = React.useState(editing);
@@ -438,7 +441,7 @@ function ScheduledDialog({ list, onClose }: { list?: ListScheduled; onClose: () 
       scan_frequency: frequency,
       language_default: language,
       auto_process: autoProcess,
-      auto_publish: autoPublish,
+      random_author: randomAuthor,
       llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
       schedule: toChannelSchedule(schedule),
     };
@@ -546,15 +549,29 @@ function ScheduledDialog({ list, onClose }: { list?: ListScheduled; onClose: () 
           </Select>
         </Field>
 
-        <ScheduleFields value={schedule} onChange={setSchedule} withFixedTimes />
+        <ScheduleFields value={schedule} onChange={setSchedule} />
 
+        {/* Chỉ còn HAI ô, và "tự đăng lên multime" không nằm trong số đó:
+            tạo voice tự động mà không đăng thì bài nằm lại ở nháp và vẫn phải
+            vào bấm tay từng cái — tức là không tự động. Tick ô thứ nhất là
+            tạo xong đăng luôn. */}
         <label className="flex items-center gap-2 text-sm text-slate-700">
-          <Checkbox checked={autoProcess} onChange={(e) => setAutoProcess(e.target.checked)} />
-          Tự tạo Voice ngay (tắt để gom bài duyệt hàng loạt, tiết kiệm chi phí AI)
+          <Checkbox
+            checked={autoProcess}
+            onChange={(e) => {
+              setAutoProcess(e.target.checked);
+              // Bật tự động thì bật luôn Random author: không có ai ngồi chọn
+              // tài khoản đứng tên cho từng voice của kênh, mà multime bắt buộc
+              // phải có — bỏ trống là voice chạy xong rồi hỏng ở bước đăng.
+              // Vẫn bỏ tick lại được nếu muốn tự gán tay sau.
+              if (e.target.checked) setRandomAuthor(true);
+            }}
+          />
+          Tự động tạo Voice và đăng lên multime.ai (tắt để gom bài duyệt hàng loạt)
         </label>
         <label className="flex items-center gap-2 text-sm text-slate-700">
-          <Checkbox checked={autoPublish} onChange={(e) => setAutoPublish(e.target.checked)} />
-          Tự đăng lên multime.ai
+          <Checkbox checked={randomAuthor} onChange={(e) => setRandomAuthor(e.target.checked)} />
+          Random author — bốc tài khoản đứng tên bài theo ngôn ngữ của kênh
         </label>
 
         <div className="rounded-md border border-slate-200 p-3">

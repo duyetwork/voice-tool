@@ -133,6 +133,15 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (AppUser, error)
 	GetVoice(ctx context.Context, id uuid.UUID) (Voice, error)
 	HashtagsSyncedAt(ctx context.Context) (HashtagsSyncedAtRow, error)
+	// Prompt mẫu + Bộ API mà CHÍNH người này dùng gần đây nhất ở hình thức C.
+	//
+	// Để form tạo voice chọn sẵn thay vì bắt chọn lại mỗi lần: gần như ai cũng chạy
+	// đi chạy lại cùng một prompt, và hai ô bắt buộc phải tự tay chọn ở mỗi lần tạo
+	// là hai lần bấm thừa cộng một lần quên.
+	//
+	// Hai cột lấy ĐỘC LẬP, mỗi cột từ voice gần nhất có giá trị: chúng được chọn
+	// riêng, nên voice gần nhất có prompt chưa chắc là voice gần nhất có bộ API.
+	LastUsedPromptAndSet(ctx context.Context, userID uuid.UUID) (LastUsedPromptAndSetRow, error)
 	// `owner` NULL = xem tất cả (admin). User thường luôn được service ép owner =
 	// chính mình, nên không đọc được key của người khác dù gọi thẳng API.
 	ListAIEngines(ctx context.Context, owner *uuid.UUID) ([]ListAIEnginesRow, error)
@@ -235,6 +244,16 @@ type Querier interface {
 	// bản trong bucket của mình không còn ai đọc nữa. Ảnh lấy từ URL bài gốc không
 	// nằm trong bucket nên giữ nguyên link.
 	MarkVoicePublished(ctx context.Context, arg MarkVoicePublishedParams) (Voice, error)
+	// Bốc 1 quốc gia trong nhóm nói cùng một ngôn ngữ, ưu tiên theo sort_order.
+	//
+	// Dùng cho kênh bật "Random author": bài đọc bằng tiếng Việt mà đứng tên tài
+	// khoản Nhật thì người nghe thấy ngay là sai, nên việc bốc phải bị chặn lại
+	// trong đúng nhóm quốc gia của ngôn ngữ đó. Tên quốc gia do
+	// domain.CountriesForLanguage đưa xuống.
+	//
+	// So khớp không phân biệt hoa thường và bỏ khoảng trắng thừa: `country.name`
+	// là bản sao từ Strongbody, không phải chuỗi ta tự kiểm soát.
+	PickCountryForLanguage(ctx context.Context, names []string) (int64, error)
 	SetLastSyncedPostID(ctx context.Context, arg SetLastSyncedPostIDParams) error
 	// Ghi lỗi của vòng quét gần nhất lên kênh, hoặc xoá nó khi vòng quét chạy sạch.
 	// Người dùng chỉ nhìn thấy bảng kênh, không nhìn thấy log worker.
@@ -265,6 +284,13 @@ type Querier interface {
 	TouchAIEngineUsed(ctx context.Context, id uuid.UUID) error
 	TouchLLMAPISetUsed(ctx context.Context, id uuid.UUID) error
 	TouchListBreakingScanned(ctx context.Context, id uuid.UUID) error
+	// Ép kênh tới hạn quét NGAY: xoá mốc quét gần nhất.
+	//
+	// Dùng khi người dùng vừa BẬT LẠI một kênh đang tắt. Kênh tắt thì scheduler bỏ
+	// qua mọi vòng, nên nếu không có câu này thì sau khi bật, kênh phải chờ hết một
+	// chu kỳ nữa mới chạy — với kênh đặt tần suất 6 tiếng thì đó là 6 tiếng im lặng
+	// ngay sau một thao tác mà người dùng nghĩ là "cho chạy lại".
+	TouchListScheduledDue(ctx context.Context, id uuid.UUID) error
 	TouchListScheduledScanned(ctx context.Context, id uuid.UUID) error
 	// api_key_encrypted dùng COALESCE: bỏ trống ô API key ở form nghĩa là "giữ key
 	// cũ" — key thật không bao giờ gửi về trình duyệt nên không có gì để gửi lại.

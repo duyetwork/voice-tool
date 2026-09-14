@@ -17,8 +17,7 @@ import (
 //
 // Không nhắc "khởi động lại" nữa: điều kiện của mode C được đọc lại từ DB
 // trong lúc chạy, nên thêm Bộ API key xong là hình thức C bật ngay.
-const noLLMReason = "chưa có Bộ API key LLM nào để viết lại nội dung — thêm 1 bộ " +
-	"ở mục AI Engine > LLM Model là hình thức C bật ngay"
+const noLLMReason = "chưa có Bộ API key LLM"
 
 // ModeGate quyết định hình thức thu thập nào đang dùng được, và VÌ SAO cái
 // còn lại thì không.

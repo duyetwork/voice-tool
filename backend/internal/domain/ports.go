@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"math/rand/v2"
 	"time"
 )
 
@@ -242,6 +243,18 @@ func (g Gender) Valid() bool {
 	return false
 }
 
+// RandomGender bốc nam/nữ cho kênh bật "Random author".
+//
+// Bỏ `other` khỏi vòng bốc: danh bạ Strongbody gần như không có tài khoản nào
+// mang giới tính đó, nên bốc trúng nó nghĩa là danh sách rỗng và voice hỏng ở
+// bước đăng — ngẫu nhiên trong hai giá trị dùng được vẫn là ngẫu nhiên.
+func RandomGender() Gender {
+	if rand.IntN(2) == 0 {
+		return GenderMale
+	}
+	return GenderFemale
+}
+
 // MultimeUser là một tài khoản Strongbody chọn được làm tác giả bài đăng.
 type MultimeUser struct {
 	// ID chính là author_id gửi kèm khi đăng voice.
@@ -347,6 +360,13 @@ type Enqueuer interface {
 	EnqueuePostMetadata(ctx context.Context, sourcePostID string) error
 	EnqueueVoicePublish(ctx context.Context, voiceID, actorID string) error
 	EnqueueBreakingScan(ctx context.Context, listID string) error
+	// EnqueueScheduledScan đẩy MỘT vòng quét ngoài lịch cho 1 kênh Định kỳ.
+	//
+	// Dùng khi người dùng vừa bật lại một kênh đang tắt: kênh tắt thì scheduler
+	// bỏ qua mọi vòng, nên không có câu này thì phải chờ trọn một chu kỳ nữa.
+	// Vẫn đi qua đúng handler như vòng theo lịch, nên khung giờ của kênh vẫn
+	// được tôn trọng.
+	EnqueueScheduledScan(ctx context.Context, listID string) error
 }
 
 // ChannelScan mô tả khả năng quét CẢ KÊNH của một nền tảng.

@@ -2,7 +2,6 @@
 
 import * as React from "react";
 
-import { Button } from "@/components/ui/button";
 import { Checkbox, Field, Input, Select } from "@/components/ui/field";
 import type { ChannelSchedule } from "@/types/api";
 
@@ -53,11 +52,19 @@ export interface ScheduleDraft {
   fixedTimes: string[];
 }
 
+/**
+ * emptySchedule là lịch của kênh MỚI, và nó ĐIỀN SẴN 24/7 chứ không để trống.
+ *
+ * Ô trống với ô điền "00:00–23:59, cả 7 ngày" mô tả cùng một hành vi, nhưng ô
+ * trống bắt người dùng đoán xem trống nghĩa là gì — và với một cặp giờ thì
+ * "trống" hoàn toàn có thể đọc thành "không quét giờ nào". Điền sẵn thì cái
+ * đang chạy hiện ra ngay, và thu hẹp khung giờ chỉ là sửa hai con số.
+ */
 export const emptySchedule: ScheduleDraft = {
   timezone: "Asia/Ho_Chi_Minh",
-  from: "",
-  to: "",
-  weekdays: [],
+  from: "00:00",
+  to: "23:59",
+  weekdays: [0, 1, 2, 3, 4, 5, 6],
   fixedTimes: [],
 };
 
@@ -91,10 +98,10 @@ export function toChannelSchedule(draft: ScheduleDraft): ChannelSchedule {
     active_from_min: hasWindow ? from : null,
     active_to_min: hasWindow ? to : null,
     active_weekdays: draft.weekdays.length ? [...draft.weekdays].sort((a, b) => a - b) : [],
-    fixed_times_min: draft.fixedTimes
-      .map(minutesOf)
-      .filter((v): v is number => v !== null)
-      .sort((a, b) => a - b),
+    // Luôn RỖNG: "giờ chạy cố định" đã bị bỏ khỏi form, nên mỗi lần lưu là một
+    // lần dọn sạch giá trị cũ. Để lại giá trị mà không còn ô nào sửa nghĩa là
+    // kênh chạy theo một lịch người dùng không nhìn thấy và không gỡ được.
+    fixed_times_min: [],
     clear_window: !hasWindow,
   };
 }
@@ -109,9 +116,11 @@ export function scheduleDraftOf(list: {
 }): ScheduleDraft {
   return {
     timezone: list.timezone || emptySchedule.timezone,
-    from: list.active_from_min != null ? clockOf(list.active_from_min) : "",
-    to: list.active_to_min != null ? clockOf(list.active_to_min) : "",
-    weekdays: list.active_weekdays ?? [],
+    // Kênh lưu NULL nghĩa là 24/7 — hiện đúng khung đó thay vì ô trống, để thứ
+    // đang chạy và thứ nhìn thấy là một.
+    from: list.active_from_min != null ? clockOf(list.active_from_min) : emptySchedule.from,
+    to: list.active_to_min != null ? clockOf(list.active_to_min) : emptySchedule.to,
+    weekdays: list.active_weekdays?.length ? list.active_weekdays : emptySchedule.weekdays,
     fixedTimes: (list.fixed_times_min ?? []).map(clockOf),
   };
 }
@@ -140,19 +149,22 @@ export function describeSchedule(list: {
   return parts.length ? parts.join(" · ") : "24/7";
 }
 
+/**
+ * ScheduleFields — khung giờ quét của kênh.
+ *
+ * "Giờ chạy cố định" đã bị bỏ khỏi form: nó là kiểu lịch THỨ HAI, chạy theo mốc
+ * đồng hồ và làm tần suất "mỗi N phút" bị bỏ qua — hai cách hẹn lịch cùng nằm
+ * trong một hộp thoại, cái này lặng lẽ vô hiệu hoá cái kia. Kênh nào còn giá
+ * trị cũ thì lần lưu tiếp theo xoá sạch (form luôn gửi mảng rỗng).
+ */
 export function ScheduleFields({
   value,
   onChange,
-  /** Giờ chạy cố định chỉ có ở Danh sách Định kỳ — Breaking quét liên tục. */
-  withFixedTimes = false,
 }: {
   value: ScheduleDraft;
   onChange: (next: ScheduleDraft) => void;
-  withFixedTimes?: boolean;
 }) {
-  const [open, setOpen] = React.useState(
-    Boolean(value.from || value.weekdays.length || value.fixedTimes.length),
-  );
+  const [open, setOpen] = React.useState(false);
 
   function toggleDay(day: number) {
     onChange({
@@ -188,7 +200,7 @@ export function ScheduleFields({
                 ))}
               </Select>
             </Field>
-            <Field label="Bắt đầu quét" hint="Bỏ trống cả hai ô = quét 24/7.">
+            <Field label="Bắt đầu quét" hint="Mặc định 00:00–23:59 = quét cả ngày.">
               <Input
                 type="time"
                 value={value.from}
@@ -204,7 +216,7 @@ export function ScheduleFields({
             </Field>
           </div>
 
-          <Field label="Ngày trong tuần" hint="Không chọn ngày nào = quét mọi ngày.">
+          <Field label="Ngày trong tuần" hint="Mặc định cả 7 ngày. Bỏ tick hết cũng là quét mọi ngày.">
             <div className="flex flex-wrap gap-3">
               {WEEKDAYS.map((d) => (
                 <label key={d.value} className="flex items-center gap-1.5 text-sm text-slate-700">
@@ -218,53 +230,6 @@ export function ScheduleFields({
             </div>
           </Field>
 
-          {withFixedTimes ? (
-            <Field
-              label="Giờ chạy cố định"
-              hint="Có giờ cố định thì tần suất 'mỗi N phút' bị bỏ qua. Hợp với kênh đăng theo giờ — vừa đúng hơn vừa rẻ hơn hẳn."
-            >
-              <div className="space-y-2">
-                {value.fixedTimes.map((clock, i) => (
-                  <div key={i} className="flex gap-2">
-                    <Input
-                      type="time"
-                      value={clock}
-                      onChange={(e) =>
-                        onChange({
-                          ...value,
-                          fixedTimes: value.fixedTimes.map((c, idx) =>
-                            idx === i ? e.target.value : c,
-                          ),
-                        })
-                      }
-                      className="w-40"
-                    />
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="danger"
-                      onClick={() =>
-                        onChange({
-                          ...value,
-                          fixedTimes: value.fixedTimes.filter((_, idx) => idx !== i),
-                        })
-                      }
-                    >
-                      Bỏ
-                    </Button>
-                  </div>
-                ))}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => onChange({ ...value, fixedTimes: [...value.fixedTimes, "08:00"] })}
-                >
-                  Thêm giờ chạy
-                </Button>
-              </div>
-            </Field>
-          ) : null}
         </div>
       ) : null}
     </div>
@@ -273,7 +238,6 @@ export function ScheduleFields({
 
 function describeDraft(draft: ScheduleDraft): string {
   const parts: string[] = [];
-  if (draft.fixedTimes.length) parts.push("chạy lúc " + draft.fixedTimes.join(", "));
   if (draft.from && draft.to) parts.push(`${draft.from}–${draft.to}`);
   if (draft.weekdays.length) {
     parts.push(

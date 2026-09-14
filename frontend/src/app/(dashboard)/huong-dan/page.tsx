@@ -6,516 +6,861 @@ import Link from "next/link";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Table, Td, Th } from "@/components/ui/table";
-import { useCollectModes, useMe } from "@/hooks/use-api";
+import { useCollectModes, useMe, usePlatforms } from "@/hooks/use-api";
 
 /**
  * Hướng dẫn sử dụng — viết cho người dùng tool, không phải người phát triển.
  *
- * Đặt trong app thay vì file docs vì đây là thứ người dùng cần đọc ĐÚNG LÚC
- * đang thao tác: mỗi mục đều dẫn thẳng tới màn hình tương ứng, và trạng thái
- * hình thức thu thập (C bật hay tắt, vì sao) lấy từ chính server đang chạy chứ
- * không phải chép tay vào tài liệu rồi để nó lệch dần.
+ * Tổ chức theo MÀN HÌNH chứ không theo khái niệm: người mở trang này gần như
+ * luôn đang đứng ở một màn cụ thể và vướng một thao tác cụ thể, nên thứ họ cần
+ * là "màn Danh sách kênh Định kỳ, phần thêm kênh, ô này nghĩa là gì" — không
+ * phải một bài giảng về kiến trúc. Mỗi màn có đủ: các bước thao tác, giải thích
+ * từng ô trong hộp thoại, và ý nghĩa từng cột trong bảng.
+ *
+ * Đặt trong app thay vì file docs vì đây là thứ phải đọc ĐÚNG LÚC đang thao
+ * tác: mỗi mục dẫn thẳng tới màn hình tương ứng, và những thứ phụ thuộc cấu
+ * hình server (hình thức C bật hay tắt, nền tảng nào quét được cả kênh) lấy từ
+ * chính server đang chạy chứ không chép tay rồi để nó lệch dần.
  */
+
+/** TOC là nguồn duy nhất của mục lục VÀ của id các mục — hai thứ không được lệch. */
+const TOC: { id: string; label: string; sub?: { id: string; label: string }[] }[] = [
+  { id: "tong-quan", label: "1. Hiểu mô hình 3 tầng" },
+  {
+    id: "kenh-dinh-ky",
+    label: "2. Danh sách kênh Định kỳ",
+    sub: [
+      { id: "dk-them", label: "2.1 Thêm kênh" },
+      { id: "dk-thamso", label: "2.2 Tham số quét" },
+      { id: "dk-lich", label: "2.3 Lịch quét" },
+      { id: "dk-logic", label: "2.4 Kênh quét ra bài như thế nào" },
+      { id: "dk-bang", label: "2.5 Các cột trong bảng" },
+      { id: "dk-sua", label: "2.6 Sửa / bật tắt / xoá kênh" },
+    ],
+  },
+  {
+    id: "kenh-breaking",
+    label: "3. Danh sách kênh Breaking",
+    sub: [
+      { id: "bk-khacgi", label: "3.1 Khác Định kỳ ở đâu" },
+      { id: "bk-regex", label: "3.2 Điều kiện bắt bài" },
+    ],
+  },
+  {
+    id: "tao-voice",
+    label: "4. Tạo Voice thủ công",
+    sub: [
+      { id: "tv-hinhthuc", label: "4.1 Ba hình thức tạo" },
+      { id: "tv-form", label: "4.2 Từng ô trong hộp thoại" },
+    ],
+  },
+  {
+    id: "man-voice",
+    label: "5. Màn Voice",
+    sub: [
+      { id: "v-bang", label: "5.1 Các cột và trạng thái" },
+      { id: "v-thongtin", label: "5.2 Sửa tab Thông tin" },
+      { id: "v-noidung", label: "5.3 Sửa tab Nội dung" },
+      { id: "v-dang", label: "5.4 Đăng lên multime" },
+    ],
+  },
+  { id: "man-baipost", label: "6. Màn Bài Post" },
+  {
+    id: "danh-muc",
+    label: "7. Prompt mẫu & AI Engine",
+    sub: [
+      { id: "dm-prompt", label: "7.1 Prompt mẫu" },
+      { id: "dm-tts", label: "7.2 API key TTS" },
+      { id: "dm-llm", label: "7.3 Bộ API key LLM" },
+    ],
+  },
+  { id: "su-co", label: "8. Gặp sự cố thì xem ở đâu" },
+];
+
 export default function HuongDanPage() {
   const me = useMe();
   const modes = useCollectModes();
+  const platforms = usePlatforms();
   const isAdmin = me.data?.role === "admin";
 
   const modeMeta = modes.data?.collect_modes ?? [];
   const metaOf = (mode: string) => modeMeta.find((m) => m.mode === mode);
+  const channelScan = platforms.data?.channel_scan ?? [];
 
   return (
     <>
       <PageHeader
         title="Hướng dẫn sử dụng"
-        description="Tool làm gì, thao tác theo thứ tự nào, và những chỗ dễ vấp."
+        description="Từng màn hình, từng thao tác, từng ô trong hộp thoại."
       />
 
       <div className="grid gap-6 xl:grid-cols-[1fr_320px]">
         <div className="space-y-6">
-          <Section title="Mô hình 3 tầng — hiểu cái này thì mọi thứ còn lại tự sáng">
+          {/* ------------------------------------------------------------ */}
+          <Section id="tong-quan" title="1. Hiểu mô hình 3 tầng">
+            <p>
+              Mọi thứ trong tool chạy theo đúng một chuỗi. Nắm chuỗi này thì mọi màn hình còn lại
+              tự sáng:
+            </p>
             <Flow />
-            <Table>
-              <thead>
-                <tr>
-                  <Th>Tầng</Th>
-                  <Th>Là gì</Th>
-                  <Th>Vì sao có nó</Th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <Td className="font-medium text-slate-900">Danh sách kênh</Td>
-                  <Td>Kênh nguồn cần theo dõi, kèm điều kiện lọc</Td>
-                  <Td>Không phải ngồi canh kênh rồi dán từng link</Td>
-                </tr>
-                <tr>
-                  <Td className="font-medium text-slate-900">Bài Post</Td>
-                  <Td>Một bài đăng cụ thể đã lấy được nội dung</Td>
-                  <Td>
-                    Duyệt trước khi tốn tiền AI, và tạo lại voice khác từ cùng bài mà không phải
-                    fetch lại
-                  </Td>
-                </tr>
-                <tr>
-                  <Td className="font-medium text-slate-900">Voice</Td>
-                  <Td>File audio + phần chữ đi kèm</Td>
-                  <Td>Nghe thử, sửa, rồi mới đăng</Td>
-                </tr>
-              </tbody>
-            </Table>
+            <ul className="ml-4 list-disc space-y-1">
+              <li>
+                <b>Danh sách kênh</b> — nơi khai kênh nguồn. Hệ thống tự quét theo lịch và đẻ ra
+                Bài Post. Không bắt buộc: tạo voice tay thì bỏ qua tầng này.
+              </li>
+              <li>
+                <b>Bài Post</b> — một bài đăng đã lấy về, kèm nội dung và metadata gốc. Đây là nơi
+                duyệt trước khi tốn tiền AI.
+              </li>
+              <li>
+                <b>Voice</b> — file audio + phần chữ đi kèm (tiêu đề, hashtag, ảnh bìa, tác giả).
+              </li>
+              <li>
+                <b>multime.ai</b> — đích đến. Voice chỉ đăng được khi đã đủ tiêu đề, hashtag, tác
+                giả và dài hơn mức tối thiểu.
+              </li>
+            </ul>
             <Note>
-              Ngoại lệ duy nhất: <b>gõ text tay thì tạo thẳng Voice</b>, không sinh Bài Post — text
-              không có bài gốc nào để truy vết về.
+              Voice gõ tay là ngoại lệ duy nhất: nó không sinh Bài Post, vì không có bài gốc nào để
+              truy vết lại.
             </Note>
           </Section>
 
-          <Section title="Ba hình thức tạo voice">
-            <Table>
-              <thead>
-                <tr>
-                  <Th className="w-40">Hình thức</Th>
-                  <Th>Làm gì</Th>
-                  <Th>Dùng khi</Th>
-                  <Th className="w-28">Trạng thái</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  {
-                    mode: "A",
-                    name: "Extract từ URL",
-                    what: "Tải video/audio gốc, tách thẳng giọng nói",
-                    when: "Muốn giữ nguyên giọng người trong video",
-                  },
-                  {
-                    mode: "B",
-                    name: "Text → TTS",
-                    what: "Lấy nội dung bài (đúng phần chữ bạn thấy) rồi cho AI đọc",
-                    when: "Bài chỉ có chữ, hoặc muốn giọng đọc thống nhất",
-                  },
-                  {
-                    mode: "C",
-                    name: "Text + Prompt → TTS",
-                    what: "Lấy nội dung, cho LLM viết lại theo Prompt mẫu (kèm tiêu đề + hashtag), rồi AI đọc bản viết lại",
-                    when: "Cần tóm tắt, đổi giọng văn, chuẩn hoá bản tin",
-                  },
-                ].map((row) => {
-                  const meta = metaOf(row.mode);
-                  const enabled = meta?.enabled ?? true;
-                  return (
-                    <tr key={row.mode}>
-                      <Td className="font-medium text-slate-900">
-                        {row.mode} — {row.name}
-                      </Td>
-                      <Td>{row.what}</Td>
-                      <Td>{row.when}</Td>
-                      <Td>
-                        {enabled ? (
-                          <span className="text-xs font-medium text-green-700">Đang bật</span>
-                        ) : (
-                          <span className="text-xs text-amber-700" title={meta?.reason}>
-                            Đang tắt
-                          </span>
-                        )}
-                      </Td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </Table>
-            {/* Lý do lấy thẳng từ server nên không bao giờ lệch với thực tế. */}
-            {modeMeta
-              .filter((m) => !m.enabled && m.reason)
-              .map((m) => (
-                <Note key={m.mode} tone="warn">
-                  Hình thức <b>{m.mode}</b> đang tắt: {m.reason}
-                </Note>
-              ))}
+          {/* ------------------------------------------------------------ */}
+          <Section id="kenh-dinh-ky" title="2. Danh sách kênh Định kỳ">
+            <p>
+              <NavLink href="/lists/scheduled">Mở màn Định kỳ</NavLink> — kênh quét theo{" "}
+              <b>tần suất</b> của riêng nó và lấy <b>mọi bài mới</b> kể từ lần quét trước. Dùng cho
+              kênh mà bài nào cũng cần.
+            </p>
 
-            <Tip title="Hình thức C: bản LLM viết ra mới là thứ được đọc">
-              Ở mọi chỗ chọn hình thức C đều có ô <b>Bộ API</b> ngay cạnh ô Prompt — đó là túi key
-              LLM sẽ viết lại nội dung, nên hãy chọn một bộ: để trống thì hệ thống rơi về key khai
-              trong cấu hình server, mà trên production chỗ đó không có key nào. Đường đi là{" "}
-              <i>nội dung nguồn + prompt → LLM → bản mới → TTS đọc bản mới</i>. Ở modal tạo voice,
-              ô <b>Nội dung</b> là thứ đưa cho LLM, <u>không phải</u> thứ được đọc.
-            </Tip>
+            <SubSection id="dk-them" title="2.1 Thêm kênh">
+              <Step n={1} title="Bấm + Thêm kênh">
+                Hộp thoại mở ra là hộp thoại dùng chung cho cả thêm và sửa — mọi thứ khai ở đây đều
+                sửa lại được sau.
+              </Step>
+              <Step n={2} title="Dán URL kênh nguồn">
+                URL của <i>cả kênh</i>, không phải một bài. Ví dụ{" "}
+                <code className="rounded bg-slate-100 px-1">
+                  https://www.youtube.com/@kenh/videos
+                </code>
+                . Nền tảng được nhận ra từ chính URL, không có ô chọn riêng.
+              </Step>
+              <Step n={3} title="Chọn hình thức tạo">
+                Xem <a className="text-indigo-700 hover:underline" href="#tv-hinhthuc">mục 4.1</a>.
+                Hình thức C bắt buộc chọn thêm <b>Prompt mẫu</b> và <b>Bộ API</b> — quét tự động
+                không có ai bấm nút để chọn, nên hai thứ đó phải nằm sẵn trên kênh.
+              </Step>
+              <Step n={4} title="Chọn tần suất quét và ngôn ngữ">
+                Tần suất tối thiểu 5 phút. Ngôn ngữ để <i>Tự nhận diện</i> nếu kênh đa ngữ; chọn
+                cụ thể thì mọi Bài Post và Voice của kênh nhận ngôn ngữ đó.
+              </Step>
+              <Step n={5} title="Chọn hai ô tự động (nếu muốn)">
+                Xem <a className="text-indigo-700 hover:underline" href="#dk-tudong">ngay bên dưới</a>.
+              </Step>
+              <Step n={6} title="Bấm Thêm kênh">
+                Kênh chạy vòng quét đầu tiên gần như ngay sau đó.
+              </Step>
 
-            <Tip title="LLM đặt luôn tiêu đề và hashtag">
-              Một lần gọi LLM trả về ba thứ: <b>tiêu đề</b>, <b>nội dung đọc</b> và{" "}
-              <b>hashtag</b> — model vừa đọc xong cả bài nên nó biết bài nói gì rõ hơn bất kỳ ai
-              nhìn một dòng trong bảng, và gọi lần thứ hai chỉ để hỏi tiêu đề là trả tiền hai lần
-              cho cùng một ngữ cảnh. Thứ bạn đã tự điền thì hệ thống <b>giữ nguyên</b>: tiêu đề
-              hay hashtag gõ tay ở tab Thông tin luôn thắng đề xuất của LLM. Prompt mẫu của bạn
-              lái model ra khỏi khuôn JSON thì cũng không sao — lúc đó cả câu trả lời được coi là
-              lời đọc, chỉ mất phần tiêu đề tự động.
-            </Tip>
+              <Tip id="dk-tudong" title="Hai ô tự động — mặc định TẮT cả hai">
+                <b>Tự động tạo Voice và đăng lên multime.ai</b>: quét được bài là tạo voice và đăng
+                luôn, không cần ai bấm gì. Tắt thì bài chỉ nằm ở màn Bài Post chờ duyệt — dùng khi
+                muốn gom lại duyệt hàng loạt cho đỡ tốn chi phí AI.
+                <br />
+                <b>Random author</b>: bốc một tài khoản đứng tên bài đăng, lọc theo quốc gia suy ra
+                từ ngôn ngữ của kênh. Bật ô thứ nhất thì ô này <b>tự bật theo</b>, vì multime bắt
+                buộc bài phải có tác giả — không có thì voice chạy xong rồi hỏng ở đúng bước cuối.
+                Vẫn bỏ tick lại được nếu bạn muốn tự gán tác giả bằng tay sau.
+              </Tip>
 
-            <Tip title="Tab Nội dung của voice: hai ô, hai vai trò">
-              Với hình thức C, tab <b>Nội dung</b> có hai ô và chúng khác nhau:{" "}
-              <b>Nội dung</b> là đầu vào của prompt, <b>Nội dung đọc</b> là đúng đoạn TTS đã đọc
-              ra file (bản LLM viết lại). Sửa ô nào thì <b>Tạo lại voice</b> làm việc đó: sửa{" "}
-              <b>Nội dung đọc</b> thì đọc nguyên văn chữ bạn chốt và không gọi LLM nữa; sửa{" "}
-              <b>Nội dung</b> thì chạy prompt lại từ đầu và lời đọc cũ bị thay. Form nói sẵn điều
-              sắp xảy ra ở dòng ngay trên nút bấm. Hình thức B chỉ có một ô — nó vừa là nguồn vừa
-              là lời đọc.
-            </Tip>
+              <Tip title="Chỉ YouTube và TikTok quét được CẢ KÊNH">
+                Giới hạn của yt-dlp, không phải cấu hình sai. Trạng thái thật của server đang chạy:
+                <div className="mt-2 space-y-1">
+                  {channelScan.map((p) => (
+                    <div key={p.platform} className="flex gap-2">
+                      <span className={p.enabled ? "text-green-700" : "text-amber-700"}>
+                        {p.enabled ? "✓" : "✗"}
+                      </span>
+                      <span>
+                        <b>{p.platform}</b>
+                        {p.reason ? <span className="text-slate-500"> — {p.reason}</span> : null}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <span className="mt-2 block">
+                  Thêm kênh trên nền tảng không quét được sẽ bị từ chối ngay ở form. Lấy bài{" "}
+                  <b>lẻ từ URL</b> thì cả năm nền tảng đều chạy bình thường.
+                </span>
+              </Tip>
+            </SubSection>
+
+            <SubSection id="dk-thamso" title="2.2 Tham số quét (nâng cao)">
+              <p>
+                Ba con số dễ nhầm nhất trong tool. Cả ba đều <b>điền sẵn giá trị mặc định</b>; xoá
+                trắng ô nào thì ô đó về 0.
+              </p>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th className="w-56">Ô</Th>
+                    <Th>Trả lời câu hỏi</Th>
+                    <Th className="w-40">Mặc định</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Số bài mỗi lần quét</Td>
+                    <Td>
+                      Mỗi vòng quét nhìn bao nhiêu bài mới nhất của kênh để dò bài mới? Đây là{" "}
+                      <i>cửa sổ</i> — kênh đăng nhiều hơn số này giữa hai lần quét thì phần dôi ra
+                      bị bỏ sót.
+                    </Td>
+                    <Td>50</Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Số bài cũ của kênh</Td>
+                    <Td>
+                      Lúc <i>thêm</i> kênh, lấy về bao nhiêu bài đã đăng từ trước? Chỉ có tác dụng
+                      đúng một lần, ở vòng quét đầu tiên. 0 = chỉ lấy bài đăng sau khi thêm kênh.
+                    </Td>
+                    <Td>50</Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Trần Bài Post mỗi vòng</Td>
+                    <Td>
+                      Mỗi vòng được <i>tạo</i> tối đa bao nhiêu Bài Post? Chặn nổ chi phí AI khi
+                      kênh đăng ồ ạt. Phần vượt <b>không mất</b> — nó nằm lại cho vòng sau. 0 =
+                      không giới hạn.
+                    </Td>
+                    <Td>50</Td>
+                  </tr>
+                </tbody>
+              </Table>
+              <Note>
+                Đặt <b>Trần Bài Post</b> lớn hơn <b>Số bài mỗi lần quét</b> thì phần vượt không có
+                tác dụng — một vòng không thể tạo ra nhiều bài hơn số bài nó nhìn thấy. Form cảnh
+                báo đỏ nhưng vẫn cho lưu, vì đó là cách hợp lệ để nói &quot;coi như không giới
+                hạn&quot;.
+              </Note>
+            </SubSection>
+
+            <SubSection id="dk-lich" title="2.3 Lịch quét">
+              <p>
+                Mở khối <b>Lịch quét</b> trong hộp thoại. Mặc định đã điền sẵn{" "}
+                <b>00:00–23:59, cả 7 ngày</b> — tức là quét cả ngày mọi ngày.
+              </p>
+              <ul className="ml-4 list-disc space-y-1">
+                <li>
+                  <b>Múi giờ</b> — khung giờ bên dưới tính theo múi này. Quan trọng: lịch chạy theo
+                  giờ máy chủ (UTC), nên &quot;6h–23h&quot; mà không nói múi giờ thì lệch 7 tiếng.
+                </li>
+                <li>
+                  <b>Bắt đầu / Ngừng quét</b> — thu hẹp lại để khỏi quét lúc kênh chắc chắn không
+                  đăng. Đặt giờ ngừng <i>sớm hơn</i> giờ bắt đầu = khung vắt qua nửa đêm
+                  (22:00–06:00).
+                </li>
+                <li>
+                  <b>Ngày trong tuần</b> — bỏ tick ngày kênh nghỉ. Bỏ tick hết cũng là quét mọi
+                  ngày.
+                </li>
+              </ul>
+              <Note>
+                Đổi tần suất hoặc lịch có hiệu lực sau tối đa 30 giây — đó là chu kỳ hệ thống đọc
+                lại lịch từ database.
+              </Note>
+            </SubSection>
+
+            <SubSection id="dk-logic" title="2.4 Kênh quét ra bài như thế nào">
+              <p>Đây là phần hay bị hiểu nhầm nhất, nên viết ra đúng thứ tự:</p>
+              <Step n={1} title="Vòng quét ĐẦU TIÊN — lúc vừa thêm kênh">
+                Hệ thống hỏi nền tảng lấy đúng <b>Số bài cũ của kênh</b> bài mới nhất (mới nhất
+                trước, lùi dần về cũ), tạo Bài Post cho tất cả, rồi <b>ghi lại ID bài mới nhất</b>{" "}
+                làm mốc đồng bộ.
+              </Step>
+              <Step n={2} title="Các vòng sau — theo lịch đã đặt">
+                Hỏi nền tảng lấy <b>Số bài mỗi lần quét</b> bài mới nhất, rồi chỉ giữ những bài{" "}
+                <i>mới hơn mốc</i>. Xử lý từ cũ đến mới để mốc tiến liên tục, xong thì cập nhật mốc
+                thành bài mới nhất vừa lấy.
+              </Step>
+              <Step n={3} title="Tắt rồi bật lại kênh">
+                Bật lại là <b>quét ngay</b>, không chờ hết chu kỳ. Nếu lúc bật đang nằm ngoài khung
+                giờ của kênh thì vòng đó tự bỏ qua và chờ tới giờ theo lịch.
+              </Step>
+              <Note tone="warn">
+                Hệ quả cần nhớ: <b>Số bài cũ của kênh</b> chỉ có tác dụng ở vòng đầu. Sau khi vòng
+                đầu chạy xong, ô đó bị khoá lại vì đổi số cũng không còn gì để lấy nữa.
+              </Note>
+              <Tip title="Chống lấy trùng">
+                Một bài chỉ vào hệ thống đúng một lần, tính theo <b>ID bài trên nền tảng</b> chứ
+                không theo URL — cùng một video Facebook có cả dạng <code>/watch?v=</code> và{" "}
+                <code>/reel/</code>, và cùng một bài nằm trong hai kênh vẫn chỉ tạo một Bài Post.
+              </Tip>
+            </SubSection>
+
+            <SubSection id="dk-bang" title="2.5 Các cột trong bảng">
+              <Table>
+                <thead>
+                  <tr>
+                    <Th className="w-40">Cột</Th>
+                    <Th>Đọc thế nào</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Kênh</Td>
+                    <Td>URL kênh (bấm mở được) + nền tảng.</Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Tần suất</Td>
+                    <Td>Khoảng nghỉ giữa hai vòng quét.</Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Hình thức / Ngôn ngữ</Td>
+                    <Td>
+                      Ngôn ngữ đổi thẳng trong ô chọn trên bảng, không cần mở hộp thoại — và đổi ở
+                      đây <b>lan xuống</b> mọi Bài Post của kênh.
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Kết quả</Td>
+                    <Td>
+                      Số Bài Post và số Voice kênh này đã đẻ ra. Đã quét mà vẫn 0 nghĩa là kênh
+                      chạy nhưng không bắt được gì.
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Thời gian</Td>
+                    <Td>
+                      Mốc tạo và mốc quét gần nhất. Dòng <span className="text-red-700">đỏ</span> là
+                      lỗi của vòng quét gần nhất — không có dòng đó nghĩa là vòng vừa rồi chạy sạch.
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Cấu hình quét</Td>
+                    <Td>Tóm tắt ba con số ở mục 2.2, lịch quét, và mốc đồng bộ hiện tại.</Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Trạng thái</Td>
+                    <Td>Công tắc bật/tắt. Gạt là có hiệu lực ngay.</Td>
+                  </tr>
+                </tbody>
+              </Table>
+            </SubSection>
+
+            <SubSection id="dk-sua" title="2.6 Sửa / bật tắt / xoá kênh">
+              <ul className="ml-4 list-disc space-y-1">
+                <li>
+                  <b>Sửa</b> — nút trên từng dòng, mở lại đúng hộp thoại lúc thêm. Mọi trường đều
+                  sửa được, trừ <i>Số bài cũ của kênh</i> sau khi vòng đầu đã chạy.
+                </li>
+                <li>
+                  <b>Bật / tắt</b> — công tắc ở cột Trạng thái. Tắt thì hệ thống bỏ qua mọi vòng
+                  quét; bật lại thì quét ngay.
+                </li>
+                <li>
+                  <b>Xoá</b> — chỉ xoá kênh. Bài Post và Voice đã tạo vẫn còn.
+                </li>
+              </ul>
+            </SubSection>
           </Section>
 
-          <Section title="Các bước thao tác">
-            <Step n={0} title="Đăng nhập (làm 1 lần)">
-              Dùng <b>chính tài khoản strongbody/multime</b> của bạn — hệ thống không có đăng ký và
-              không lưu mật khẩu riêng. Điều này quan trọng ở chỗ: voice bạn tạo được đăng lên
-              multime <b>dưới đúng tài khoản đó</b>, không phải một tài khoản dùng chung.
-            </Step>
+          {/* ------------------------------------------------------------ */}
+          <Section id="kenh-breaking" title="3. Danh sách kênh Breaking">
+            <SubSection id="bk-khacgi" title="3.1 Khác Định kỳ ở đâu">
+              <p>
+                <NavLink href="/lists/breaking">Mở màn Breaking</NavLink>. Cùng một hộp thoại, cùng
+                các tham số quét, khác đúng hai điểm:
+              </p>
+              <ul className="ml-4 list-disc space-y-1">
+                <li>
+                  <b>Chỉ lấy bài khớp điều kiện</b> — bài không khớp bị bỏ qua hoàn toàn.
+                </li>
+                <li>
+                  <b>Không có mốc đồng bộ</b> — mỗi vòng xét lại cùng một cửa sổ bài mới nhất, và
+                  dựa vào chống-trùng để không tạo lại. Nên cửa sổ quét ở đây quan trọng hơn: đặt
+                  quá nhỏ là bỏ sót bài.
+                </li>
+              </ul>
+            </SubSection>
 
-            <Step n={1} title="Khai API key TTS (bắt buộc nếu dùng hình thức B/C)">
-              Vào <NavLink href="/ai-engines">AI Engine</NavLink> → tab <b>TTS Model</b> →{" "}
-              <b>Thêm API key</b> → dán key 3voices (dạng{" "}
-              <code className="rounded bg-slate-100 px-1">sk-ov-…</code>).
-              <br />
-              Key được mã hoá trước khi lưu và <b>không hiển thị lại</b> — bảng chỉ còn 4 ký tự cuối
-              để đối chiếu. Voice của bạn chạy bằng key của bạn, nên quota và hoá đơn 3voices về
-              đúng người dùng nó.
-              {isAdmin ? (
-                <>
-                  {" "}
-                  Là admin, bạn còn thấy key của mọi người và gán được 1 key cho nhiều tài khoản.
-                </>
-              ) : null}
-            </Step>
+            <SubSection id="bk-regex" title="3.2 Điều kiện bắt bài">
+              <p>
+                Gõ từ khoá, hashtag hay biểu thức chính quy — mỗi dòng một điều kiện, khớp{" "}
+                <b>một dòng bất kỳ</b> là lấy bài. Hệ thống tự chuẩn hoá từ khoá thô thành regex,
+                nên không cần biết regex vẫn dùng được.
+              </p>
+              <Note>
+                Điều kiện so với <b>toàn bộ phần chữ</b> của bài (tiêu đề + mô tả), không phân biệt
+                hoa thường.
+              </Note>
+              <Tip title="Không bắt được bài nào?">
+                Cột Kết quả vẫn 0 dù cột Thời gian cho thấy đã quét nghĩa là điều kiện không khớp.
+                Bấm <b>Quét thử</b> để chạy một vòng ngay và xem lại.
+              </Tip>
+            </SubSection>
+          </Section>
 
-            <Step n={2} title="Khai Bộ API key LLM (chỉ cần nếu dùng hình thức C)">
-              Vào <NavLink href="/ai-engines">AI Engine</NavLink> → tab <b>LLM Model</b> →{" "}
-              <b>Thêm bộ API</b>.
-              <div className="mt-2 space-y-2">
-                <p>
-                  Một <b>bộ</b> là túi key của nhiều nhà (Gemini, OpenAI, Anthropic) chứ không phải
-                  một key lẻ. Lý do: hệ thống thử lần lượt từ model rẻ nhất, hết hạn mức thì tự
-                  chuyển sang nhà kế tiếp — có key của một nhà thôi thì không dự phòng được cho ai.
-                </p>
-                <p>
-                  Cột <b>Sức khoẻ</b> của từng key nói luôn phải làm gì: <i>Đang nghỉ</i> = hết hạn
-                  mức, cứ chờ tới giờ ghi trong đó; <i>Đã tắt</i> = key sai hoặc bị thu hồi, phải
-                  dán key mới. Dán key mới là key tự bật lại.
-                </p>
-                <p>
-                  Bộ dùng chung được: chọn người ở ô <b>Dùng chung với</b>. Họ dùng được bộ khi tạo
-                  voice nhưng không sửa được key.
+          {/* ------------------------------------------------------------ */}
+          <Section id="tao-voice" title="4. Tạo Voice thủ công">
+            <SubSection id="tv-hinhthuc" title="4.1 Ba hình thức tạo">
+              <Table>
+                <thead>
+                  <tr>
+                    <Th className="w-44">Hình thức</Th>
+                    <Th>Làm gì</Th>
+                    <Th>Dùng khi</Th>
+                    <Th className="w-24">Trạng thái</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    {
+                      mode: "A",
+                      name: "Extract từ URL",
+                      what: "Tải video/audio gốc, tách thẳng giọng nói ra file voice",
+                      when: "Muốn giữ nguyên giọng người trong video",
+                    },
+                    {
+                      mode: "B",
+                      name: "Text → TTS",
+                      what: "AI đọc đúng đoạn chữ có sẵn (nội dung bài, hoặc chữ bạn gõ)",
+                      when: "Bài chỉ có chữ, hoặc muốn giọng đọc thống nhất",
+                    },
+                    {
+                      mode: "C",
+                      name: "Text + Prompt → TTS",
+                      what: "LLM viết lại nội dung theo Prompt mẫu (kèm tiêu đề + hashtag), rồi AI đọc bản viết lại",
+                      when: "Cần tóm tắt, đổi giọng văn, chuẩn hoá bản tin",
+                    },
+                  ].map((row) => {
+                    const meta = metaOf(row.mode);
+                    const enabled = meta?.enabled ?? true;
+                    return (
+                      <tr key={row.mode}>
+                        <Td className="font-medium text-slate-900">
+                          {row.mode} — {row.name}
+                        </Td>
+                        <Td>{row.what}</Td>
+                        <Td>{row.when}</Td>
+                        <Td>
+                          {enabled ? (
+                            <span className="text-xs font-medium text-green-700">Đang bật</span>
+                          ) : (
+                            <span className="text-xs text-amber-700" title={meta?.reason}>
+                              Đang tắt
+                            </span>
+                          )}
+                        </Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </Table>
+              {modeMeta
+                .filter((m) => !m.enabled && m.reason)
+                .map((m) => (
+                  <Note key={m.mode} tone="warn">
+                    Hình thức <b>{m.mode}</b> đang tắt: {m.reason}
+                  </Note>
+                ))}
+
+              <Tip title="Hình thức C: bản LLM viết ra mới là thứ được đọc">
+                Đường đi là <i>nội dung nguồn + prompt → LLM → bản mới → TTS đọc bản mới</i>. Một
+                lần gọi LLM trả về ba thứ: <b>tiêu đề</b>, <b>nội dung đọc</b> và <b>hashtag</b> —
+                bạn không phải gõ tay. Thứ bạn đã tự điền thì hệ thống giữ nguyên.
+              </Tip>
+            </SubSection>
+
+            <SubSection id="tv-form" title="4.2 Từng ô trong hộp thoại">
+              <p>
+                Ở màn <NavLink href="/voices">Voice</NavLink> bấm <b>+ Tạo Voice</b>. Một hộp thoại
+                duy nhất cho cả ba hình thức — ô <b>Hình thức tạo</b> quyết định phần nhập nguồn,
+                phần còn lại dùng chung.
+              </p>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th className="w-52">Ô</Th>
+                    <Th>Nghĩa là gì</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Hình thức tạo</Td>
+                    <Td>A / B / C — xem bảng ở mục 4.1.</Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Prompt mẫu + Bộ API</Td>
+                    <Td>
+                      Chỉ hiện với hình thức C. <b>Chọn sẵn theo lần bạn dùng gần nhất</b>, đổi lại
+                      được. Bỏ trống Bộ API thì hệ thống rơi về key khai trong cấu hình server — ở
+                      production chỗ đó không có key nào.
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">URL bài đăng</Td>
+                    <Td>
+                      Chỉ hiện với hình thức A. Link một bài cụ thể (YouTube, Facebook, TikTok,
+                      Instagram, X).
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Nội dung</Td>
+                    <Td>
+                      Hiện với hình thức B và C. Với <b>B</b> đây chính là lời TTS đọc. Với <b>C</b>{" "}
+                      đây là <i>đầu vào</i> cho LLM — lời đọc thật là bản LLM viết lại.
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Tiêu đề</Td>
+                    <Td>
+                      Tối đa 200 ký tự. Bỏ trống thì lấy nội dung bài gốc (A) hoặc cắt từ nội dung
+                      (B), hoặc lấy tiêu đề LLM đặt (C).
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Ngôn ngữ / Quốc gia</Td>
+                    <Td>
+                      Ngôn ngữ là tiếng TTS sẽ đọc. Quốc gia chỉ dùng để lọc danh sách tài khoản
+                      đứng tên bài.
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Hashtag</Td>
+                    <Td>
+                      <b>Bắt buộc</b> với hình thức B và C: không có bài gốc nào để gộp thẻ vào, mà
+                      multime từ chối bài không hashtag. Gõ để tìm trong danh mục MultiMe, hoặc gõ
+                      tag mới rồi Enter.
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Tài khoản đứng tên</Td>
+                    <Td>
+                      Bắt buộc chọn giới tính. Việc bốc tài khoản cụ thể lùi tới lúc đăng, nên ở đây
+                      chỉ cần nói ý muốn.
+                    </Td>
+                  </tr>
+                  <tr>
+                    <Td className="font-medium text-slate-900">Ảnh bìa</Td>
+                    <Td>
+                      Tải ảnh từ máy, hoặc tick <b>Lấy ảnh từ nguồn</b> (chỉ hình thức A — text gõ
+                      tay không có bài nào để lấy ảnh). Không chọn gì = bài không ảnh, vẫn đăng
+                      được.
+                    </Td>
+                  </tr>
+                </tbody>
+              </Table>
+              <Note>
+                Bấm <b>Đăng</b> là hộp thoại đóng ngay. Hệ thống tạo audio rồi <b>tự đăng</b> lên
+                multime khi xong — không có bước bấm nút thứ hai.
+              </Note>
+            </SubSection>
+          </Section>
+
+          {/* ------------------------------------------------------------ */}
+          <Section id="man-voice" title="5. Màn Voice">
+            <SubSection id="v-bang" title="5.1 Các cột và trạng thái">
+              <p>
+                <NavLink href="/voices">Mở màn Voice</NavLink>. Đây là nơi nghe thử, sửa và đăng.
+              </p>
+              <ul className="ml-4 list-disc space-y-1">
+                <li>
+                  <b>Đang xử lý</b> — worker đang tạo audio. Chờ, không bấm gì.
+                </li>
+                <li>
+                  <b>Nháp</b> — đã có file, đủ điều kiện đăng.
+                </li>
+                <li>
+                  <b>Chưa đủ điều kiện</b> — thiếu tiêu đề, hashtag, tác giả, hoặc audio ngắn hơn
+                  mức multime nhận. Mở ra điền nốt.
+                </li>
+                <li>
+                  <b>Lỗi</b> — có dòng lý do ngay dưới trạng thái. Sửa xong thì tạo lại.
+                </li>
+                <li>
+                  <b>Đã đăng</b> — có link bài trên multime. Voice đã đăng thì không sửa được nữa.
+                </li>
+              </ul>
+            </SubSection>
+
+            <SubSection id="v-thongtin" title="5.2 Sửa tab Thông tin">
+              <p>
+                Sửa phần chữ đi kèm bài đăng: tiêu đề, hashtag, ảnh bìa, tác giả, ngôn ngữ.{" "}
+                <b>Không đụng tới file audio</b> — bấm Lưu không đọc lại gì cả.
+              </p>
+            </SubSection>
+
+            <SubSection id="v-noidung" title="5.3 Sửa tab Nội dung">
+              <p>
+                Tab này <b>đọc lại</b> và ghi đè file audio cũ. Với hình thức C có hai ô, và chúng
+                khác nhau:
+              </p>
+              <ul className="ml-4 list-disc space-y-1">
+                <li>
+                  <b>Nội dung</b> — đầu vào của Prompt mẫu. Sửa ở đây rồi bấm Tạo lại là{" "}
+                  <i>chạy prompt lần nữa</i>, lời đọc cũ bị thay.
+                </li>
+                <li>
+                  <b>Nội dung đọc</b> — đúng đoạn TTS đã đọc ra file hiện tại (bản LLM viết lại).
+                  Sửa tay ở đây thì lần tạo lại <i>đọc nguyên văn</i>, không gọi LLM nữa.
+                </li>
+              </ul>
+              <Note>
+                Form in sẵn một dòng ngay trên nút bấm nói rõ cái sắp xảy ra, nên không phải đoán.
+                Hình thức B chỉ có một ô — nó vừa là nguồn vừa là lời đọc.
+              </Note>
+            </SubSection>
+
+            <SubSection id="v-dang" title="5.4 Đăng lên multime">
+              <p>
+                Voice tạo từ hộp thoại <b>+ Tạo Voice</b> và voice từ kênh bật tự động đều{" "}
+                <b>tự đăng</b>. Còn lại thì bấm <b>Đăng</b> trên từng dòng.
+              </p>
+              <Note tone="warn">
+                Voice ngắn hơn mức tối thiểu của multime sẽ bị từ chối. Đăng bằng tài khoản
+                strongbody của chính bạn, dưới tên tác giả đã chọn.
+              </Note>
+            </SubSection>
+          </Section>
+
+          {/* ------------------------------------------------------------ */}
+          <Section id="man-baipost" title="6. Màn Bài Post">
+            <p>
+              <NavLink href="/source-posts">Mở màn Bài Post</NavLink>. Đây là chỗ duyệt bài lấy từ
+              kênh <i>trước khi</i> tốn chi phí AI — đặc biệt hữu ích khi kênh tắt chế độ tự động.
+            </p>
+            <ul className="ml-4 list-disc space-y-1">
+              <li>
+                Cột <b>Danh sách kênh</b> cho biết bài đến từ kênh nào; bài nhập tay hiện{" "}
+                <i>Nhập tay</i>.
+              </li>
+              <li>
+                <b>Hình thức</b> và <b>Ngôn ngữ</b> đổi thẳng trong ô chọn trên bảng. Đổi ngôn ngữ
+                của bài lan xuống các voice chưa tạo xong file của chính bài đó.
+              </li>
+              <li>
+                <b>Chạy tạo Voice</b> — bấm để tạo voice cho bài đó. Bài lỗi thì nút thành{" "}
+                <i>Chạy lại Voice</i>.
+              </li>
+              <li>
+                Chọn nhiều dòng để đổi hình thức / ngôn ngữ / chạy voice hàng loạt.
+              </li>
+            </ul>
+            <Note>
+              Metadata gốc (ảnh bìa, tác giả, ngày đăng, hashtag) được lấy tự động ngay khi bài vào
+              hệ thống, kể cả bài từ kênh — không phải chờ tới lúc tạo voice.
+            </Note>
+          </Section>
+
+          {/* ------------------------------------------------------------ */}
+          <Section id="danh-muc" title="7. Prompt mẫu & AI Engine">
+            <SubSection id="dm-prompt" title="7.1 Prompt mẫu">
+              <p>
+                <NavLink href="/prompts">Mở màn Prompt mẫu</NavLink>. Đây là chỉ dẫn biên tập cho
+                hình thức C: mô tả rõ độ dài, giọng điệu, những gì cần bỏ.
+              </p>
+              <ul className="ml-4 list-disc space-y-1">
+                <li>
+                  <b>Thêm</b> — form bên trái.
+                </li>
+                <li>
+                  <b>Sửa</b> — nút trên từng dòng. Sửa tại chỗ chứ không xoá rồi thêm lại: prompt
+                  đang được các kênh và voice trỏ tới.
+                </li>
+                <li>
+                  Sửa nội dung <b>không đụng</b> voice đã tạo — chúng đã đọc xong bằng bản cũ. Bản
+                  mới áp dụng từ lần chạy kế tiếp.
+                </li>
+              </ul>
+              <Note>
+                Không cần viết &quot;chỉ trả về kịch bản&quot; hay yêu cầu định dạng JSON — hệ thống
+                đã bọc sẵn phần đó.
+              </Note>
+            </SubSection>
+
+            <SubSection id="dm-tts" title="7.2 API key TTS">
+              <p>
+                <NavLink href="/ai-engines">AI Engine</NavLink> → tab <b>TTS</b>. Mỗi người tự khai
+                key 3voices của mình; hạn mức và hoá đơn rơi đúng vào người dùng nó.
+              </p>
+              <Note tone="warn">
+                Bắt buộc với hình thức B và C. Chưa khai key thì voice chạy tới bước đọc rồi báo
+                lỗi kèm câu hướng dẫn.
+              </Note>
+            </SubSection>
+
+            <SubSection id="dm-llm" title="7.3 Bộ API key LLM">
+              <p>
+                <NavLink href="/ai-engines">AI Engine</NavLink> → tab <b>LLM Model</b> →{" "}
+                <b>Thêm bộ API</b>. Chỉ cần nếu dùng hình thức C.
+              </p>
+              <ul className="ml-4 list-disc space-y-1">
+                <li>
+                  Một <b>bộ</b> là túi key của nhiều nhà (Gemini, OpenAI, Anthropic), không phải một
+                  key lẻ. Hệ thống thử lần lượt từ model rẻ nhất, hết hạn mức thì tự chuyển sang nhà
+                  kế tiếp.
+                </li>
+                <li>
+                  Cột <b>Sức khoẻ</b> nói luôn phải làm gì: <i>Đang nghỉ</i> = hết hạn mức, chờ tới
+                  giờ ghi trong đó; <i>Đã tắt</i> = key sai hoặc bị thu hồi, phải dán key mới.
+                </li>
+                <li>
+                  Bộ dùng chung được qua ô <b>Dùng chung với</b>. Người được chia dùng được nhưng
+                  không sửa được key.
                   {isAdmin ? (
                     <>
                       {" "}
-                      Là admin, bạn còn bật được <b>Hiện với mọi người</b> — nhưng nhớ rằng bật lên
-                      là mở hạn mức và chi phí của bộ đó cho cả hệ thống.
+                      Là admin, bạn còn bật được <b>Hiện với mọi người</b> — bật lên là mở hạn mức
+                      và chi phí của bộ đó cho cả hệ thống.
                     </>
                   ) : null}
-                </p>
-              </div>
-            </Step>
-
-            <Step n={3} title="Tạo voice — chọn 1 trong 3 đường">
-              <div className="mt-2 space-y-2">
-                <p>
-                  <b>Từ URL:</b> <NavLink href="/on-demand">Tạo voice</NavLink> → tab <b>Từ URL</b>{" "}
-                  → dán link (YouTube, Facebook, TikTok, Instagram, X) → chọn hình thức →{" "}
-                  <b>Tạo Bài Post</b>. Màn hình chuyển sang Voice, dòng mới ở trạng thái{" "}
-                  <i>Đang xử lý</i> rồi thành <i>Nháp</i>.
-                </p>
-                <p>
-                  <b>Từ text gõ tay:</b> cùng màn đó → tab <b>Nhập text</b> (hoặc nút{" "}
-                  <b>+ Tạo Voice</b> ở màn <NavLink href="/voices">Voice</NavLink>). Tối đa 20.000
-                  ký tự. Không sinh Bài Post.
-                </p>
-                <p>
-                  <b>Một bước từ URL:</b> ở màn <NavLink href="/voices">Voice</NavLink> bấm{" "}
-                  <b>+ Tạo Voice</b> → tab <b>Thông tin</b>: dán URL, điền sẵn tiêu đề/hashtag/ ngôn
-                  ngữ/quốc gia/author/ảnh rồi bấm <b>Đăng</b>. Hộp thoại đóng ngay, hệ thống tạo
-                  audio rồi tự đăng lên multime khi xong. Ô nào để trống thì lấy từ bài gốc; hashtag
-                  thì gộp cả hai.
-                </p>
-                <p>
-                  <b>Tự động theo kênh:</b>{" "}
-                  <NavLink href="/lists/breaking">Danh sách Breaking</NavLink> (quét liên tục theo
-                  regex) hoặc <NavLink href="/lists/scheduled">Định kỳ</NavLink> (theo tần suất
-                  riêng từng kênh). Bật{" "}
-                  <code className="rounded bg-slate-100 px-1">auto_process</code> thì quét xong tạo
-                  voice luôn.
-                </p>
-              </div>
-            </Step>
-
-            <Step n={4} title="Kiểm tra và sửa">
-              Ở màn <NavLink href="/voices">Voice</NavLink>: <b>▶ Nghe thử</b> / <b>⤓ Tải về</b> để
-              kiểm tra audio. Nút <b>Sửa</b> có 2 tab:
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                <li>
-                  <b>Thông tin</b> — <b>author</b> (chọn giới tính Male/Female/Other, hệ thống bốc
-                  ngẫu nhiên một tài khoản Strongbody đứng tên bài đăng; bấm <b>⟳ Random</b> để bốc
-                  người khác — đổi nhanh được ngay ở cột Author của bảng), tiêu đề, hashtag (bắt
-                  buộc), ngôn ngữ, ảnh bìa (dán URL hoặc tải ảnh từ máy). Không đụng tới file audio.
-                </li>
-                <li>
-                  <b>Nội dung</b> — sửa lời đọc rồi <b>Tạo lại voice</b>: đọc lại và ghi đè file cũ,
-                  giữ nguyên tiêu đề/hashtag/ảnh bìa đã điền.
                 </li>
               </ul>
-            </Step>
-
-            <Step n={5} title="Đăng lên multime.ai">
-              Voice thiếu bất kỳ điều kiện nào dưới đây mang trạng thái <b>Chưa đủ điều kiện</b>{" "}
-              (lọc được ở ô Trạng thái) và nút <b>Đăng</b> tự mờ kèm lý do: phải <b>chọn author</b>,
-              có <b>tiêu đề</b>, có <b>ít nhất 1 hashtag</b> (không còn hashtag mặc định), và audio
-              dài <b>tối thiểu 15 giây</b>.
-              <Note>
-                Đăng thành công thì file audio bị xoá khỏi hệ thống, chỉ giữ link bài trên multime —
-                multime mới là nơi lưu trữ chính thức. Ảnh bìa tải từ máy cũng bị xoá theo, vì
-                multime đã giữ một bản.
+              <Note tone="warn">
+                Model bị nhà cung cấp gỡ khỏi API thì key vẫn &quot;sống&quot; nhưng mỗi lần chạy
+                mất vài giây rơi qua nó. Thấy voice hình thức C chậm bất thường thì kiểm tra lại tên
+                model trong bộ.
               </Note>
-            </Step>
+            </SubSection>
           </Section>
 
-          <Section title="Danh sách kênh — cấu hình và cách hoạt động">
-            <p>
-              Có <b>hai loại kênh</b>, khác nhau ở chỗ <i>cái gì quyết định một bài được lấy</i>:
-            </p>
+          {/* ------------------------------------------------------------ */}
+          <Section id="su-co" title="8. Gặp sự cố thì xem ở đâu">
             <Table>
               <thead>
                 <tr>
-                  <Th className="w-36">Loại</Th>
-                  <Th>Lấy bài khi nào</Th>
-                  <Th>Nhịp quét</Th>
+                  <Th className="w-64">Triệu chứng</Th>
+                  <Th>Xem ở đâu</Th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <Td className="font-medium text-slate-900">
-                    <NavLink href="/lists/breaking">Breaking</NavLink>
-                  </Td>
+                  <Td className="font-medium text-slate-900">Kênh không ra bài nào</Td>
                   <Td>
-                    Bài <b>khớp một trong các Regex Pattern</b> của kênh. Không khớp thì bỏ và ghi
-                    vào nhật ký bỏ qua. Nhiều pattern kết hợp OR.
-                  </Td>
-                  <Td>
-                    Liên tục, theo <b>Khoảng nghỉ giữa 2 vòng</b> của kênh (mặc định 60s).
+                    Cột <b>Thời gian</b> ở bảng kênh: có dòng đỏ là lỗi vòng quét; không có dòng đỏ
+                    mà cột Kết quả vẫn 0 thì kênh chạy đúng nhưng chưa có bài mới (hoặc regex không
+                    khớp với kênh Breaking).
                   </Td>
                 </tr>
                 <tr>
-                  <Td className="font-medium text-slate-900">
-                    <NavLink href="/lists/scheduled">Định kỳ</NavLink>
-                  </Td>
+                  <Td className="font-medium text-slate-900">Voice kẹt ở &quot;Đang xử lý&quot;</Td>
+                  <Td>Chờ thêm; quá lâu thì kiểm tra lại key TTS còn hạn mức không.</Td>
+                </tr>
+                <tr>
+                  <Td className="font-medium text-slate-900">Voice báo lỗi</Td>
                   <Td>
-                    <b>Mọi bài mới</b> hơn mốc đã đồng bộ. Không lọc gì cả — kênh nào cũng lấy sạch
-                    bài mới.
+                    Dòng lý do nằm ngay dưới trạng thái ở màn Voice. Sửa nguyên nhân rồi bấm tạo
+                    lại.
                   </Td>
+                </tr>
+                <tr>
+                  <Td className="font-medium text-slate-900">Voice không đăng được</Td>
                   <Td>
-                    Theo <b>Tần suất quét</b> của kênh (15 phút → 1 ngày), hoặc{" "}
-                    <b>giờ chạy cố định</b> nếu có đặt.
+                    Trạng thái <b>Chưa đủ điều kiện</b> = thiếu tiêu đề / hashtag / tác giả, hoặc
+                    audio quá ngắn. Mở tab Thông tin điền nốt.
+                  </Td>
+                </tr>
+                <tr>
+                  <Td className="font-medium text-slate-900">Hình thức C bị mờ</Td>
+                  <Td>
+                    Chưa có Bộ API key LLM nào. Thêm một bộ ở AI Engine → LLM Model là nó bật ngay,
+                    không cần khởi động lại.
+                  </Td>
+                </tr>
+                <tr>
+                  <Td className="font-medium text-slate-900">Ai đã đổi cái gì</Td>
+                  <Td>
+                    <NavLink href="/audit-log">Nhật ký thao tác</NavLink> ghi lại mọi thay đổi kèm
+                    người thực hiện.
                   </Td>
                 </tr>
               </tbody>
             </Table>
-
-            <p className="font-medium text-slate-900">Một vòng quét đi qua 4 bước, theo thứ tự:</p>
-            <ol className="list-decimal space-y-1 pl-5">
-              <li>
-                <b>Nhìn</b> — lấy về <b>Số bài nhìn mỗi vòng quét</b> bài mới nhất của kênh (mặc
-                định 20). Đây là cửa sổ quét; bài nằm ngoài cửa sổ này thì vòng đó không biết tới.
-              </li>
-              <li>
-                <b>Lọc</b> — Breaking bỏ bài không khớp regex; Định kỳ bỏ bài cũ hơn mốc đã đồng bộ.
-              </li>
-              <li>
-                <b>Chặn trần</b> — nếu có đặt <b>Trần Bài Post mỗi vòng</b>, phần vượt trần để dành
-                cho vòng sau chứ không mất.
-              </li>
-              <li>
-                <b>Tạo Bài Post</b> — và nếu bật <i>Tự tạo Voice ngay</i> thì đẩy thẳng sang tạo
-                voice.
-              </li>
-            </ol>
-
-            <p className="font-medium text-slate-900">Ba con số hay bị nhầm với nhau</p>
-            <Table>
-              <thead>
-                <tr>
-                  <Th className="w-52">Tham số</Th>
-                  <Th>Trả lời câu hỏi</Th>
-                  <Th className="w-44">Mặc định</Th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <Td className="font-medium text-slate-900">Số bài nhìn mỗi vòng quét</Td>
-                  <Td>Mỗi vòng NHÌN bao nhiêu bài mới nhất của kênh?</Td>
-                  <Td>20 (tối đa 200)</Td>
-                </tr>
-                <tr>
-                  <Td className="font-medium text-slate-900">Lấy bài cũ khi thêm kênh</Td>
-                  <Td>Lần quét ĐẦU TIÊN, lấy bao nhiêu bài đã đăng từ trước?</Td>
-                  <Td>0 — không lấy bài cũ nào</Td>
-                </tr>
-                <tr>
-                  <Td className="font-medium text-slate-900">Trần Bài Post mỗi vòng</Td>
-                  <Td>Mỗi vòng được TẠO tối đa bao nhiêu Bài Post?</Td>
-                  <Td>Không giới hạn</Td>
-                </tr>
-              </tbody>
-            </Table>
-
-            <Tip title="Lấy bài cũ: mặc định là KHÔNG, và chỉ có tác dụng đúng một lần">
-              Thêm kênh xong, vòng quét đầu chỉ đánh dấu &quot;từ đây trở đi&quot; rồi bỏ qua toàn
-              bộ bài đã đăng trước đó. Muốn lấy cả bài cũ thì mở <b>Tham số quét (nâng cao)</b> và
-              điền số bài — hệ thống lấy bấy nhiêu bài gần thời điểm thêm kênh nhất, và không bao
-              giờ lấy quá cửa sổ quét. Sau khi vòng đầu chạy xong, ô này bị khoá lại: đổi số cũng
-              không còn gì để lấy nữa.
-            </Tip>
-
-            <Tip title="Số bài nhìn mỗi vòng quét là trần cứng của hai ô kia">
-              Vòng quét chỉ <i>nhìn thấy</i> bấy nhiêu bài mới nhất, nên đặt <b>Lấy bài cũ</b> hay{" "}
-              <b>Trần Bài Post</b> lớn hơn con số đó không lấy thêm được bài nào — phần vượt chỉ
-              im lặng không có tác dụng. Form hiện cảnh báo đỏ ngay dưới ô khi điều đó xảy ra,
-              nhưng vẫn cho lưu: đặt trần 100 cho một kênh đang nhìn 20 bài là cách hợp lệ để nói
-              &quot;coi như không giới hạn&quot;.
-            </Tip>
-
-            <Tip title="Trần Bài Post: bỏ trống là không giới hạn">
-              Bỏ trống thì mọi bài mới trong cửa sổ quét đều được lấy. Đặt trần khi kênh đăng ồ ạt
-              và bạn muốn giữ nhịp chi phí AI — phần vượt trần <b>không mất</b>, nó nằm lại cho vòng
-              quét kế tiếp. Kênh Định kỳ thì trần đếm theo bài xử lý; kênh Breaking đếm theo Bài
-              Post thật sự tạo ra (bài không khớp regex không tính).
-            </Tip>
-
-            <Tip title="Chỉ YouTube và TikTok quét được CẢ KÊNH">
-              Đây là giới hạn của yt-dlp chứ không phải cấu hình sai:{" "}
-              <b>X</b> không có cách nào đọc dòng thời gian của một tài khoản, <b>Facebook</b> chỉ
-              lấy được từng video lẻ chứ không liệt kê được bài của một trang, còn{" "}
-              <b>Instagram</b> bắt đăng nhập mới xem được danh sách. Thêm kênh trên ba nền tảng
-              này giờ bị từ chối ngay ở form kèm lý do, thay vì nhận vào rồi hỏng lặng lẽ mỗi vòng
-              quét. Lấy bài <b>lẻ từ URL</b> thì cả năm nền tảng đều chạy bình thường — dán link
-              từng bài ở màn <NavLink href="/on-demand">Tạo voice</NavLink>.
-            </Tip>
-
-            <Tip title="Vòng quét hỏng thì hiện ngay trên bảng">
-              Cột <b>Thời gian</b> có thêm dòng đỏ là lỗi của vòng quét gần nhất. Không có dòng đó
-              nghĩa là vòng gần nhất chạy sạch — kênh không ra bài chỉ vì chưa có bài mới (hoặc
-              với kênh Breaking là chưa bài nào khớp regex). Lỗi tự biến mất khi một vòng quét
-              chạy lại thành công.
-            </Tip>
-
-            <Tip title="Đổi ngôn ngữ của kênh thì các bài đã lấy về đi theo">
-              Ngôn ngữ được chốt một lần lúc Bài Post được tạo, nên trước đây sửa ở kênh chỉ có tác
-              dụng với bài lấy về <i>sau đó</i>. Giờ đổi ngôn ngữ của kênh là mọi <b>Bài Post</b>{" "}
-              của kênh đổi theo, kèm những <b>Voice chưa tạo xong file</b> của chúng. Voice{" "}
-              <b>đã có file audio</b> thì dừng lại ở đó — nhãn ngôn ngữ ở đấy mô tả một file có
-              thật, đổi nhãn không đọc lại được file; muốn đổi tiếng thì mở voice và bấm{" "}
-              <b>Tạo lại</b>. Chọn <b>Tự nhận diện</b> thì không lan gì cả: nó nghĩa là
-              &quot;chưa chốt&quot;, ghi đè lựa chọn cụ thể của từng bài bằng nó là mất thông tin.
-              Ngôn ngữ đặt ở từng Bài Post cũng lan xuống voice chưa có file của chính bài đó.
-            </Tip>
-
-            <Tip title="Cột Kết quả: kênh này đã ra được gì">
-              Bảng kênh có sẵn số <b>Bài Post</b> và số <b>Voice</b> của từng kênh, cạnh hai mốc{" "}
-              <b>tạo</b> và <b>quét gần nhất</b>. Kênh đã quét mà số bài vẫn 0 nghĩa là nó chạy
-              nhưng không bắt được gì — với kênh Breaking thường là regex không khớp, với kênh Định
-              kỳ là chưa có bài mới hơn mốc đồng bộ.
-            </Tip>
-
-            <Tip title="Sửa kênh: nút Sửa trên từng dòng">
-              Mọi thứ khai lúc thêm kênh đều sửa lại được — URL, regex, hình thức, prompt, Bộ API,
-              ngôn ngữ, lịch quét, cả ba tham số ở trên. Riêng <b>ngôn ngữ</b> đổi thẳng trong ô
-              chọn trên bảng, còn <b>bật/tắt kênh</b> là công tắc ở cột Trạng thái — gạt là có hiệu
-              lực ngay, không cần mở hộp thoại. Kênh tắt thì scheduler bỏ qua, không quét vòng nào
-              nữa cho tới khi bật lại.
-            </Tip>
-
-            <Note>
-              Đổi <b>Tần suất quét</b> của kênh Định kỳ có hiệu lực sau tối đa 30 giây — đó là chu
-              kỳ scheduler đọc lại lịch từ database.
-            </Note>
-          </Section>
-
-          <Section title="Tips và lưu ý">
-            <Tip title="Tiêu đề là toàn bộ phần chữ của bài đăng">
-              Hệ thống không có trường mô tả riêng vì multime cũng không hiển thị nó. Tiêu đề bị cắt
-              còn <b>200 ký tự</b> khi đăng — nội dung dài thì sửa cho gọn trước. Hashtag được tách
-              sẵn sang trường riêng, không cần xoá tay.
-            </Tip>
-            <Tip title="Những thứ máy tự thêm đã được bỏ">
-              Số liệu tương tác của Facebook (&quot;42K views · 824 reactions&quot;), tên tài khoản
-              mà X nối vào đầu tiêu đề, và tiêu đề &quot;Video by …&quot; mà công cụ tự đặt cho
-              Instagram — tất cả đều bị loại, chỉ giữ chữ của người đăng.
-            </Tip>
-            <Tip title="Ngôn ngữ: cứ để Tự nhận diện">
-              3voices đọc được{" "}
-              <code className="rounded bg-slate-100 px-1">vi, en, zh, ja, ko, fr, de, es, th</code>.
-              Chọn tay một tiếng ngoài danh sách thì bị từ chối kèm lý do; để <i>Tự nhận diện</i>{" "}
-              thì kể cả bài tiếng Nga vẫn đọc được (3voices tự xử theo nội dung).
-            </Tip>
-            <Tip title="Kênh tự động: nhớ gán Bộ API và khung giờ">
-              Kênh chạy hình thức C phải chọn <b>Bộ API</b> ngay trên kênh — quét tự động không có
-              ai ngồi đó bấm nút để chọn, không gán thì kênh đó không tạo được voice. Phần{" "}
-              <b>Lịch quét</b> cho đặt khung giờ (vd 06:00–23:00), ngày trong tuần, hoặc giờ chạy cố
-              định; kênh tin tức không đăng lúc 3h sáng nên quét lúc đó chỉ tốn hạn mức.
-            </Tip>
-
-            <Tip title="TTS có giới hạn tốc độ">
-              3voices cho <b>10 request/phút, 2 job đồng thời</b>. Tạo hàng loạt thì cứ để đó — gặp
-              giới hạn hệ thống tự thử lại, không mất bài.
-            </Tip>
-            <Tip title="Voice ngắn hơn 15 giây không đăng được">
-              Audio ra là WAV (~5,5MB mỗi phút). Text quá ngắn thì tạo được voice nhưng multime từ
-              chối.
-            </Tip>
-            <Tip title="Hình thức A hay hỏng trên server hơn ở máy cá nhân">
-              YouTube chặn IP máy chủ mạnh hơn IP nhà. Lỗi kiểu{" "}
-              <i>&quot;Sign in to confirm you&apos;re not a bot&quot;</i> là do vậy, không phải hệ
-              thống hỏng — cần cấu hình cookies cho yt-dlp.
-            </Tip>
-            <Tip title="Bài lỗi chạy lại được">
-              Lỗi luôn hiện câu cụ thể ở cột <b>Lỗi gần nhất</b> (&quot;Tài khoản 3voices hết
-              credit&quot;, &quot;Bài này bị nền tảng chặn&quot;…). Bài Post lỗi thì bấm{" "}
-              <b>Chạy tạo Voice</b> lại; Voice lỗi thì <b>Sửa → Nội dung → Tạo lại voice</b>. Lỗi
-              tạm thời (mạng, quá tải) hệ thống tự thử lại 3 lần.
-            </Tip>
-            <Tip title="Chống trùng theo ID bài đăng, không theo URL">
-              Cùng một bài Facebook có nhiều dạng link vẫn chỉ tạo 1 Bài Post. Muốn tạo thêm bản nữa
-              thì hệ thống hỏi lại chứ không tự quyết.
-            </Tip>
           </Section>
         </div>
 
-        <div className="space-y-6">
+        {/* Mục lục dính theo màn hình: trang này dài, và thứ người ta cần gần
+            như luôn là một mục cụ thể chứ không phải đọc từ đầu. */}
+        <aside className="space-y-6 xl:sticky xl:top-6 xl:self-start">
           <Card>
-            <CardHeader title="Giới hạn cần nhớ" />
-            <CardBody className="space-y-2 text-sm text-slate-700">
-              <Limit label="Text gõ tay" value="20.000 ký tự" why="~25 phút audio" />
-              <Limit label="Tiêu đề Voice" value="200 ký tự" why="giới hạn của multime" />
-              <Limit label="Audio để đăng" value="≥ 15 giây" why="multime từ chối bài ngắn hơn" />
-              <Limit label="TTS 3voices" value="10 req/phút" why="2 job đồng thời" />
-              <Limit label="Regex mỗi kênh" value="tối đa 20" why="trùng lặp tự bị loại" />
+            <CardHeader title="Mục lục" />
+            <CardBody className="space-y-1 text-sm">
+              {TOC.map((item) => (
+                <div key={item.id}>
+                  <a
+                    href={`#${item.id}`}
+                    className="block rounded px-2 py-1 font-medium text-slate-800 hover:bg-slate-50 hover:text-indigo-700"
+                  >
+                    {item.label}
+                  </a>
+                  {item.sub?.map((s) => (
+                    <a
+                      key={s.id}
+                      href={`#${s.id}`}
+                      className="block rounded px-2 py-0.5 pl-5 text-slate-600 hover:bg-slate-50 hover:text-indigo-700"
+                    >
+                      {s.label}
+                    </a>
+                  ))}
+                </div>
+              ))}
             </CardBody>
           </Card>
 
           <Card>
             <CardHeader title="Quyền của bạn" description={me.data?.role ?? "…"} />
-            <CardBody className="space-y-2 text-sm text-slate-700">
-              <Perm ok={me.data?.permissions.can_write} label="Tạo, sửa, chạy, đăng voice" />
-              <Perm ok={me.data?.permissions.can_delete} label="Xoá dữ liệu" />
-              <Perm ok={me.data?.permissions.can_manage_users} label="Cấp quyền cho người khác" />
+            <CardBody className="space-y-1 text-sm">
+              <Perm ok label="Xem mọi thứ" />
+              <Perm ok label="Tạo / sửa / chạy / đăng" />
+              <Perm ok={me.data?.role !== "user"} label="Xoá" />
+              <Perm ok={isAdmin} label="Quản lý tài khoản & cài đặt" />
             </CardBody>
           </Card>
-        </div>
+        </aside>
       </div>
     </>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+// ---------------------------------------------------------------------------
+// Thành phần trình bày
+// ---------------------------------------------------------------------------
+
+function Section({
+  id,
+  title,
+  children,
+}: {
+  id: string;
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <Card>
-      <CardHeader title={title} />
-      <CardBody className="space-y-4 text-sm text-slate-700">{children}</CardBody>
-    </Card>
+    // scroll-mt để tiêu đề không bị dính sát mép trên khi nhảy từ mục lục.
+    <div id={id} className="scroll-mt-6">
+      <Card>
+        <CardHeader title={title} />
+        <CardBody className="space-y-4 text-sm text-slate-700">{children}</CardBody>
+      </Card>
+    </div>
+  );
+}
+
+function SubSection({
+  id,
+  title,
+  children,
+}: {
+  id: string;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section id={id} className="scroll-mt-6 space-y-3 border-t border-slate-100 pt-4 first:border-0 first:pt-0">
+      <h3 className="font-semibold text-slate-900">{title}</h3>
+      {children}
+    </section>
   );
 }
 
@@ -550,11 +895,11 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
   );
 }
 
-function Tip({ title, children }: { title: string; children: React.ReactNode }) {
+function Tip({ id, title, children }: { id?: string; title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-md border border-slate-200 p-3">
+    <div id={id} className="scroll-mt-6 rounded-md border border-slate-200 p-3">
       <p className="font-medium text-slate-900">{title}</p>
-      <p className="mt-1 text-slate-600">{children}</p>
+      <div className="mt-1 text-slate-600">{children}</div>
     </div>
   );
 }
@@ -578,18 +923,6 @@ function NavLink({ href, children }: { href: string; children: React.ReactNode }
     <Link href={href} className="font-medium text-indigo-700 hover:underline">
       {children}
     </Link>
-  );
-}
-
-function Limit({ label, value, why }: { label: string; value: string; why: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2 border-b border-slate-100 pb-2 last:border-0">
-      <span>{label}</span>
-      <span className="text-right">
-        <span className="font-medium text-slate-900">{value}</span>
-        <span className="block text-xs text-slate-500">{why}</span>
-      </span>
-    </div>
   );
 }
 

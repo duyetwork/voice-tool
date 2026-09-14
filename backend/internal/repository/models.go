@@ -109,6 +109,7 @@ type ListBreaking struct {
 	BackfillExcludedIds []string        `json:"backfill_excluded_ids"`
 	MaxPostsPerRun      *int32          `json:"max_posts_per_run"`
 	LastError           *string         `json:"last_error"`
+	RandomAuthor        bool            `json:"random_author"`
 }
 
 type ListScheduled struct {
@@ -138,6 +139,7 @@ type ListScheduled struct {
 	BackfillLimit    int32           `json:"backfill_limit"`
 	BackfillDoneAt   *time.Time      `json:"backfill_done_at"`
 	LastError        *string         `json:"last_error"`
+	RandomAuthor     bool            `json:"random_author"`
 }
 
 type LlmApiKey struct {

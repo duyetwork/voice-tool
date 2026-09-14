@@ -124,3 +124,39 @@ func buildLanguageOrder() []string {
 	}
 	return out
 }
+
+// CountriesForLanguage trả về tên các quốc gia nói ngôn ngữ này, theo đúng thứ
+// tự ưu tiên của countryPriority.
+//
+// Dùng khi kênh bật "Random author": bài đọc bằng tiếng Việt mà đứng tên một
+// tài khoản Nhật thì người nghe thấy ngay là sai, nên việc bốc tài khoản phải
+// bị chặn lại trong đúng nhóm quốc gia của ngôn ngữ đó.
+//
+// Đảo ngược countryLanguage thay vì khai thêm một bảng nữa: hai bảng mô tả cùng
+// một quan hệ thì sớm muộn chúng nói khác nhau.
+//
+// So khớp theo NHÁNH ngôn ngữ ("pt-BR" khớp "pt"): danh bạ tài khoản không chia
+// nhỏ tới mức vùng, và bỏ trắng vì lệch hậu tố thì tệ hơn là bốc trúng một nước
+// cùng tiếng.
+func CountriesForLanguage(lang string) []string {
+	base := baseLang(lang)
+	if base == "" || base == LanguageAuto {
+		return nil
+	}
+	out := make([]string, 0, 4)
+	for _, country := range countryPriority {
+		if baseLang(countryLanguage[country.name]) == base {
+			out = append(out, country.name)
+		}
+	}
+	return out
+}
+
+// baseLang bỏ phần vùng và hạ chữ thường: "pt-BR" -> "pt".
+func baseLang(lang string) string {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if i := strings.IndexAny(lang, "-_"); i > 0 {
+		return lang[:i]
+	}
+	return lang
+}

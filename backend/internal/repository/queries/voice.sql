@@ -24,11 +24,19 @@ RETURNING *;
 -- worker điền file + metadata vào đúng dòng đó (FinishVoice).
 INSERT INTO voice (
   input_text, collect_mode, prompt_id, language, publish_status, title, created_by,
-  llm_api_set_id
+  llm_api_set_id,
+  -- Metadata điền sẵn ở form, giống hệt voice tạo từ URL: form tạo voice giờ là
+  -- MỘT form cho cả ba hình thức, nên hai đường không được nhận hai bộ trường
+  -- khác nhau — lệch một trường là một thứ người dùng điền rồi mà biến mất.
+  hashtag, image_url, image_uploaded, no_image,
+  author_gender, author_country_id, publish_when_ready
 ) VALUES (
   sqlc.arg('input_text'), sqlc.arg('collect_mode'), sqlc.narg('prompt_id'),
   sqlc.arg('language'), 'processing', sqlc.narg('title'), sqlc.arg('created_by'),
-  sqlc.narg('llm_api_set_id')
+  sqlc.narg('llm_api_set_id'),
+  sqlc.narg('hashtag'), sqlc.narg('image_url'), sqlc.arg('image_uploaded'),
+  sqlc.arg('no_image'), sqlc.narg('author_gender'), sqlc.narg('author_country_id'),
+  sqlc.arg('publish_when_ready')
 )
 RETURNING *;
 
@@ -239,3 +247,20 @@ RETURNING *;
 
 -- name: DeleteVoice :execrows
 DELETE FROM voice WHERE id = $1;
+
+-- name: LastUsedPromptAndSet :one
+-- Prompt mẫu + Bộ API mà CHÍNH người này dùng gần đây nhất ở hình thức C.
+--
+-- Để form tạo voice chọn sẵn thay vì bắt chọn lại mỗi lần: gần như ai cũng chạy
+-- đi chạy lại cùng một prompt, và hai ô bắt buộc phải tự tay chọn ở mỗi lần tạo
+-- là hai lần bấm thừa cộng một lần quên.
+--
+-- Hai cột lấy ĐỘC LẬP, mỗi cột từ voice gần nhất có giá trị: chúng được chọn
+-- riêng, nên voice gần nhất có prompt chưa chắc là voice gần nhất có bộ API.
+SELECT
+  (SELECT p.prompt_id FROM voice p
+    WHERE p.created_by = sqlc.arg('user_id')::uuid AND p.prompt_id IS NOT NULL
+    ORDER BY p.created_at DESC LIMIT 1) AS prompt_id,
+  (SELECT k.llm_api_set_id FROM voice k
+    WHERE k.created_by = sqlc.arg('user_id')::uuid AND k.llm_api_set_id IS NOT NULL
+    ORDER BY k.created_at DESC LIMIT 1) AS llm_api_set_id;

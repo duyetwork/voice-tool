@@ -40,6 +40,10 @@ type createVoiceRequest struct {
 	Language    string     `json:"language"`
 	// LLMAPISetID: Bộ API key viết lại nội dung — chỉ hình thức C mới cần.
 	LLMAPISetID *uuid.UUID `json:"llm_api_set_id"`
+	// Voice: metadata điền sẵn ở form — đúng bộ trường của POST /source-posts.
+	// Form tạo voice là một form cho cả ba hình thức, nên hai đường phải nhận
+	// cùng một bộ trường.
+	Voice *voiceSeedRequest `json:"voice"`
 }
 
 // Create tạo Voice từ text và đưa vào hàng đợi đọc luôn — trả về record
@@ -56,6 +60,7 @@ func (h *Voice) Create(c *gin.Context) {
 		PromptID:    req.PromptID,
 		Language:    req.Language,
 		LLMAPISetID: req.LLMAPISetID,
+		Seed:        req.Voice.seed(),
 	})
 	if err != nil {
 		httpx.Fail(c, err)

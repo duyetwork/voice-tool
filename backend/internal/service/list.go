@@ -92,6 +92,7 @@ type BreakingInput struct {
 	Language      string
 	AutoProcess   *bool
 	AutoPublish   *bool
+	RandomAuthor  *bool
 	Status        string
 	ScanLimit     *int32
 	ScanInterval  *time.Duration
@@ -237,6 +238,7 @@ type BreakingUpdate struct {
 	Language      *string
 	AutoProcess   *bool
 	AutoPublish   *bool
+	RandomAuthor  *bool
 	Status        *string
 	ScanLimit     *int32
 	ScanInterval  *time.Duration
@@ -265,14 +267,15 @@ func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in Break
 		PromptID:        in.PromptID,
 		LanguageDefault: in.Language,
 		AutoProcess:     in.AutoProcess,
-		AutoPublish:     in.AutoPublish,
-		Status:          in.Status,
-		ScanLimit:       in.ScanLimit,
-		BackfillLimit:   in.BackfillLimit,
-		MaxPostsPerRun:  in.MaxPostsPerRun,
-		ClearMaxPosts:   in.ClearMaxPosts,
-		LlmApiSetID:     in.LLMAPISetID,
-		ClearWindow:     in.ClearWindow,
+		// Đăng đi theo việc tạo — xem CreateScheduled.
+		AutoPublish:    in.AutoProcess,
+		Status:         in.Status,
+		ScanLimit:      in.ScanLimit,
+		BackfillLimit:  in.BackfillLimit,
+		MaxPostsPerRun: in.MaxPostsPerRun,
+		ClearMaxPosts:  in.ClearMaxPosts,
+		LlmApiSetID:    in.LLMAPISetID,
+		ClearWindow:    in.ClearWindow,
 	}
 	if in.Schedule != nil {
 		if err := in.Schedule.Validate(); err != nil {
@@ -382,6 +385,9 @@ type ScheduledInput struct {
 	BackfillLimit *int32
 	LLMAPISetID   *uuid.UUID
 	Schedule      domain.ChannelSchedule
+	// RandomAuthor: bốc tài khoản đứng tên bài đăng cho từng voice của kênh,
+	// lọc theo quốc gia suy ra từ Language.
+	RandomAuthor *bool
 }
 
 func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in ScheduledInput) (repository.ListScheduled, error) {
@@ -418,8 +424,12 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 		ScanFrequency:   freq,
 		LanguageDefault: resolveLanguage(in.Language, "", l.defaultLanguage),
 		// F3 có thể gom bài để duyệt hàng loạt -> mặc định vẫn bật, tuỳ kênh tắt.
-		AutoProcess:    boolOr(in.AutoProcess, true),
-		AutoPublish:    boolOr(in.AutoPublish, false),
+		AutoProcess: boolOr(in.AutoProcess, true),
+		// Đăng đi theo việc tạo, không còn là lựa chọn riêng: "tự tạo voice" mà
+		// không đăng thì bài nằm lại ở nháp và vẫn phải vào bấm tay từng cái —
+		// tức là không tự động. Giao diện vì thế chỉ còn một ô.
+		AutoPublish:    boolOr(in.AutoProcess, true),
+		RandomAuthor:   boolOr(in.RandomAuthor, false),
 		Status:         statusOr(in.Status),
 		ScanLimit:      l.scanLimitOr(in.ScanLimit),
 		MaxPostsPerRun: l.maxPostsOr(in.MaxPostsPerRun),
@@ -434,6 +444,17 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 	})
 	if err != nil {
 		return repository.ListScheduled{}, fmt.Errorf("tạo list_scheduled: %w", err)
+	}
+
+	// Quét NGAY, không chờ vòng đầu theo lịch: "Số bài cũ của kênh" là thứ
+	// người dùng vừa điền và mong thấy kết quả — kênh đặt tần suất 6 tiếng mà
+	// im lặng 6 tiếng sau khi thêm thì không ai phân biệt được với kênh hỏng.
+	// Vẫn đi qua đúng handler nên khung giờ của kênh vẫn được tôn trọng.
+	if list.Status == statusActive {
+		if err := l.enq.EnqueueScheduledScan(ctx, list.ID.String()); err != nil {
+			l.log.WarnContext(ctx, "không đẩy được vòng quét đầu cho kênh vừa thêm",
+				"error", err, "list_scheduled_id", list.ID)
+		}
 	}
 
 	l.audit.Record(ctx, actor, domain.AuditCreate, domain.ObjectListScheduled, list.ID, map[string]any{
@@ -506,6 +527,7 @@ type ScheduledUpdate struct {
 	LLMAPISetID   *uuid.UUID
 	Schedule      *domain.ChannelSchedule
 	ClearWindow   bool
+	RandomAuthor  *bool
 }
 
 func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in ScheduledUpdate) (repository.ListScheduled, error) {
@@ -520,14 +542,16 @@ func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in Sche
 		PromptID:        in.PromptID,
 		LanguageDefault: in.Language,
 		AutoProcess:     in.AutoProcess,
-		AutoPublish:     in.AutoPublish,
-		Status:          in.Status,
-		ScanLimit:       in.ScanLimit,
-		MaxPostsPerRun:  in.MaxPostsPerRun,
-		ClearMaxPosts:   in.ClearMaxPosts,
-		BackfillLimit:   in.BackfillLimit,
-		LlmApiSetID:     in.LLMAPISetID,
-		ClearWindow:     in.ClearWindow,
+		// Đăng đi theo việc tạo — xem CreateScheduled.
+		AutoPublish:    in.AutoProcess,
+		Status:         in.Status,
+		ScanLimit:      in.ScanLimit,
+		MaxPostsPerRun: in.MaxPostsPerRun,
+		ClearMaxPosts:  in.ClearMaxPosts,
+		BackfillLimit:  in.BackfillLimit,
+		LlmApiSetID:    in.LLMAPISetID,
+		ClearWindow:    in.ClearWindow,
+		RandomAuthor:   in.RandomAuthor,
 		// pgtype.Interval zero value = NULL -> COALESCE giữ giá trị cũ.
 	}
 	if in.Schedule != nil {
@@ -582,6 +606,7 @@ func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in Sche
 	}
 
 	l.cascadeScheduledLanguage(ctx, before, after)
+	l.kickIfReactivated(ctx, before.Status, after)
 
 	l.audit.Record(ctx, actor, domain.AuditUpdate, domain.ObjectListScheduled, id, Diff(
 		scheduledSnapshot(before), scheduledSnapshot(after)))
@@ -624,6 +649,37 @@ func (l *List) cascadeScheduledLanguage(ctx context.Context, before, after repos
 	}
 	l.log.InfoContext(ctx, "lan ngôn ngữ từ kênh Định kỳ xuống bài và voice",
 		"list_scheduled_id", after.ID, "language", lang, "bài", posts, "voice", voices)
+}
+
+// kickIfReactivated cho kênh vừa được BẬT LẠI quét ngay, không chờ hết chu kỳ.
+//
+// Kênh tắt thì scheduler bỏ qua mọi vòng của nó. Bật lại mà không làm gì thêm
+// nghĩa là phải chờ trọn một chu kỳ nữa — với kênh đặt tần suất 6 tiếng thì đó
+// là 6 tiếng im lặng ngay sau một thao tác mà người dùng hiểu là "cho chạy lại".
+//
+// Vẫn đi qua ĐÚNG hàng đợi và đúng handler như mọi vòng quét khác, nên khung
+// giờ của kênh vẫn được tôn trọng: bật lại lúc 3h sáng trong khi kênh chỉ quét
+// 6h–23h thì task này chạy rồi tự bỏ qua, và vòng theo lịch lúc 6h vẫn tới.
+//
+// Xoá last_scanned_at đi kèm: nó là mốc "kênh đã chạy tới đâu", để nguyên thì
+// bảng hiển thị một lần quét cũ như thể vừa mới chạy.
+// statusActive là giá trị cột `status` của kênh đang chạy. Xem statusOr().
+const statusActive = "active"
+
+func (l *List) kickIfReactivated(ctx context.Context, before string, after repository.ListScheduled) {
+	if before == after.Status || after.Status != statusActive {
+		return
+	}
+	if err := l.q.TouchListScheduledDue(ctx, after.ID); err != nil {
+		l.log.WarnContext(ctx, "không xoá được mốc quét của kênh vừa bật lại",
+			"error", err, "list_scheduled_id", after.ID)
+	}
+	if err := l.enq.EnqueueScheduledScan(ctx, after.ID.String()); err != nil {
+		l.log.WarnContext(ctx, "không đẩy được vòng quét ngay cho kênh vừa bật lại",
+			"error", err, "list_scheduled_id", after.ID)
+		return
+	}
+	l.log.InfoContext(ctx, "kênh vừa bật lại — quét ngay", "list_scheduled_id", after.ID)
 }
 
 // cascadeBreakingLanguage — đối xứng với cascadeScheduledLanguage. Hai loại kênh
@@ -838,7 +894,7 @@ func boolOr(p *bool, fallback bool) bool {
 
 func statusOr(s string) string {
 	if strings.TrimSpace(s) == "" {
-		return "active"
+		return statusActive
 	}
 	return s
 }

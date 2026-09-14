@@ -331,6 +331,28 @@ func (v *Voice) MarkReady(ctx context.Context, actor, id uuid.UUID) (repository.
 	return after, nil
 }
 
+// LastUsed là Prompt mẫu + Bộ API người dùng chạy gần nhất ở hình thức C.
+type LastUsed struct {
+	PromptID    *uuid.UUID `json:"prompt_id"`
+	LLMAPISetID *uuid.UUID `json:"llm_api_set_id"`
+}
+
+// LastUsedChoices để form tạo voice chọn sẵn hai ô của hình thức C.
+//
+// Gần như ai cũng chạy đi chạy lại cùng một prompt, nên bắt chọn tay ở mỗi lần
+// tạo là hai lần bấm thừa cộng một lần quên. Lấy từ DB chứ không từ localStorage
+// vì "gần nhất" là chuyện của tài khoản, không phải của trình duyệt.
+//
+// Chưa tạo voice nào thì trả rỗng, KHÔNG phải lỗi: đó là trạng thái bình thường
+// của người mới, và form chỉ cần biết là không có gì để điền sẵn.
+func (v *Voice) LastUsedChoices(ctx context.Context, actor uuid.UUID) LastUsed {
+	row, err := v.q.LastUsedPromptAndSet(ctx, actor)
+	if err != nil {
+		return LastUsed{}
+	}
+	return LastUsed{PromptID: row.PromptID, LLMAPISetID: row.LlmApiSetID}
+}
+
 // TextVoiceInput là input tạo Voice thẳng từ text người dùng gõ.
 type TextVoiceInput struct {
 	Text        string
@@ -340,6 +362,10 @@ type TextVoiceInput struct {
 	// LLMAPISetID: Bộ API key viết lại nội dung. Chỉ có nghĩa với hình thức C;
 	// rỗng thì rơi về provider trong .env (dev).
 	LLMAPISetID *uuid.UUID
+	// Seed là metadata điền sẵn ở form — đúng bộ trường mà voice tạo từ URL
+	// nhận. Form tạo voice là MỘT form cho cả ba hình thức, nên hai đường không
+	// được nhận hai bộ trường khác nhau.
+	Seed VoiceSeed
 }
 
 // CreateFromText tạo Voice thẳng từ đoạn text, KHÔNG qua Bài Post.
@@ -385,14 +411,25 @@ func (v *Voice) CreateFromText(
 	// Tiêu đề tạm lấy từ chính đoạn text (trừ hashtag) để dòng voice đang chạy
 	// đã đọc được ngay; worker ghi đè bằng nội dung thật sự được đọc.
 	meta := domain.TextPostMetadata(text)
+	// Tiêu đề người dùng gõ THẮNG tiêu đề tạm cắt từ text: họ đã nói rõ muốn
+	// bài tên gì. Hashtag thì ngược lại — không có nguồn nào khác để gộp, nên
+	// chỉ có thứ họ điền.
+	title := domain.VoiceTitle(firstNonEmpty(in.Seed.Title, meta.Title))
 	voice, err := v.q.CreateTextVoice(ctx, repository.CreateTextVoiceParams{
-		InputText:   &text,
-		CollectMode: ptr(string(in.CollectMode)),
-		PromptID:    in.PromptID,
-		Language:    resolveLanguage(in.Language, "", v.defaultLanguage),
-		Title:       nilIfEmpty(domain.VoiceTitle(meta.Title)),
-		CreatedBy:   actor,
-		LlmApiSetID: in.LLMAPISetID,
+		InputText:        &text,
+		CollectMode:      ptr(string(in.CollectMode)),
+		PromptID:         in.PromptID,
+		Language:         resolveLanguage(in.Seed.Language, in.Language, v.defaultLanguage),
+		Title:            nilIfEmpty(title),
+		CreatedBy:        actor,
+		LlmApiSetID:      in.LLMAPISetID,
+		Hashtag:          nilIfEmpty(in.Seed.Hashtag),
+		ImageUrl:         nilIfEmpty(in.Seed.ImageURL),
+		ImageUploaded:    in.Seed.ImageUploaded,
+		NoImage:          in.Seed.NoImage,
+		AuthorGender:     in.Seed.AuthorGender,
+		AuthorCountryID:  in.Seed.AuthorCountryID,
+		PublishWhenReady: in.Seed.PublishWhenReady,
 	})
 	if err != nil {
 		return repository.Voice{}, fmt.Errorf("tạo voice từ text: %w", err)

@@ -289,7 +289,20 @@ export interface ListBreaking {
   regex_patterns: string[];
   language_default: string;
   auto_process: boolean;
+  /**
+   * Tự đăng lên multime. KHÔNG còn ô riêng trên giao diện: nó đi theo
+   * auto_process — tạo voice tự động mà không đăng thì bài nằm lại ở nháp và
+   * vẫn phải vào bấm tay từng cái, tức là không tự động.
+   */
   auto_publish: boolean;
+  /**
+   * Bốc tài khoản đứng tên bài đăng cho từng voice của kênh, lọc theo quốc gia
+   * suy ra từ ngôn ngữ của kênh.
+   *
+   * Không bật thì voice của kênh không có author và hỏng ở bước đăng: không có
+   * ai ngồi chọn tài khoản cho chúng, mà multime bắt buộc phải có.
+   */
+  random_author: boolean;
   status: string;
   scan_limit: number;
   scan_interval: PgInterval;
@@ -344,7 +357,20 @@ export interface ListScheduled {
   language_default: string;
   last_synced_post_id: string | null;
   auto_process: boolean;
+  /**
+   * Tự đăng lên multime. KHÔNG còn ô riêng trên giao diện: nó đi theo
+   * auto_process — tạo voice tự động mà không đăng thì bài nằm lại ở nháp và
+   * vẫn phải vào bấm tay từng cái, tức là không tự động.
+   */
   auto_publish: boolean;
+  /**
+   * Bốc tài khoản đứng tên bài đăng cho từng voice của kênh, lọc theo quốc gia
+   * suy ra từ ngôn ngữ của kênh.
+   *
+   * Không bật thì voice của kênh không có author và hỏng ở bước đăng: không có
+   * ai ngồi chọn tài khoản cho chúng, mà multime bắt buộc phải có.
+   */
+  random_author: boolean;
   status: string;
   scan_limit: number;
   max_posts_per_run: number | null;

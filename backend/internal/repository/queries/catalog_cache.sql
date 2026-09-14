@@ -60,3 +60,18 @@ SET name            = EXCLUDED.name,
 UPDATE voice
 SET author_id = sqlc.arg('author_id'), author_email = sqlc.narg('author_email')
 WHERE id = sqlc.arg('id');
+
+-- name: PickCountryForLanguage :one
+-- Bốc 1 quốc gia trong nhóm nói cùng một ngôn ngữ, ưu tiên theo sort_order.
+--
+-- Dùng cho kênh bật "Random author": bài đọc bằng tiếng Việt mà đứng tên tài
+-- khoản Nhật thì người nghe thấy ngay là sai, nên việc bốc phải bị chặn lại
+-- trong đúng nhóm quốc gia của ngôn ngữ đó. Tên quốc gia do
+-- domain.CountriesForLanguage đưa xuống.
+--
+-- So khớp không phân biệt hoa thường và bỏ khoảng trắng thừa: `country.name`
+-- là bản sao từ Strongbody, không phải chuỗi ta tự kiểm soát.
+SELECT id FROM country
+WHERE lower(btrim(name)) = ANY(sqlc.arg('names')::text[])
+ORDER BY sort_order, name
+LIMIT 1;
