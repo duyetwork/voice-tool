@@ -129,23 +129,38 @@ func (q *Queries) CountVoices(ctx context.Context, arg CountVoicesParams) (int64
 const createTextVoice = `-- name: CreateTextVoice :one
 INSERT INTO voice (
   input_text, collect_mode, prompt_id, language, publish_status, title, created_by,
-  llm_api_set_id
+  llm_api_set_id,
+  -- Metadata điền sẵn ở form, giống hệt voice tạo từ URL: form tạo voice giờ là
+  -- MỘT form cho cả ba hình thức, nên hai đường không được nhận hai bộ trường
+  -- khác nhau — lệch một trường là một thứ người dùng điền rồi mà biến mất.
+  hashtag, image_url, image_uploaded, no_image,
+  author_gender, author_country_id, publish_when_ready
 ) VALUES (
   $1, $2, $3,
   $4, 'processing', $5, $6,
-  $7
+  $7,
+  $8, $9, $10,
+  $11, $12, $13,
+  $14
 )
 RETURNING id, source_post_id, ai_engine_id, voice_file_url, duration_seconds, hashtag, language, image_url, publish_status, multime_post_url, last_error, created_by, created_at, published_at, title, mime_type, size_bytes, sample_rate, input_text, collect_mode, prompt_id, author_id, author_email, image_uploaded, author_gender, publish_when_ready, no_image, llm_api_set_id, llm_model_used, author_country_id, spoken_text
 `
 
 type CreateTextVoiceParams struct {
-	InputText   *string    `json:"input_text"`
-	CollectMode *string    `json:"collect_mode"`
-	PromptID    *uuid.UUID `json:"prompt_id"`
-	Language    string     `json:"language"`
-	Title       *string    `json:"title"`
-	CreatedBy   uuid.UUID  `json:"created_by"`
-	LlmApiSetID *uuid.UUID `json:"llm_api_set_id"`
+	InputText        *string    `json:"input_text"`
+	CollectMode      *string    `json:"collect_mode"`
+	PromptID         *uuid.UUID `json:"prompt_id"`
+	Language         string     `json:"language"`
+	Title            *string    `json:"title"`
+	CreatedBy        uuid.UUID  `json:"created_by"`
+	LlmApiSetID      *uuid.UUID `json:"llm_api_set_id"`
+	Hashtag          *string    `json:"hashtag"`
+	ImageUrl         *string    `json:"image_url"`
+	ImageUploaded    bool       `json:"image_uploaded"`
+	NoImage          bool       `json:"no_image"`
+	AuthorGender     *string    `json:"author_gender"`
+	AuthorCountryID  *int64     `json:"author_country_id"`
+	PublishWhenReady bool       `json:"publish_when_ready"`
 }
 
 // Voice gõ tay: không có Bài Post nào đứng sau, nội dung nằm thẳng trên Voice.
@@ -160,6 +175,13 @@ func (q *Queries) CreateTextVoice(ctx context.Context, arg CreateTextVoiceParams
 		arg.Title,
 		arg.CreatedBy,
 		arg.LlmApiSetID,
+		arg.Hashtag,
+		arg.ImageUrl,
+		arg.ImageUploaded,
+		arg.NoImage,
+		arg.AuthorGender,
+		arg.AuthorCountryID,
+		arg.PublishWhenReady,
 	)
 	var i Voice
 	err := row.Scan(
@@ -454,6 +476,36 @@ func (q *Queries) GetVoice(ctx context.Context, id uuid.UUID) (Voice, error) {
 		&i.AuthorCountryID,
 		&i.SpokenText,
 	)
+	return i, err
+}
+
+const lastUsedPromptAndSet = `-- name: LastUsedPromptAndSet :one
+SELECT
+  (SELECT p.prompt_id FROM voice p
+    WHERE p.created_by = $1::uuid AND p.prompt_id IS NOT NULL
+    ORDER BY p.created_at DESC LIMIT 1) AS prompt_id,
+  (SELECT k.llm_api_set_id FROM voice k
+    WHERE k.created_by = $1::uuid AND k.llm_api_set_id IS NOT NULL
+    ORDER BY k.created_at DESC LIMIT 1) AS llm_api_set_id
+`
+
+type LastUsedPromptAndSetRow struct {
+	PromptID    *uuid.UUID `json:"prompt_id"`
+	LlmApiSetID *uuid.UUID `json:"llm_api_set_id"`
+}
+
+// Prompt mẫu + Bộ API mà CHÍNH người này dùng gần đây nhất ở hình thức C.
+//
+// Để form tạo voice chọn sẵn thay vì bắt chọn lại mỗi lần: gần như ai cũng chạy
+// đi chạy lại cùng một prompt, và hai ô bắt buộc phải tự tay chọn ở mỗi lần tạo
+// là hai lần bấm thừa cộng một lần quên.
+//
+// Hai cột lấy ĐỘC LẬP, mỗi cột từ voice gần nhất có giá trị: chúng được chọn
+// riêng, nên voice gần nhất có prompt chưa chắc là voice gần nhất có bộ API.
+func (q *Queries) LastUsedPromptAndSet(ctx context.Context, userID uuid.UUID) (LastUsedPromptAndSetRow, error) {
+	row := q.db.QueryRow(ctx, lastUsedPromptAndSet, userID)
+	var i LastUsedPromptAndSetRow
+	err := row.Scan(&i.PromptID, &i.LlmApiSetID)
 	return i, err
 }
 

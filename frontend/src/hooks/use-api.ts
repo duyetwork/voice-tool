@@ -262,6 +262,14 @@ export interface CreateTextVoiceInput {
   language?: string;
   /** Bộ API key viết lại nội dung — chỉ hình thức C mới cần. */
   llm_api_set_id?: string | null;
+  /**
+   * Metadata điền sẵn — ĐÚNG bộ trường của CreateSourcePostInput.voice.
+   *
+   * Form tạo voice là một form cho cả ba hình thức, nên hai đường gửi phải nhận
+   * cùng một bộ trường; lệch một trường là một thứ người dùng điền rồi mà biến
+   * mất tuỳ hình thức họ chọn.
+   */
+  voice?: VoiceSeedInput;
 }
 
 export function useCreateTextVoice() {
@@ -374,6 +382,7 @@ export interface CreateBreakingInput {
   language_default?: string;
   auto_process?: boolean;
   auto_publish?: boolean;
+  random_author?: boolean;
   scan_limit?: number;
   scan_interval?: string;
   /**
@@ -457,6 +466,7 @@ export interface CreateScheduledInput {
   language_default?: string;
   auto_process?: boolean;
   auto_publish?: boolean;
+  random_author?: boolean;
   scan_limit?: number;
   /** Trần Bài Post mỗi vòng quét. 0 = không giới hạn (mặc định). */
   max_posts_per_run?: number;
@@ -532,6 +542,21 @@ export function useCreatePrompt() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { name: string; content: string }) => api.post<Prompt>("/prompts", input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["prompts"] }),
+  });
+}
+
+/**
+ * useUpdatePrompt — sửa Prompt mẫu tại chỗ.
+ *
+ * Sửa chứ không "xoá rồi thêm lại": prompt_id đang được các kênh và các voice
+ * trỏ tới, xoá đi là cắt đứt hết những liên kết đó rồi phải đi gán lại từng cái.
+ */
+export function useUpdatePrompt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; name?: string; content?: string }) =>
+      api.patch<Prompt>(`/prompts/${id}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["prompts"] }),
   });
 }
@@ -792,6 +817,25 @@ export interface ChannelScan {
   enabled: boolean;
   /** Chỉ có khi enabled=false: vì sao không, và nên làm gì thay thế. */
   reason?: string;
+}
+
+/**
+ * useLastUsedChoices — Prompt mẫu + Bộ API người này chạy gần nhất.
+ *
+ * Để form tạo voice chọn sẵn hai ô của hình thức C: gần như ai cũng chạy đi
+ * chạy lại cùng một prompt, nên bắt chọn tay mỗi lần là hai lần bấm thừa cộng
+ * một lần quên.
+ *
+ * Không cache lâu: người dùng vừa tạo voice bằng prompt khác thì lần mở modal
+ * sau phải thấy đúng cái đó.
+ */
+export function useLastUsedChoices() {
+  return useQuery({
+    queryKey: ["meta", "last-used"],
+    queryFn: () =>
+      api.get<{ prompt_id: string | null; llm_api_set_id: string | null }>("/meta/last-used"),
+    staleTime: 0,
+  });
 }
 
 export function usePlatforms() {

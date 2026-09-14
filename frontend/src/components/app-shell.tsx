@@ -12,10 +12,6 @@ import type { User } from "@/types/api";
 
 const NAV = [
   {
-    group: "Tạo voice",
-    items: [{ href: "/on-demand", label: "Tạo voice" }],
-  },
-  {
     group: "Danh sách kênh",
     items: [
       { href: "/lists/breaking", label: "Danh sách kênh Breaking" },

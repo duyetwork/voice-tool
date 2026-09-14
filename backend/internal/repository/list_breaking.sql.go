@@ -90,14 +90,14 @@ INSERT INTO list_breaking (
   language_default, auto_process, auto_publish, status, scan_limit, scan_interval,
   created_by, llm_api_set_id,
   timezone, active_from_min, active_to_min, active_weekdays,
-  backfill_limit, max_posts_per_run
+  backfill_limit, max_posts_per_run, random_author
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   $14, $15,
   $16, $17, $18,
-  $19, $20
+  $19, $20, $21
 )
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error, random_author
 `
 
 type CreateListBreakingParams struct {
@@ -121,6 +121,7 @@ type CreateListBreakingParams struct {
 	ActiveWeekdays  []int16         `json:"active_weekdays"`
 	BackfillLimit   int32           `json:"backfill_limit"`
 	MaxPostsPerRun  *int32          `json:"max_posts_per_run"`
+	RandomAuthor    bool            `json:"random_author"`
 }
 
 func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreakingParams) (ListBreaking, error) {
@@ -145,6 +146,7 @@ func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreaking
 		arg.ActiveWeekdays,
 		arg.BackfillLimit,
 		arg.MaxPostsPerRun,
+		arg.RandomAuthor,
 	)
 	var i ListBreaking
 	err := row.Scan(
@@ -174,6 +176,7 @@ func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreaking
 		&i.BackfillExcludedIds,
 		&i.MaxPostsPerRun,
 		&i.LastError,
+		&i.RandomAuthor,
 	)
 	return i, err
 }
@@ -191,7 +194,7 @@ func (q *Queries) DeleteListBreaking(ctx context.Context, id uuid.UUID) (int64, 
 }
 
 const getListBreaking = `-- name: GetListBreaking :one
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error FROM list_breaking WHERE id = $1
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error, random_author FROM list_breaking WHERE id = $1
 `
 
 func (q *Queries) GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaking, error) {
@@ -224,12 +227,13 @@ func (q *Queries) GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaki
 		&i.BackfillExcludedIds,
 		&i.MaxPostsPerRun,
 		&i.LastError,
+		&i.RandomAuthor,
 	)
 	return i, err
 }
 
 const listActiveListBreakings = `-- name: ListActiveListBreakings :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error FROM list_breaking WHERE status = 'active' ORDER BY created_at
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error, random_author FROM list_breaking WHERE status = 'active' ORDER BY created_at
 `
 
 func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, error) {
@@ -268,6 +272,7 @@ func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, 
 			&i.BackfillExcludedIds,
 			&i.MaxPostsPerRun,
 			&i.LastError,
+			&i.RandomAuthor,
 		); err != nil {
 			return nil, err
 		}
@@ -280,7 +285,7 @@ func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, 
 }
 
 const listDueListBreakings = `-- name: ListDueListBreakings :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error FROM list_breaking
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error, random_author FROM list_breaking
 WHERE status = 'active'
   AND (
     last_scanned_at IS NULL
@@ -327,6 +332,7 @@ func (q *Queries) ListDueListBreakings(ctx context.Context, defaultInterval pgty
 			&i.BackfillExcludedIds,
 			&i.MaxPostsPerRun,
 			&i.LastError,
+			&i.RandomAuthor,
 		); err != nil {
 			return nil, err
 		}
@@ -339,7 +345,7 @@ func (q *Queries) ListDueListBreakings(ctx context.Context, defaultInterval pgty
 }
 
 const listListBreakings = `-- name: ListListBreakings :many
-SELECT lb.id, lb.source_url, lb.platform, lb.content_type, lb.collect_mode, lb.prompt_id, lb.language_default, lb.auto_process, lb.auto_publish, lb.status, lb.created_by, lb.created_at, lb.regex_patterns, lb.scan_limit, lb.scan_interval, lb.last_scanned_at, lb.llm_api_set_id, lb.timezone, lb.active_from_min, lb.active_to_min, lb.active_weekdays, lb.backfill_limit, lb.backfill_done_at, lb.backfill_excluded_ids, lb.max_posts_per_run, lb.last_error, u.email AS created_by_email,
+SELECT lb.id, lb.source_url, lb.platform, lb.content_type, lb.collect_mode, lb.prompt_id, lb.language_default, lb.auto_process, lb.auto_publish, lb.status, lb.created_by, lb.created_at, lb.regex_patterns, lb.scan_limit, lb.scan_interval, lb.last_scanned_at, lb.llm_api_set_id, lb.timezone, lb.active_from_min, lb.active_to_min, lb.active_weekdays, lb.backfill_limit, lb.backfill_done_at, lb.backfill_excluded_ids, lb.max_posts_per_run, lb.last_error, lb.random_author, u.email AS created_by_email,
        (SELECT COUNT(*) FROM source_post sp
          WHERE sp.list_breaking_id = lb.id) AS post_count,
        (SELECT COUNT(*) FROM voice v
@@ -400,6 +406,7 @@ type ListListBreakingsRow struct {
 	BackfillExcludedIds []string        `json:"backfill_excluded_ids"`
 	MaxPostsPerRun      *int32          `json:"max_posts_per_run"`
 	LastError           *string         `json:"last_error"`
+	RandomAuthor        bool            `json:"random_author"`
 	CreatedByEmail      string          `json:"created_by_email"`
 	PostCount           int64           `json:"post_count"`
 	VoiceCount          int64           `json:"voice_count"`
@@ -452,6 +459,7 @@ func (q *Queries) ListListBreakings(ctx context.Context, arg ListListBreakingsPa
 			&i.BackfillExcludedIds,
 			&i.MaxPostsPerRun,
 			&i.LastError,
+			&i.RandomAuthor,
 			&i.CreatedByEmail,
 			&i.PostCount,
 			&i.VoiceCount,
@@ -536,9 +544,10 @@ SET source_url       = COALESCE($1, source_url),
     -- Cùng lý do với khung giờ: NULL ở max_posts_per_run nghĩa là "không giới
     -- hạn", nên chỉ COALESCE thì người dùng đặt trần rồi không gỡ ra được nữa.
     max_posts_per_run = CASE WHEN $20::bool THEN NULL
-                             ELSE COALESCE($21, max_posts_per_run) END
-WHERE id = $22
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error
+                             ELSE COALESCE($21, max_posts_per_run) END,
+    random_author     = COALESCE($22, random_author)
+WHERE id = $23
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, backfill_limit, backfill_done_at, backfill_excluded_ids, max_posts_per_run, last_error, random_author
 `
 
 type UpdateListBreakingParams struct {
@@ -563,6 +572,7 @@ type UpdateListBreakingParams struct {
 	BackfillLimit   *int32          `json:"backfill_limit"`
 	ClearMaxPosts   bool            `json:"clear_max_posts"`
 	MaxPostsPerRun  *int32          `json:"max_posts_per_run"`
+	RandomAuthor    *bool           `json:"random_author"`
 	ID              uuid.UUID       `json:"id"`
 }
 
@@ -589,6 +599,7 @@ func (q *Queries) UpdateListBreaking(ctx context.Context, arg UpdateListBreaking
 		arg.BackfillLimit,
 		arg.ClearMaxPosts,
 		arg.MaxPostsPerRun,
+		arg.RandomAuthor,
 		arg.ID,
 	)
 	var i ListBreaking
@@ -619,6 +630,7 @@ func (q *Queries) UpdateListBreaking(ctx context.Context, arg UpdateListBreaking
 		&i.BackfillExcludedIds,
 		&i.MaxPostsPerRun,
 		&i.LastError,
+		&i.RandomAuthor,
 	)
 	return i, err
 }

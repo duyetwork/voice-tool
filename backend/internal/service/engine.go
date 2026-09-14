@@ -853,6 +853,16 @@ func (e *Engine) ProcessTextVoice(ctx context.Context, voiceID, actor uuid.UUID,
 		"language":     voice.Language,
 		"source":       "text",
 	})
+
+	// Người dùng đã bấm "Đăng" ở form tạo voice — đăng luôn khi audio xong,
+	// không bắt quay lại bấm nút thứ hai. Luồng voice từ URL đã làm đúng như
+	// vậy từ đầu (xem Process); thiếu ở đây nghĩa là cùng một nút "Đăng" cho ra
+	// hai kết quả khác nhau tuỳ hình thức người dùng chọn.
+	if voice.PublishWhenReady {
+		if err := e.enq.EnqueueVoicePublish(ctx, voiceID.String(), actor.String()); err != nil {
+			e.log.ErrorContext(ctx, "enqueue voice:publish thất bại", "error", err, "voice_id", voiceID)
+		}
+	}
 	return nil
 }
 

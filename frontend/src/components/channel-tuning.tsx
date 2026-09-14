@@ -1,74 +1,79 @@
 "use client";
 
-import * as React from "react";
-
 import { Field, Input } from "@/components/ui/field";
 
 /**
- * Tham số quét của 1 kênh — dùng chung cho cả Breaking lẫn Định kỳ, cả lúc
- * thêm lẫn lúc sửa.
+ * Ba con số hay bị nhầm với nhau, nên gom một chỗ và gọi tên theo đúng việc
+ * chúng làm:
  *
- * Ba con số ở đây trả lời ba câu hỏi khác nhau, và trước khi gom vào một chỗ
- * thì chúng hay bị nhầm lẫn với nhau:
- *
- *   scan_limit        — mỗi vòng NHÌN bao nhiêu bài mới nhất của kênh
- *   backfill_limit    — lần đầu tiên, LẤY bao nhiêu bài đã đăng từ trước
+ *   scan_limit        — mỗi LẦN quét lấy về bao nhiêu bài mới nhất của kênh
+ *   backfill_limit    — lúc THÊM kênh, lấy về bao nhiêu bài đã đăng từ trước
  *   max_posts_per_run — mỗi vòng được TẠO tối đa bao nhiêu Bài Post
+ *
+ * Hai con số đầu trả lời hai câu hỏi khác nhau ở hai thời điểm khác nhau: vòng
+ * quét đầu tiên dùng backfill_limit, mọi vòng sau dùng scan_limit.
+ *
+ * MỌI Ô ĐỀU ĐIỀN SẴN GIÁ TRỊ MẶC ĐỊNH, không để trống kèm placeholder. Ô trống
+ * buộc người dùng phải đoán "trống nghĩa là gì" — và với ba con số mang ba ý
+ * nghĩa khác nhau thì mỗi ô lại đoán một kiểu. Xoá trắng ô nào thì ô đó về 0,
+ * và 0 có nghĩa rõ ràng: không lấy bài cũ nào / không giới hạn số bài tạo ra.
  */
 
-/** Hình dạng của FORM: chuỗi, vì ô trống phải phân biệt được với số 0. */
+/** DEFAULT_SCAN_LIMIT / DEFAULT_BACKFILL là giá trị điền sẵn cho kênh MỚI. */
+export const DEFAULT_SCAN_LIMIT = 50;
+export const DEFAULT_BACKFILL = 50;
+
 export interface TuningDraft {
   scanLimit: string;
   backfillLimit: string;
   maxPostsPerRun: string;
 }
 
+/** emptyTuning là bản nháp cho kênh MỚI — điền sẵn, không để trống. */
 export const emptyTuning: TuningDraft = {
-  scanLimit: "",
-  backfillLimit: "",
-  maxPostsPerRun: "",
+  scanLimit: String(DEFAULT_SCAN_LIMIT),
+  backfillLimit: String(DEFAULT_BACKFILL),
+  maxPostsPerRun: String(DEFAULT_SCAN_LIMIT),
 };
 
-export interface TunableChannel {
+export function tuningDraftOf(list: {
   scan_limit: number;
   backfill_limit: number;
   max_posts_per_run?: number | null;
   backfill_done_at?: string | null;
-}
-
-/** Đổ giá trị đang lưu vào form sửa. */
-export function tuningDraftOf(list: TunableChannel): TuningDraft {
+}): TuningDraft {
   return {
     scanLimit: String(list.scan_limit),
     backfillLimit: String(list.backfill_limit),
-    // null = không giới hạn, và "không giới hạn" hiển thị bằng ô TRỐNG chứ
-    // không phải số 0: ô trống là thứ người dùng đọc được ngay.
-    maxPostsPerRun: list.max_posts_per_run == null ? "" : String(list.max_posts_per_run),
+    // null trong DB = không giới hạn. Hiện lại bằng chính cửa sổ quét, vì đó là
+    // trần thật sự: một vòng không bao giờ tạo ra nhiều Bài Post hơn số bài nó
+    // nhìn thấy.
+    maxPostsPerRun:
+      list.max_posts_per_run == null ? String(list.scan_limit) : String(list.max_posts_per_run),
   };
 }
 
-/** Payload lúc THÊM kênh: bỏ trống = để server dùng mặc định của nó. */
+/** numOr đọc ô số; rỗng hoặc không phải số = 0. */
+function numOr(raw: string): number {
+  const n = Number(raw.trim());
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 export function tuningCreatePayload(draft: TuningDraft) {
   return {
-    scan_limit: draft.scanLimit ? Number(draft.scanLimit) : undefined,
-    backfill_limit: draft.backfillLimit ? Number(draft.backfillLimit) : undefined,
-    max_posts_per_run: draft.maxPostsPerRun ? Number(draft.maxPostsPerRun) : undefined,
+    scan_limit: numOr(draft.scanLimit) || undefined,
+    backfill_limit: numOr(draft.backfillLimit),
+    max_posts_per_run: numOr(draft.maxPostsPerRun) || undefined,
   };
 }
 
-/**
- * Payload lúc SỬA kênh.
- *
- * Khác `tuningCreatePayload` ở đúng một chỗ: ô trần bỏ trống nghĩa là người
- * dùng vừa XOÁ cái trần, và điều đó phải gửi lên thành 0 (= bỏ giới hạn).
- * Gửi `undefined` như lúc tạo thì server hiểu là "không đụng tới", và cái trần
- * cũ ở lại mãi mãi.
- */
 export function tuningUpdatePayload(draft: TuningDraft) {
   return {
-    scan_limit: draft.scanLimit ? Number(draft.scanLimit) : undefined,
-    backfill_limit: draft.backfillLimit ? Number(draft.backfillLimit) : undefined,
-    max_posts_per_run: draft.maxPostsPerRun ? Number(draft.maxPostsPerRun) : 0,
+    scan_limit: numOr(draft.scanLimit) || undefined,
+    backfill_limit: numOr(draft.backfillLimit),
+    // 0 ở PATCH = BỎ trần (backend đổi thành NULL). Khác undefined, vốn nghĩa
+    // là "không sửa" — không phân biệt hai cái thì đặt trần rồi không gỡ được.
+    max_posts_per_run: numOr(draft.maxPostsPerRun),
   };
 }
 
@@ -77,61 +82,48 @@ export function ChannelTuning({
   onChange,
   /** Vòng quét đầu đã chạy xong -> số bài cũ không còn tác dụng gì nữa. */
   backfillDone = false,
-  defaultScanLimit = 20,
 }: {
   value: TuningDraft;
   onChange: (next: TuningDraft) => void;
   backfillDone?: boolean;
-  defaultScanLimit?: number;
 }) {
   const set = (patch: Partial<TuningDraft>) => onChange({ ...value, ...patch });
 
-  // Cửa sổ quét là TRẦN CỨNG của cả hai ô kia: vòng quét chỉ nhìn thấy bấy
-  // nhiêu bài, nên xin nhiều hơn không lấy thêm được bài nào — con số thừa ra
-  // chỉ im lặng không có tác dụng. Cảnh báo chứ không chặn: đặt trần 100 cho
-  // một kênh đang nhìn 20 bài là cách hợp lệ để nói "coi như không giới hạn".
-  const window = Number(value.scanLimit) || defaultScanLimit;
-  const over = (raw: string) => {
-    const n = Number(raw);
-    return raw !== "" && Number.isFinite(n) && n > window;
-  };
-  const overNote = (what: string) =>
-    `${what} (${window}) — phần vượt không có tác dụng vì mỗi vòng chỉ nhìn thấy ${window} bài. Tăng "Số bài nhìn mỗi vòng quét" nếu thật sự cần.`;
+  // Cửa sổ quét là TRẦN CỨNG của trần Bài Post: một vòng không thể tạo ra nhiều
+  // bài hơn số bài nó nhìn thấy, nên số lớn hơn chỉ im lặng không có tác dụng.
+  //
+  // Số bài cũ thì KHÔNG bị chặn bởi nó: vòng quét đầu đi hỏi nền tảng đúng con
+  // số này, độc lập với cửa sổ của các vòng sau (xem firstRunLimit ở backend).
+  const window = numOr(value.scanLimit);
+  const maxOver = window > 0 && numOr(value.maxPostsPerRun) > window;
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-3">
       <Field
-        label="Số bài nhìn mỗi vòng quét"
-        hint={`Cửa sổ quét: lấy về bấy nhiêu bài mới nhất rồi mới lọc. Bỏ trống = mặc định hệ thống (${defaultScanLimit}).`}
+        label="Số bài mỗi lần quét"
+        hint="Mỗi vòng quét nhìn bấy nhiêu bài mới nhất của kênh để dò bài mới. Xoá trắng = 0 = dùng mặc định hệ thống."
       >
         <Input
           type="number"
-          min={1}
+          min={0}
           max={200}
-          placeholder={String(defaultScanLimit)}
           value={value.scanLimit}
           onChange={(e) => set({ scanLimit: e.target.value })}
         />
       </Field>
 
       <Field
-        label="Lấy bài cũ khi thêm kênh"
-        error={
-          !backfillDone && over(value.backfillLimit)
-            ? overNote("Lớn hơn cửa sổ quét")
-            : undefined
-        }
+        label="Số bài cũ của kênh"
         hint={
           backfillDone
-            ? "Vòng quét đầu đã chạy xong — đổi số này không còn tác dụng."
-            : "0 = chỉ lấy bài đăng SAU khi thêm kênh. Đặt N để lấy thêm N bài gần nhất đã đăng từ trước."
+            ? "Đã lấy xong ở vòng quét đầu — đổi số này không còn tác dụng."
+            : "Lúc thêm kênh, lấy về bấy nhiêu bài đã đăng từ trước (mới nhất trước). 0 = chỉ lấy bài đăng sau khi thêm kênh."
         }
       >
         <Input
           type="number"
           min={0}
           max={200}
-          placeholder="0"
           disabled={backfillDone}
           value={value.backfillLimit}
           onChange={(e) => set({ backfillLimit: e.target.value })}
@@ -140,13 +132,16 @@ export function ChannelTuning({
 
       <Field
         label="Trần Bài Post mỗi vòng"
-        error={over(value.maxPostsPerRun) ? overNote("Lớn hơn cửa sổ quét") : undefined}
-        hint="Bỏ trống = không giới hạn, lấy hết bài mới. Đặt số để chặn nổ chi phí AI khi kênh đăng ồ ạt — phần dư để vòng sau xử lý tiếp."
+        error={
+          maxOver
+            ? `Lớn hơn số bài mỗi lần quét (${window}) — phần vượt không có tác dụng.`
+            : undefined
+        }
+        hint="Chặn nổ chi phí AI khi kênh đăng ồ ạt; phần dư để vòng sau xử lý tiếp. Xoá trắng = 0 = không giới hạn."
       >
         <Input
           type="number"
-          min={1}
-          placeholder="không giới hạn"
+          min={0}
           value={value.maxPostsPerRun}
           onChange={(e) => set({ maxPostsPerRun: e.target.value })}
         />

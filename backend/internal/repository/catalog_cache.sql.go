@@ -144,6 +144,29 @@ func (q *Queries) ListHashtags(ctx context.Context, arg ListHashtagsParams) ([]L
 	return items, nil
 }
 
+const pickCountryForLanguage = `-- name: PickCountryForLanguage :one
+SELECT id FROM country
+WHERE lower(btrim(name)) = ANY($1::text[])
+ORDER BY sort_order, name
+LIMIT 1
+`
+
+// Bốc 1 quốc gia trong nhóm nói cùng một ngôn ngữ, ưu tiên theo sort_order.
+//
+// Dùng cho kênh bật "Random author": bài đọc bằng tiếng Việt mà đứng tên tài
+// khoản Nhật thì người nghe thấy ngay là sai, nên việc bốc phải bị chặn lại
+// trong đúng nhóm quốc gia của ngôn ngữ đó. Tên quốc gia do
+// domain.CountriesForLanguage đưa xuống.
+//
+// So khớp không phân biệt hoa thường và bỏ khoảng trắng thừa: `country.name`
+// là bản sao từ Strongbody, không phải chuỗi ta tự kiểm soát.
+func (q *Queries) PickCountryForLanguage(ctx context.Context, names []string) (int64, error) {
+	row := q.db.QueryRow(ctx, pickCountryForLanguage, names)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const setVoiceAuthor = `-- name: SetVoiceAuthor :exec
 UPDATE voice
 SET author_id = $1, author_email = $2

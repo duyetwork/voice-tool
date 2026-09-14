@@ -151,6 +151,13 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"collect_modes": modes})
 	})
 
+	// Prompt mẫu + Bộ API người này dùng gần nhất, để form tạo voice chọn sẵn.
+	// Gần như ai cũng chạy đi chạy lại cùng một prompt; bắt chọn tay ở mỗi lần
+	// tạo là hai lần bấm thừa cộng một lần quên.
+	authed.GET("/meta/last-used", func(c *gin.Context) {
+		c.JSON(http.StatusOK, d.Voice.LastUsedChoices(c.Request.Context(), middleware.ActorID(c)))
+	})
+
 	registerReadOnly(authed, d)
 
 	// Phát/tải file voice + ảnh bìa: token đi qua query param được vì thẻ

@@ -91,7 +91,10 @@ type createBreakingRequest struct {
 	Language      string     `json:"language_default"`
 	AutoProcess   *bool      `json:"auto_process"`
 	AutoPublish   *bool      `json:"auto_publish"`
-	Status        string     `json:"status" binding:"omitempty,oneof=active paused"`
+	// RandomAuthor: bốc tài khoản đứng tên bài đăng theo ngôn ngữ của kênh.
+	// Không bật thì voice của kênh không có author và hỏng ở bước đăng.
+	RandomAuthor *bool  `json:"random_author"`
+	Status       string `json:"status" binding:"omitempty,oneof=active paused"`
 	// Tham số quét — bỏ trống thì dùng chỉ số tối ưu của hệ thống.
 	ScanLimit    *int32  `json:"scan_limit" binding:"omitempty,min=1,max=200"`
 	ScanInterval *string `json:"scan_interval"`
@@ -121,6 +124,7 @@ func (h *List) CreateBreaking(c *gin.Context) {
 		Language:       req.Language,
 		AutoProcess:    req.AutoProcess,
 		AutoPublish:    req.AutoPublish,
+		RandomAuthor:   req.RandomAuthor,
 		Status:         req.Status,
 		ScanLimit:      req.ScanLimit,
 		BackfillLimit:  req.BackfillLimit,
@@ -194,10 +198,13 @@ type updateBreakingRequest struct {
 	Language      *string    `json:"language_default"`
 	AutoProcess   *bool      `json:"auto_process"`
 	AutoPublish   *bool      `json:"auto_publish"`
-	Status        *string    `json:"status" binding:"omitempty,oneof=active paused"`
-	ScanLimit     *int32     `json:"scan_limit" binding:"omitempty,min=1,max=200"`
-	ScanInterval  *string    `json:"scan_interval"`
-	BackfillLimit *int32     `json:"backfill_limit" binding:"omitempty,min=0,max=200"`
+	// RandomAuthor: bốc tài khoản đứng tên bài đăng theo ngôn ngữ của kênh.
+	// Không bật thì voice của kênh không có author và hỏng ở bước đăng.
+	RandomAuthor  *bool   `json:"random_author"`
+	Status        *string `json:"status" binding:"omitempty,oneof=active paused"`
+	ScanLimit     *int32  `json:"scan_limit" binding:"omitempty,min=1,max=200"`
+	ScanInterval  *string `json:"scan_interval"`
+	BackfillLimit *int32  `json:"backfill_limit" binding:"omitempty,min=0,max=200"`
 	// MaxPostsPerRun = 0 nghĩa là BỎ trần (không giới hạn) — xem clearMaxPosts.
 	MaxPostsPerRun *int32           `json:"max_posts_per_run" binding:"omitempty,min=0"`
 	LLMAPISetID    *uuid.UUID       `json:"llm_api_set_id"`
@@ -224,6 +231,7 @@ func (h *List) UpdateBreaking(c *gin.Context) {
 		Language:      req.Language,
 		AutoProcess:   req.AutoProcess,
 		AutoPublish:   req.AutoPublish,
+		RandomAuthor:  req.RandomAuthor,
 		Status:        req.Status,
 		ScanLimit:     req.ScanLimit,
 		BackfillLimit: req.BackfillLimit,
@@ -288,6 +296,7 @@ type createScheduledRequest struct {
 	Language      string `json:"language_default"`
 	AutoProcess   *bool  `json:"auto_process"`
 	AutoPublish   *bool  `json:"auto_publish"`
+	RandomAuthor  *bool  `json:"random_author"`
 	Status        string `json:"status" binding:"omitempty,oneof=active paused"`
 	// Tham số quét — bỏ trống thì dùng chỉ số tối ưu của hệ thống.
 	ScanLimit      *int32 `json:"scan_limit" binding:"omitempty,min=1,max=200"`
@@ -319,6 +328,7 @@ func (h *List) CreateScheduled(c *gin.Context) {
 		Language:       req.Language,
 		AutoProcess:    req.AutoProcess,
 		AutoPublish:    req.AutoPublish,
+		RandomAuthor:   req.RandomAuthor,
 		Status:         req.Status,
 		ScanLimit:      req.ScanLimit,
 		MaxPostsPerRun: req.MaxPostsPerRun,
@@ -382,7 +392,10 @@ type updateScheduledRequest struct {
 	Language      *string    `json:"language_default"`
 	AutoProcess   *bool      `json:"auto_process"`
 	AutoPublish   *bool      `json:"auto_publish"`
-	Status        *string    `json:"status" binding:"omitempty,oneof=active paused"`
+	// RandomAuthor: bốc tài khoản đứng tên bài đăng theo ngôn ngữ của kênh.
+	// Không bật thì voice của kênh không có author và hỏng ở bước đăng.
+	RandomAuthor *bool   `json:"random_author"`
+	Status       *string `json:"status" binding:"omitempty,oneof=active paused"`
 
 	ScanLimit *int32 `json:"scan_limit" binding:"omitempty,min=1,max=200"`
 	// MaxPostsPerRun = 0 nghĩa là BỎ trần (không giới hạn) — xem clearMaxPosts.
@@ -411,6 +424,7 @@ func (h *List) UpdateScheduled(c *gin.Context) {
 		Language:      req.Language,
 		AutoProcess:   req.AutoProcess,
 		AutoPublish:   req.AutoPublish,
+		RandomAuthor:  req.RandomAuthor,
 		Status:        req.Status,
 		ScanLimit:     req.ScanLimit,
 		BackfillLimit: req.BackfillLimit,

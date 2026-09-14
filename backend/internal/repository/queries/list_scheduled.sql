@@ -4,13 +4,13 @@ INSERT INTO list_scheduled (
   language_default, auto_process, auto_publish, status, scan_limit,
   max_posts_per_run, created_by, llm_api_set_id,
   timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min,
-  backfill_limit
+  backfill_limit, random_author
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   sqlc.narg('llm_api_set_id'), sqlc.arg('timezone'),
   sqlc.narg('active_from_min'), sqlc.narg('active_to_min'),
   sqlc.arg('active_weekdays'), sqlc.arg('fixed_times_min'),
-  sqlc.arg('backfill_limit')
+  sqlc.arg('backfill_limit'), sqlc.arg('random_author')
 )
 RETURNING *;
 
@@ -79,7 +79,8 @@ SET source_url        = COALESCE(sqlc.narg('source_url'), source_url),
     active_to_min     = CASE WHEN sqlc.arg('clear_window')::bool THEN NULL
                              ELSE COALESCE(sqlc.narg('active_to_min'), active_to_min) END,
     active_weekdays   = COALESCE(sqlc.narg('active_weekdays'), active_weekdays),
-    fixed_times_min   = COALESCE(sqlc.narg('fixed_times_min'), fixed_times_min)
+    fixed_times_min   = COALESCE(sqlc.narg('fixed_times_min'), fixed_times_min),
+    random_author     = COALESCE(sqlc.narg('random_author'), random_author)
 WHERE id = sqlc.arg('id')
 RETURNING *;
 
@@ -133,3 +134,12 @@ WHERE sp.id = v.source_post_id
 -- Ghi lỗi của vòng quét gần nhất lên kênh, hoặc xoá nó khi vòng quét chạy sạch.
 -- Người dùng chỉ nhìn thấy bảng kênh, không nhìn thấy log worker.
 UPDATE list_scheduled SET last_error = sqlc.narg('last_error') WHERE id = sqlc.arg('id');
+
+-- name: TouchListScheduledDue :exec
+-- Ép kênh tới hạn quét NGAY: xoá mốc quét gần nhất.
+--
+-- Dùng khi người dùng vừa BẬT LẠI một kênh đang tắt. Kênh tắt thì scheduler bỏ
+-- qua mọi vòng, nên nếu không có câu này thì sau khi bật, kênh phải chờ hết một
+-- chu kỳ nữa mới chạy — với kênh đặt tần suất 6 tiếng thì đó là 6 tiếng im lặng
+-- ngay sau một thao tác mà người dùng nghĩ là "cho chạy lại".
+UPDATE list_scheduled SET last_scanned_at = NULL WHERE id = $1;

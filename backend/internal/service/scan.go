@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -45,6 +46,29 @@ func NewScan(d ScanDeps) *Scan {
 		q: d.Queries, platforms: d.Platforms, enq: d.Enqueuer, log: d.Logger,
 		gate: d.Gate, stats: d.FetchStats,
 	}
+}
+
+// firstRunLimit chốt cửa sổ của VÒNG QUÉT ĐẦU TIÊN của một kênh.
+//
+// Vòng đầu và các vòng sau trả lời hai câu hỏi khác nhau, nên chúng không dùng
+// chung một con số:
+//
+//   - vòng đầu  — "lấy về bao nhiêu bài CŨ của kênh này": backfill_limit;
+//   - vòng sau  — "mỗi lần nhìn bao nhiêu bài mới nhất để dò bài mới":
+//     scan_limit.
+//
+// Trước đây cả hai đều dùng scan_limit rồi mới cắt bớt, nên xin 200 bài cũ mà
+// cửa sổ quét là 20 thì lặng lẽ chỉ được 20 — con số người dùng điền không có
+// tác dụng và không có gì nói ra điều đó.
+//
+// Sàn 1 bài: ngay cả khi không lấy bài cũ nào (0), vòng đầu vẫn phải nhìn thấy
+// bài mới nhất để ĐẶT MỐC đồng bộ. Không có mốc thì vòng thứ hai coi cả cửa sổ
+// là bài mới và nuốt trọn đúng những bài vừa cố tình bỏ qua.
+func firstRunLimit(backfill int32) int {
+	if backfill < 1 {
+		return 1
+	}
+	return int(backfill)
 }
 
 // latestPosts gọi adapter qua PlatformGate: mỗi nền tảng 1 yt-dlp tại một thời
@@ -127,7 +151,11 @@ func (s *Scan) scanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 		return res, domain.Permanent(err)
 	}
 
-	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, int(list.ScanLimit))
+	limit := int(list.ScanLimit)
+	if list.BackfillDoneAt == nil {
+		limit = firstRunLimit(list.BackfillLimit)
+	}
+	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, limit)
 	if err != nil {
 		return res, fmt.Errorf("quét kênh %s: %w", list.SourceUrl, err)
 	}
@@ -199,16 +227,18 @@ func (s *Scan) scanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 		}
 
 		created, err := s.createFromRemote(ctx, remoteInput{
-			SourceType:  domain.SourceBreaking,
-			ListID:      list.ID,
-			Post:        p,
-			Platform:    list.Platform,
-			CollectMode: list.CollectMode,
-			PromptID:    list.PromptID,
-			Language:    list.LanguageDefault,
-			CreatedBy:   list.CreatedBy,
-			AutoProcess: list.AutoProcess,
-			LLMAPISetID: list.LlmApiSetID,
+			SourceType:   domain.SourceBreaking,
+			ListID:       list.ID,
+			Post:         p,
+			Platform:     list.Platform,
+			CollectMode:  list.CollectMode,
+			PromptID:     list.PromptID,
+			Language:     list.LanguageDefault,
+			CreatedBy:    list.CreatedBy,
+			AutoProcess:  list.AutoProcess,
+			LLMAPISetID:  list.LlmApiSetID,
+			AutoPublish:  list.AutoPublish,
+			RandomAuthor: list.RandomAuthor,
 		})
 		if err != nil {
 			s.log.ErrorContext(ctx, "breaking:scan tạo source_post thất bại",
@@ -259,7 +289,13 @@ func (s *Scan) scanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 		return res, domain.Permanent(err)
 	}
 
-	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, int(list.ScanLimit))
+	// Vòng đầu hỏi "bao nhiêu bài cũ", vòng sau hỏi "nhìn bao nhiêu bài mới
+	// nhất" — xem firstRunLimit.
+	limit := int(list.ScanLimit)
+	if list.BackfillDoneAt == nil {
+		limit = firstRunLimit(list.BackfillLimit)
+	}
+	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, limit)
 	if err != nil {
 		return res, fmt.Errorf("quét kênh %s: %w", list.SourceUrl, err)
 	}
@@ -318,16 +354,18 @@ func (s *Scan) scanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 		p := fresh[i]
 
 		created, err := s.createFromRemote(ctx, remoteInput{
-			SourceType:  domain.SourceScheduled,
-			ListID:      list.ID,
-			Post:        p,
-			Platform:    list.Platform,
-			CollectMode: list.CollectMode,
-			PromptID:    list.PromptID,
-			Language:    list.LanguageDefault,
-			CreatedBy:   list.CreatedBy,
-			AutoProcess: list.AutoProcess,
-			LLMAPISetID: list.LlmApiSetID,
+			SourceType:   domain.SourceScheduled,
+			ListID:       list.ID,
+			Post:         p,
+			Platform:     list.Platform,
+			CollectMode:  list.CollectMode,
+			PromptID:     list.PromptID,
+			Language:     list.LanguageDefault,
+			CreatedBy:    list.CreatedBy,
+			AutoProcess:  list.AutoProcess,
+			LLMAPISetID:  list.LlmApiSetID,
+			AutoPublish:  list.AutoPublish,
+			RandomAuthor: list.RandomAuthor,
 		})
 
 		switch {
@@ -477,6 +515,11 @@ type remoteInput struct {
 	// Mode C tự động không có ai bấm nút để chọn bộ, nên bộ phải nằm sẵn trên
 	// kênh — không gán thì luồng tự động không chạy được mode C.
 	LLMAPISetID *uuid.UUID
+	// AutoPublish: tạo xong audio thì đăng thẳng lên multime.
+	AutoPublish bool
+	// RandomAuthor: bốc tài khoản đứng tên bài đăng, lọc theo quốc gia suy ra
+	// từ Language.
+	RandomAuthor bool
 }
 
 // createFromRemote tạo Bài Post từ 1 bài thô. created=false nghĩa là bài đã có
@@ -555,12 +598,50 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 	}
 
 	if in.AutoProcess {
-		seed := VoiceSeed{LLMAPISetID: in.LLMAPISetID}
+		seed := VoiceSeed{
+			LLMAPISetID:      in.LLMAPISetID,
+			PublishWhenReady: in.AutoPublish,
+		}
+		// Không có ai ngồi chọn author cho voice sinh ra từ kênh, nên
+		// author_gender của chúng luôn NULL — và ensureAuthor ở bước đăng trả
+		// lỗi vĩnh viễn vì thiếu đúng thứ đó. Nghĩa là trước cờ này, "tự đăng"
+		// của kênh chỉ tạo ra voice hỏng ở bước cuối.
+		if in.RandomAuthor {
+			seed.AuthorGender = ptr(string(domain.RandomGender()))
+			seed.AuthorCountryID = s.countryForLanguage(ctx, in.Language)
+		}
 		if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, in.CreatedBy, seed); err != nil {
 			return true, fmt.Errorf("enqueue voice:process: %w", err)
 		}
 	}
 	return true, nil
+}
+
+// countryForLanguage chốt quốc gia để lọc danh bạ tài khoản, suy ra từ ngôn ngữ
+// của kênh.
+//
+// nil ở mọi nhánh hỏng — kể cả khi query lỗi: bốc tài khoản KHÔNG lọc quốc gia
+// vẫn ra một tài khoản dùng được, còn chặn việc tạo voice chỉ vì tra cứu danh
+// mục hỏng thì mất cả bài. Ngôn ngữ 'auto' cũng rơi vào đây: chưa chốt tiếng
+// thì không có cơ sở nào để chọn nước.
+func (s *Scan) countryForLanguage(ctx context.Context, language string) *int64 {
+	names := domain.CountriesForLanguage(language)
+	if len(names) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(names))
+	for _, n := range names {
+		keys = append(keys, strings.ToLower(strings.TrimSpace(n)))
+	}
+	id, err := s.q.PickCountryForLanguage(ctx, keys)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			s.log.WarnContext(ctx, "không tra được quốc gia theo ngôn ngữ, bốc author không lọc nước",
+				"error", err, "language", language)
+		}
+		return nil
+	}
+	return &id
 }
 
 func isUniqueViolation(err error) bool {

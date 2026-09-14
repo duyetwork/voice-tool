@@ -67,6 +67,14 @@ func (e *Enqueuer) EnqueueBreakingScan(ctx context.Context, listID string) error
 	return e.enqueue(ctx, t)
 }
 
+func (e *Enqueuer) EnqueueScheduledScan(ctx context.Context, listID string) error {
+	t, err := task.NewScheduledScan(task.ScheduledScanPayload{ListID: listID})
+	if err != nil {
+		return err
+	}
+	return e.enqueue(ctx, t)
+}
+
 func (e *Enqueuer) enqueue(ctx context.Context, t *asynq.Task) error {
 	if _, err := e.client.EnqueueContext(ctx, t); err != nil {
 		return fmt.Errorf("enqueue %s: %w", t.Type(), err)

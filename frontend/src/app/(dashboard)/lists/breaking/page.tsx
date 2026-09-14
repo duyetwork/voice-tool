@@ -418,7 +418,10 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
   const [promptId, setPromptId] = React.useState(list?.prompt_id ?? "");
   const [language, setLanguage] = React.useState(list?.language_default ?? "auto");
   const [autoProcess, setAutoProcess] = React.useState(list?.auto_process ?? true);
-  const [autoPublish, setAutoPublish] = React.useState(list?.auto_publish ?? false);
+  // auto_publish không còn ô riêng — nó đi theo autoProcess (xem CreateBreaking
+  // ở backend). randomAuthor mới là thứ quyết định voice của kênh có đứng tên
+  // được ai không.
+  const [randomAuthor, setRandomAuthor] = React.useState(list?.random_author ?? false);
   // Sửa kênh thì mở sẵn phần tham số: người vào đây thường là để chỉnh đúng
   // mấy con số đó, giấu đi lại bắt bấm thêm một lần.
   const [showTuning, setShowTuning] = React.useState(editing);
@@ -454,7 +457,7 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
       prompt_id: needsPrompt && promptId ? promptId : null,
       language_default: language,
       auto_process: autoProcess,
-      auto_publish: autoPublish,
+      random_author: randomAuthor,
       scan_interval: scanInterval || undefined,
       llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
       schedule: toChannelSchedule(schedule),
@@ -589,13 +592,20 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
 
         <ScheduleFields value={schedule} onChange={setSchedule} />
 
+        {/* Chỉ còn HAI ô — xem ghi chú ở màn Định kỳ. */}
         <label className="flex items-center gap-2 text-sm text-slate-700">
-          <Checkbox checked={autoProcess} onChange={(e) => setAutoProcess(e.target.checked)} />
-          Tự tạo Voice khi bắt được bài
+          <Checkbox
+            checked={autoProcess}
+            onChange={(e) => {
+              setAutoProcess(e.target.checked);
+              if (e.target.checked) setRandomAuthor(true);
+            }}
+          />
+          Tự động tạo Voice và đăng lên multime.ai khi bắt được bài
         </label>
         <label className="flex items-center gap-2 text-sm text-slate-700">
-          <Checkbox checked={autoPublish} onChange={(e) => setAutoPublish(e.target.checked)} />
-          Tự đăng lên multime.ai (không qua duyệt)
+          <Checkbox checked={randomAuthor} onChange={(e) => setRandomAuthor(e.target.checked)} />
+          Random author — bốc tài khoản đứng tên bài theo ngôn ngữ của kênh
         </label>
 
         <div className="rounded-md border border-slate-200 p-3">

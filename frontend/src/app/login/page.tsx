@@ -22,7 +22,7 @@ export default function LoginPage() {
     try {
       const data = await api.signIn(email, password);
       tokenStore.save(data.token, data.user);
-      router.replace("/on-demand");
+      router.replace("/voices");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Đăng nhập thất bại");
     } finally {
