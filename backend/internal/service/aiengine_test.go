@@ -67,7 +67,7 @@ func TestAIEngineMaskKhongLoKey(t *testing.T) {
 		t.Fatalf("encryptKey lỗi: %v", err)
 	}
 
-	masked := s.mask(*encrypted)
+	masked := maskSecret(s.box, *encrypted)
 	if masked != "••••WXYZ" {
 		t.Errorf("mask() = %q, muốn %q", masked, "••••WXYZ")
 	}
@@ -76,7 +76,7 @@ func TestAIEngineMaskKhongLoKey(t *testing.T) {
 	}
 	// Ciphertext hỏng (đổi khoá, sửa tay trong DB) -> che rỗng, không bao giờ
 	// để lọt ciphertext ra ngoài.
-	if got := s.mask("khong-phai-ciphertext"); got != "" {
+	if got := maskSecret(s.box, "khong-phai-ciphertext"); got != "" {
 		t.Errorf("ciphertext hỏng thì mask() phải rỗng, được %q", got)
 	}
 }

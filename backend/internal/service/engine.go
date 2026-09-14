@@ -32,14 +32,22 @@ type Engine struct {
 	ttsFactory domain.TTSFactory
 	box        *secret.Box
 	stt        domain.STTProvider
-	llm        domain.LLMProvider
-	storage    domain.Storage
-	prober     domain.AudioProber
-	multime    domain.MultimeClient
-	creds      *MultimeCreds
-	enq        domain.Enqueuer
-	audit      *Audit
-	log        *slog.Logger
+	// llm là ROUTER, không phải 1 provider: nó chọn key + model theo Bộ API gắn
+	// trên voice và tự chuyển dự phòng khi hết hạn mức (xem llmrouter.go).
+	llm     LLMGenerator
+	storage domain.Storage
+	prober  domain.AudioProber
+	multime domain.MultimeClient
+	creds   *MultimeCreds
+	enq     domain.Enqueuer
+	audit   *Audit
+	log     *slog.Logger
+	// gate giữ nhịp gọi yt-dlp theo từng nền tảng; stats đếm số lần bị chặn.
+	gate  *PlatformGate
+	stats *FetchStats
+	// authors bốc tài khoản Strongbody đứng tên bài đăng — chạy ở BƯỚC ĐĂNG,
+	// không phải lúc người dùng chọn giới tính trên form.
+	authors *MultimeUsers
 }
 
 type EngineDeps struct {
@@ -50,7 +58,7 @@ type EngineDeps struct {
 	TTSFactory domain.TTSFactory
 	Secret     *secret.Box
 	STT        domain.STTProvider
-	LLM        domain.LLMProvider
+	LLM        LLMGenerator
 	Storage    domain.Storage
 	Prober     domain.AudioProber
 	Multime    domain.MultimeClient
@@ -58,6 +66,9 @@ type EngineDeps struct {
 	Enqueuer   domain.Enqueuer
 	Audit      *Audit
 	Logger     *slog.Logger
+	Gate       *PlatformGate
+	FetchStats *FetchStats
+	Authors    *MultimeUsers
 }
 
 func NewEngine(d EngineDeps) *Engine {
@@ -66,7 +77,51 @@ func NewEngine(d EngineDeps) *Engine {
 		box: d.Secret, stt: d.STT, llm: d.LLM,
 		storage: d.Storage, prober: d.Prober, multime: d.Multime, creds: d.Creds,
 		enq: d.Enqueuer, audit: d.Audit, log: d.Logger,
+		gate: d.Gate, stats: d.FetchStats, authors: d.Authors,
 	}
+}
+
+// fetchContent / fetchMetadata gọi adapter qua PlatformGate — cùng lý do với
+// Scan.latestPosts: tải bài cho voice cũng là một lần gọi yt-dlp tới nền tảng,
+// và nó còn dày hơn quét kênh. Giới hạn ở một chỗ mà bỏ chỗ kia thì nền tảng
+// vẫn thấy đúng lượng request như cũ.
+func (e *Engine) fetchContent(
+	ctx context.Context,
+	adapter domain.PlatformAdapter,
+	platform string,
+	ref domain.PostRef,
+	mode domain.CollectMode,
+) (domain.FetchedContent, error) {
+	release, err := e.gate.Acquire(ctx, platform)
+	if err != nil {
+		return domain.FetchedContent{}, err
+	}
+	defer release()
+
+	out, err := adapter.FetchContent(ctx, ref, mode)
+	if err != nil {
+		e.stats.Record(ctx, platform, err)
+	}
+	return out, err
+}
+
+func (e *Engine) fetchMetadata(
+	ctx context.Context,
+	adapter domain.PlatformAdapter,
+	platform string,
+	ref domain.PostRef,
+) (domain.PostMetadata, error) {
+	release, err := e.gate.Acquire(ctx, platform)
+	if err != nil {
+		return domain.PostMetadata{}, err
+	}
+	defer release()
+
+	out, err := adapter.FetchMetadata(ctx, ref)
+	if err != nil {
+		e.stats.Record(ctx, platform, err)
+	}
+	return out, err
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +154,7 @@ func (e *Engine) FetchPostMetadata(ctx context.Context, postID uuid.UUID) error 
 		return domain.Permanent(err)
 	}
 
-	meta, err := adapter.FetchMetadata(ctx, domain.PostRef{
+	meta, err := e.fetchMetadata(ctx, adapter, post.Platform, domain.PostRef{
 		URL:    post.SourceUrl,
 		PostID: deref(post.PostIDExtracted),
 	})
@@ -251,7 +306,7 @@ func (e *Engine) buildVoice(
 			return repository.Voice{}, domain.Permanent(
 				fmt.Errorf("%w: bài post chưa có post_id_extracted", domain.ErrInvalidInput))
 		}
-		fetched, err = adapter.FetchContent(ctx,
+		fetched, err = e.fetchContent(ctx, adapter, post.Platform,
 			domain.PostRef{URL: post.SourceUrl, PostID: postID}, mode)
 		if err != nil {
 			return repository.Voice{}, fmt.Errorf("fetch nội dung từ %s: %w", post.Platform, err)
@@ -281,6 +336,8 @@ func (e *Engine) buildVoice(
 	var (
 		audio    []byte
 		engineID *uuid.UUID
+		// llmModel: model THẬT đã viết lại nội dung (chỉ mode C mới có).
+		llmModel *string
 		// Tiêu đề Voice lấy từ tiêu đề Bài Post (= toàn bộ nội dung bài, trừ
 		// hashtag), gộp về 1 dòng và cắt theo giới hạn của multime. Metadata vừa
 		// fetch được ưu tiên hơn bản đã lưu vì nó mới hơn.
@@ -297,10 +354,11 @@ func (e *Engine) buildVoice(
 		title = nilIfEmpty(domain.VoiceTitle(firstNonEmpty(
 			fetched.Meta.Title, deref(post.Title), fetched.Text, deref(post.ExtractedText))))
 	} else {
-		sourceText, spoken, err := e.textFor(ctx, post, mode, fetched)
+		sourceText, spoken, model, err := e.textFor(ctx, post, mode, fetched, current.LlmApiSetID, actor)
 		if err != nil {
 			return repository.Voice{}, err
 		}
+		llmModel = nilIfEmpty(model)
 		// Mode B/C: text dự phòng là nội dung TTS đọc ra (mode B là text gốc,
 		// mode C là bản LLM đã viết lại).
 		title = nilIfEmpty(domain.VoiceTitle(firstNonEmpty(
@@ -380,6 +438,7 @@ func (e *Engine) buildVoice(
 			MimeType:        nilIfEmpty(info.MimeType),
 			SizeBytes:       ptr(info.SizeBytes),
 			SampleRate:      nilIfZero(int32(info.SampleRate)),
+			LlmModelUsed:    llmModel,
 		})
 		if err != nil {
 			e.cleanupOrphan(ctx, key)
@@ -521,13 +580,15 @@ func (e *Engine) textFor(
 	post repository.SourcePost,
 	mode domain.CollectMode,
 	fetched domain.FetchedContent,
-) (sourceText string, spokenText string, err error) {
+	llmSetID *uuid.UUID,
+	owner uuid.UUID,
+) (sourceText string, spokenText string, model string, err error) {
 	sourceText = strings.TrimSpace(fetched.Text)
 
 	if sourceText == "" && len(fetched.AudioBytes) > 0 {
 		transcribed, err := e.stt.Transcribe(ctx, fetched.AudioBytes, post.Language)
 		if err != nil {
-			return "", "", fmt.Errorf("STT (%s): %w", e.stt.Name(), err)
+			return "", "", "", fmt.Errorf("STT (%s): %w", e.stt.Name(), err)
 		}
 		sourceText = strings.TrimSpace(transcribed)
 	}
@@ -536,10 +597,10 @@ func (e *Engine) textFor(
 		sourceText = strings.TrimSpace(deref(post.ExtractedText))
 	}
 	if sourceText == "" {
-		return "", "", domain.Permanent(domain.ErrNoTextExtracted)
+		return "", "", "", domain.Permanent(domain.ErrNoTextExtracted)
 	}
 
-	return e.rewriteIfNeeded(ctx, post.PromptID, mode, sourceText)
+	return e.rewriteIfNeeded(ctx, post.PromptID, mode, sourceText, llmSetID, owner)
 }
 
 // rewriteIfNeeded là bước cuối chung cho mọi nguồn text: mode B đọc nguyên
@@ -547,33 +608,38 @@ func (e *Engine) textFor(
 //
 // Tách riêng vì text giờ tới từ 2 đường (Bài Post và Voice gõ tay) nhưng luật
 // "mode C thì viết lại" chỉ được có một bản cài đặt.
+// Trả về thêm MODEL thật đã viết lại, để lưu lên voice.llm_model_used: cùng
+// một bộ API, hôm nay chạy model rẻ nhất, mai hết quota thì chạy mắt xích sau —
+// không ghi lại thì không đối chiếu được chất lượng hay chi phí của voice đó.
 func (e *Engine) rewriteIfNeeded(
 	ctx context.Context,
 	promptID *uuid.UUID,
 	mode domain.CollectMode,
 	sourceText string,
-) (string, string, error) {
+	llmSetID *uuid.UUID,
+	owner uuid.UUID,
+) (string, string, string, error) {
 	if mode != domain.ModePromptToVoice {
-		return sourceText, sourceText, nil
+		return sourceText, sourceText, "", nil
 	}
 
 	if promptID == nil {
-		return "", "", domain.Permanent(domain.ErrPromptRequired)
+		return "", "", "", domain.Permanent(domain.ErrPromptRequired)
 	}
 	prompt, err := e.q.GetPrompt(ctx, *promptID)
 	if err != nil {
-		return "", "", domain.Permanent(wrapNotFound(err, "prompt "+promptID.String()))
+		return "", "", "", domain.Permanent(wrapNotFound(err, "prompt "+promptID.String()))
 	}
 
-	generated, err := e.llm.Generate(ctx, prompt.Content, sourceText)
+	res, err := e.llm.Generate(ctx, llmSetID, owner, prompt.Content, sourceText)
 	if err != nil {
-		return "", "", fmt.Errorf("LLM (%s): %w", e.llm.Name(), err)
+		return "", "", "", fmt.Errorf("LLM: %w", err)
 	}
-	generated = strings.TrimSpace(generated)
+	generated := strings.TrimSpace(res.Text)
 	if generated == "" {
-		return "", "", fmt.Errorf("LLM trả về nội dung rỗng")
+		return "", "", "", fmt.Errorf("LLM trả về nội dung rỗng")
 	}
-	return sourceText, generated, nil
+	return sourceText, generated, res.Model, nil
 }
 
 // ttsFor chọn API key TTS dùng cho voice này: key của chính người tạo voice.
@@ -765,7 +831,8 @@ func (e *Engine) buildTextVoice(
 			fmt.Errorf("%w: voice %s có input_text rỗng", domain.ErrNoTextExtracted, voice.ID)))
 	}
 
-	_, spoken, err := e.rewriteIfNeeded(ctx, voice.PromptID, mode, sourceText)
+	_, spoken, llmModel, err := e.rewriteIfNeeded(
+		ctx, voice.PromptID, mode, sourceText, voice.LlmApiSetID, actor)
 	if err != nil {
 		return err
 	}
@@ -824,6 +891,7 @@ func (e *Engine) buildTextVoice(
 		MimeType:        nilIfEmpty(info.MimeType),
 		SizeBytes:       ptr(info.SizeBytes),
 		SampleRate:      nilIfZero(int32(info.SampleRate)),
+		LlmModelUsed:    nilIfEmpty(llmModel),
 	}); err != nil {
 		e.cleanupOrphan(ctx, key)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -901,6 +969,19 @@ func (e *Engine) PublishVoice(ctx context.Context, voiceID, actor uuid.UUID) err
 }
 
 func (e *Engine) publish(ctx context.Context, voice repository.Voice) error {
+	// Bốc tài khoản đứng tên bài đăng NGAY TRƯỚC khi đăng, không phải lúc người
+	// dùng chọn giới tính trên form.
+	//
+	// Vì sao lùi tới đây: chọn giới tính là một thao tác của form, còn bốc là
+	// một lần gọi sang Strongbody. Gộp hai thứ khiến mỗi lần đổi ý về giới tính
+	// là một lần gọi mạng và một lần chờ, trong khi kết quả bốc chỉ có ý nghĩa ở
+	// đúng thời điểm đăng — bốc sớm rồi voice nằm trong hàng đợi vài phút thì
+	// tài khoản đó cũng chẳng "giữ chỗ" được gì bên Strongbody.
+	voice, err := e.ensureAuthor(ctx, voice)
+	if err != nil {
+		return err
+	}
+
 	key := e.storage.KeyFromURL(*voice.VoiceFileUrl)
 	audio, err := e.storage.Get(ctx, key)
 	if err != nil {
@@ -979,6 +1060,53 @@ func (e *Engine) publish(ctx context.Context, voice repository.Voice) error {
 //
 // Access token hết hạn thì refresh 1 lần rồi thử lại; refresh cũng thất bại thì
 // trả lỗi vĩnh viễn yêu cầu user đăng nhập lại (không có cách tự khắc phục).
+// ensureAuthor bốc tài khoản đứng tên bài nếu voice mới chỉ có giới tính.
+//
+// Voice đã có author_id (người dùng bốc tay ở bảng Voice) thì giữ nguyên: đó là
+// lựa chọn tường minh của họ, bốc đè lên là làm sai ý.
+func (e *Engine) ensureAuthor(
+	ctx context.Context,
+	voice repository.Voice,
+) (repository.Voice, error) {
+	if voice.AuthorID != nil && *voice.AuthorID > 0 {
+		return voice, nil
+	}
+
+	gender := domain.Gender(deref(voice.AuthorGender))
+	if !gender.Valid() {
+		return voice, domain.Permanent(domain.Explain(
+			"Voice chưa chọn giới tính tài khoản đứng tên bài đăng (author)",
+			fmt.Errorf("%w: voice %s không có author_id lẫn author_gender",
+				domain.ErrInvalidInput, voice.ID)))
+	}
+	if e.authors == nil {
+		return voice, domain.Permanent(fmt.Errorf(
+			"%w: engine chưa được cấu hình danh bạ author", domain.ErrInvalidInput))
+	}
+
+	// Bốc bằng token của NGƯỜI TẠO VOICE, giống hệt bước đăng: quyền xem danh bạ
+	// là quyền Strongbody cấp cho tài khoản đó, tool không mượn quyền của ai.
+	user, err := e.authors.Random(ctx, voice.CreatedBy, gender, deref(voice.AuthorCountryID))
+	if err != nil {
+		return voice, fmt.Errorf("bốc tài khoản đứng tên bài đăng: %w", err)
+	}
+
+	// Ghi lại ngay: đăng lỗi rồi retry thì dùng đúng tài khoản đã bốc, không bốc
+	// ra người khác ở lần thử thứ hai.
+	if err := e.q.SetVoiceAuthor(ctx, repository.SetVoiceAuthorParams{
+		ID: voice.ID, AuthorID: &user.ID, AuthorEmail: nilIfEmpty(user.Email),
+	}); err != nil {
+		return voice, fmt.Errorf("lưu tài khoản đã bốc cho voice %s: %w", voice.ID, err)
+	}
+
+	e.log.InfoContext(ctx, "đã bốc tài khoản đứng tên bài đăng",
+		"voice_id", voice.ID, "author_id", user.ID, "gender", gender)
+
+	voice.AuthorID = &user.ID
+	voice.AuthorEmail = nilIfEmpty(user.Email)
+	return voice, nil
+}
+
 func (e *Engine) publishAs(
 	ctx context.Context,
 	ownerID uuid.UUID,

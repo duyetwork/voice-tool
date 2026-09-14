@@ -57,8 +57,16 @@ type App struct {
 	Tokens *jwt.Manager
 	Secret *secret.Box
 
-	Audit        *service.Audit
-	Auth         *service.Auth
+	Audit *service.Audit
+	Auth  *service.Auth
+	// FetchStats đếm số lần từng nền tảng chặn ta — dữ liệu để quyết định có
+	// cần proxy hay không (bậc 6 của thang xử lý rủi ro).
+	FetchStats *service.FetchStats
+	// Settings đọc/ghi app_setting (chuỗi dự phòng LLM, batch).
+	Settings *service.Settings
+	// LLMSets quản lý Bộ API key LLM; LLMRouter là thứ worker gọi khi chạy mode C.
+	LLMSets      *service.LLMAPISetService
+	LLMRouter    *service.LLMRouter
 	User         *service.User
 	SourcePost   *service.SourcePost
 	Voice        *service.Voice
@@ -70,6 +78,9 @@ type App struct {
 	Maintenance  *service.Maintenance
 	MultimeCreds *service.MultimeCreds
 	MultimeUsers *service.MultimeUsers
+	// CatalogCache: danh mục quốc gia/hashtag lưu trong DB cho modal Tạo Voice.
+	// Khác `Catalog` ở trên — cái đó là CRUD Prompt mẫu.
+	CatalogCache *service.CatalogCache
 }
 
 // New khởi tạo tất cả dependency. Fail-fast nếu Postgres/Redis/S3 chưa sẵn sàng.
@@ -158,16 +169,47 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 
 	tokens := jwt.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
+	settings := service.NewSettings(queries, log)
+	// Router đứng TRÊN các adapter LLM: chọn key + model theo Bộ API gắn trên
+	// voice, tự chuyển dự phòng khi hết hạn mức. `llmProvider` từ .env chỉ còn
+	// là đường dự phòng cho voice không gắn bộ nào (thực tế là dev).
+	llmRouter := service.NewLLMRouter(service.LLMRouterDeps{
+		Queries:  queries,
+		Secret:   box,
+		Factory:  llm.NewFactory(),
+		Settings: settings,
+		Fallback: llmProvider,
+		Logger:   log,
+	})
 	enqueuer := worker.NewEnqueuer(asynqClient)
 	audit := service.NewAudit(queries, log)
+	// Giữ nhịp gọi yt-dlp theo từng nền tảng + đếm số lần bị chặn. Cùng 1 gate
+	// cho cả quét kênh lẫn tải bài: nền tảng chỉ thấy tổng số request, không
+	// quan tâm request đó đến từ luồng nào của ta.
+	platformGate := service.NewPlatformGate(cfg.PlatformMinGap)
+	fetchStats := service.NewFetchStats(queries, log)
 	multimeCreds := service.NewMultimeCreds(queries, multimeAuth, box, log)
+	multimeUsers := service.NewMultimeUsers(multimeDir, multimeCreds)
 
-	// Hình thức C viết lại nội dung bằng LLM. Provider còn là mock thì không có
-	// gì viết lại được — tắt hẳn mode C thay vì để nó chạy và cho ra voice đọc
-	// sai (bản mock trước đây đọc to cả prompt).
+	// Hình thức C viết lại nội dung bằng LLM. Không có LLM thật thì không có gì
+	// viết lại được — tắt hẳn mode C thay vì để nó chạy và cho ra voice đọc sai
+	// (bản mock trước đây đọc to cả prompt).
+	//
+	// "Có LLM thật" giờ có HAI đường: Bộ API key trong DB (đường chính) hoặc
+	// provider trong .env (dự phòng cho dev). Chỉ nhìn .env như trước thì một hệ
+	// thống đã khai đủ key trong DB vẫn bị tắt mode C.
 	modes := service.ModeGate{Enabled: cfg.EnabledCollectModes()}
 	if llmProvider.Name() == "mock" {
-		modes = disablePromptMode(modes, log)
+		keyCount, err := queries.CountLLMAPIKeys(ctx)
+		if err != nil {
+			return fail(fmt.Errorf("đếm key LLM: %w", err))
+		}
+		if keyCount == 0 {
+			modes = disablePromptMode(modes, log)
+		} else {
+			log.Info("LLM_PROVIDER=mock nhưng đã có Bộ API key trong DB — mode C vẫn bật",
+				"llm_keys", keyCount)
+		}
 	}
 
 	scanDefaults := service.ScanDefaults{
@@ -200,8 +242,11 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Voice: service.NewVoice(queries, store, enqueuer, audit, cfg.DefaultLanguage, modes),
 		List: service.NewList(
 			queries, platforms, enqueuer, audit, cfg.DefaultLanguage, scanDefaults, modes),
-		Catalog:  service.NewCatalog(queries),
-		AIEngine: service.NewAIEngineService(queries, box),
+		Catalog:   service.NewCatalog(queries),
+		AIEngine:  service.NewAIEngineService(queries, box),
+		Settings:  settings,
+		LLMSets:   service.NewLLMAPISetService(queries, box),
+		LLMRouter: llmRouter,
 		Engine: service.NewEngine(service.EngineDeps{
 			Queries:   queries,
 			Platforms: platforms,
@@ -211,7 +256,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			TTSFactory: tts.NewFactory(cfg),
 			Secret:     box,
 			STT:        sttProvider,
-			LLM:        llmProvider,
+			LLM:        llmRouter,
 			Storage:    store,
 			Prober:     prober,
 			Multime:    multimeClient,
@@ -219,11 +264,23 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			Enqueuer:   enqueuer,
 			Audit:      audit,
 			Logger:     log,
+			Gate:       platformGate,
+			FetchStats: fetchStats,
+			Authors:    multimeUsers,
 		}),
-		Scan:         service.NewScan(queries, platforms, enqueuer, log),
+		Scan: service.NewScan(service.ScanDeps{
+			Queries:    queries,
+			Platforms:  platforms,
+			Enqueuer:   enqueuer,
+			Logger:     log,
+			Gate:       platformGate,
+			FetchStats: fetchStats,
+		}),
+		FetchStats:   fetchStats,
 		Maintenance:  service.NewMaintenance(queries, log, cfg.SkippedLogRetention),
 		MultimeCreds: multimeCreds,
-		MultimeUsers: service.NewMultimeUsers(multimeDir, multimeCreds),
+		MultimeUsers: multimeUsers,
+		CatalogCache: service.NewCatalogCache(queries, multimeUsers, log),
 	}
 
 	log.Info("khởi tạo xong",
@@ -275,8 +332,8 @@ func providerName(p interface{ Name() string }) string {
 // nghĩa là TTS đọc một thứ không ai viết lại — trước đây là đọc to cả prompt.
 // Thà tắt và nói rõ thiếu gì.
 func disablePromptMode(gate service.ModeGate, log *slog.Logger) service.ModeGate {
-	const reason = "cần LLM thật để viết lại nội dung — đặt LLM_PROVIDER=anthropic " +
-		"và ANTHROPIC_API_KEY trong .env rồi khởi động lại"
+	const reason = "cần LLM thật để viết lại nội dung — thêm Bộ API key ở mục " +
+		"AI Engine > LLM Model (hoặc đặt LLM_PROVIDER + API key trong .env) rồi khởi động lại"
 
 	enabled := make([]domain.CollectMode, 0, len(gate.Enabled))
 	for _, m := range gate.Enabled {

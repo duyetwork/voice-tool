@@ -219,6 +219,9 @@ type UpdateMetadataInput struct {
 	Hashtag  *string
 	Language *string
 	ImageURL *string
+	// AuthorCountryID: quốc gia đã lọc lúc chọn author. Lưu vì việc bốc tài
+	// khoản diễn ra ở bước publish, lúc đó không còn form nào để hỏi lại.
+	AuthorCountryID *int64
 	// AuthorID/AuthorEmail/AuthorGender: tài khoản Strongbody đứng tên bài đăng.
 	// Đi thành bộ — tác giả được bốc ngẫu nhiên theo giới tính, nên id, email
 	// hiển thị và giới tính đã bốc luôn thuộc về cùng một người.
@@ -264,15 +267,25 @@ func (v *Voice) UpdateMetadata(ctx context.Context, actor, id uuid.UUID, in Upda
 		v.deleteUploadedImage(ctx, before)
 	}
 
+	// Đổi giới tính hoặc quốc gia mà không đưa kèm tài khoản cụ thể thì tài
+	// khoản đã bốc trước đó không còn khớp — bỏ nó đi để bước đăng bốc lại.
+	genderChanged := in.AuthorGender != nil && *in.AuthorGender != deref(before.AuthorGender)
+	countryChanged := in.AuthorCountryID != nil &&
+		deref(in.AuthorCountryID) != deref(before.AuthorCountryID)
+	resetAuthor := in.AuthorID == nil && (genderChanged || countryChanged)
+
 	after, err := v.q.UpdateVoiceMetadata(ctx, repository.UpdateVoiceMetadataParams{
-		ID:           id,
-		Title:        in.Title,
-		Hashtag:      in.Hashtag,
-		Language:     in.Language,
-		ImageUrl:     in.ImageURL,
-		AuthorID:     in.AuthorID,
-		AuthorEmail:  in.AuthorEmail,
-		AuthorGender: in.AuthorGender,
+		ID:              id,
+		Title:           in.Title,
+		Hashtag:         in.Hashtag,
+		Language:        in.Language,
+		ImageUrl:        in.ImageURL,
+		AuthorID:        in.AuthorID,
+		AuthorEmail:     in.AuthorEmail,
+		AuthorGender:    in.AuthorGender,
+		SetCountry:      in.AuthorCountryID != nil,
+		AuthorCountryID: in.AuthorCountryID,
+		ResetAuthor:     resetAuthor,
 	})
 	if err != nil {
 		return repository.Voice{}, wrapNotFound(err, "voice "+id.String())
@@ -324,6 +337,9 @@ type TextVoiceInput struct {
 	CollectMode domain.CollectMode // B hoặc C
 	PromptID    *uuid.UUID         // bắt buộc với C
 	Language    string             // rỗng = mặc định hệ thống
+	// LLMAPISetID: Bộ API key viết lại nội dung. Chỉ có nghĩa với hình thức C;
+	// rỗng thì rơi về provider trong .env (dev).
+	LLMAPISetID *uuid.UUID
 }
 
 // CreateFromText tạo Voice thẳng từ đoạn text, KHÔNG qua Bài Post.
@@ -376,6 +392,7 @@ func (v *Voice) CreateFromText(
 		Language:    resolveLanguage(in.Language, "", v.defaultLanguage),
 		Title:       nilIfEmpty(domain.VoiceTitle(meta.Title)),
 		CreatedBy:   actor,
+		LlmApiSetID: in.LLMAPISetID,
 	})
 	if err != nil {
 		return repository.Voice{}, fmt.Errorf("tạo voice từ text: %w", err)
@@ -406,6 +423,8 @@ type RegenerateInput struct {
 	CollectMode domain.CollectMode // B hoặc C
 	PromptID    *uuid.UUID         // bắt buộc với C
 	Language    string             // rỗng = giữ ngôn ngữ đang có
+	// LLMAPISetID rỗng = giữ bộ API voice đang dùng.
+	LLMAPISetID *uuid.UUID
 }
 
 // Regenerate đọc lại Voice bằng nội dung mới, GHI ĐÈ lên chính bản ghi cũ.
@@ -467,6 +486,7 @@ func (v *Voice) Regenerate(
 		CollectMode: ptr(string(in.CollectMode)),
 		PromptID:    in.PromptID,
 		Language:    nilIfEmpty(strings.ToLower(strings.TrimSpace(in.Language))),
+		LlmApiSetID: in.LLMAPISetID,
 	})
 	if err != nil {
 		return repository.Voice{}, wrapNotFound(err, "voice "+id.String())
@@ -495,9 +515,14 @@ func (v *Voice) Regenerate(
 // publishable chặn ngay ở API các điều kiện multime sẽ từ chối, thay vì để job
 // chạy tới nơi rồi fail: người dùng thấy lý do lúc bấm nút, không phải đi tìm
 // trong cột trạng thái vài giây sau.
+// Author: chỉ cần biết ĐANG NHẮM giới tính nào là đủ để đăng — việc bốc ra một
+// tài khoản cụ thể lùi xuống bước publish trong worker. Chọn author ở form giờ
+// chỉ là chọn author, không kéo theo một lần gọi sang Strongbody.
 func publishable(voice repository.Voice) error {
-	if voice.AuthorID == nil || *voice.AuthorID <= 0 {
-		return fmt.Errorf("%w: chưa chọn tài khoản Strongbody đứng tên bài đăng (author)",
+	hasAuthor := voice.AuthorID != nil && *voice.AuthorID > 0
+	hasGender := domain.Gender(deref(voice.AuthorGender)).Valid()
+	if !hasAuthor && !hasGender {
+		return fmt.Errorf("%w: chưa chọn giới tính tài khoản đứng tên bài đăng (author)",
 			domain.ErrInvalidInput)
 	}
 	// Hashtag không còn giá trị mặc định trong cấu hình — bỏ trống là không đăng.

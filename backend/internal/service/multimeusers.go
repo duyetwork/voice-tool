@@ -54,6 +54,33 @@ func (m *MultimeUsers) Random(
 	return m.dir.RandomUser(ctx, refreshed.AccessToken, gender, countryID)
 }
 
+// VoiceHashtags lấy 1 trang danh mục hashtag của voice, cùng cách xử lý token
+// hết hạn như Countries.
+func (m *MultimeUsers) VoiceHashtags(
+	ctx context.Context,
+	actor uuid.UUID,
+	page, limit int,
+) ([]domain.MultimeHashtag, int, error) {
+	creds, err := m.creds.For(ctx, actor)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	tags, total, err := m.dir.VoiceHashtags(ctx, creds.AccessToken, page, limit)
+	if err == nil {
+		return tags, total, nil
+	}
+	if !errors.Is(err, domain.ErrTokenExpired) {
+		return nil, 0, err
+	}
+
+	refreshed, refreshErr := m.creds.Refresh(ctx, actor)
+	if refreshErr != nil {
+		return nil, 0, refreshErr
+	}
+	return m.dir.VoiceHashtags(ctx, refreshed.AccessToken, page, limit)
+}
+
 // Countries liệt kê quốc gia để người dùng chọn trước khi bốc author.
 //
 // Danh mục này đổi rất chậm nên phía HTTP đặt cache dài; ở đây vẫn hỏi thẳng

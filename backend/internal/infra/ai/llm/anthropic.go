@@ -2,27 +2,37 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
+	"github.com/anthropics/anthropic-sdk-go/shared"
 
 	"github.com/strongbody/voice-tool/backend/internal/domain"
 )
 
-// systemPrompt cố định phần "khung" của Mode C; nội dung Prompt mẫu do user
-// cấu hình được đưa vào như chỉ dẫn biên tập.
-const systemPrompt = `Bạn là biên tập viên viết kịch bản đọc (voice-over) cho nội dung mạng xã hội.
-Nhiệm vụ: viết lại văn bản nguồn theo đúng chỉ dẫn biên tập được cung cấp.
+// anthropicMaxTokens — trần đầu ra. Batch 5 bài dài cần nhiều hơn 1 bài, nên
+// nhân theo số mẩu thay vì để một hằng số phải vừa cho cả hai.
+const (
+	anthropicMaxTokens      = 16000
+	anthropicBatchMaxTokens = 32000
+	// anthropicBillingCooldown — hết tiền thì thử lại mỗi phút chỉ tạo ra rác
+	// trong log; cho key nghỉ hẳn một tiếng rồi hãy hỏi lại.
+	anthropicBillingCooldown = time.Hour
+)
 
-Yêu cầu đầu ra:
-- Chỉ trả về nội dung kịch bản để đọc, không thêm lời dẫn, tiêu đề hay giải thích.
-- Không dùng markdown, emoji, hay ký tự đặc biệt gây khó cho hệ thống đọc.
-- Viết số, ngày tháng, viết tắt dưới dạng chữ để đọc tự nhiên.
-- Giữ nguyên ngôn ngữ của văn bản nguồn, trừ khi chỉ dẫn yêu cầu khác.`
+// batchToolName — tên "công cụ" mà model bắt buộc phải gọi để trả kết quả
+// batch. Đây là cơ chế structured output native của Anthropic: ép tool_choice
+// về đúng tool này thì đầu ra luôn khớp input_schema, không còn cửa trả văn
+// xuôi kèm ```json.
+const batchToolName = "tra_ket_qua"
 
-// Anthropic — LLM provider cho Mode C.
+// Anthropic — adapter cho 1 model Claude cụ thể, đã gắn sẵn API key.
 type Anthropic struct {
 	client anthropic.Client
 	model  string
@@ -32,7 +42,7 @@ var _ domain.LLMProvider = (*Anthropic)(nil)
 
 func NewAnthropic(apiKey, model string) *Anthropic {
 	if model == "" {
-		model = "claude-opus-5"
+		model = "claude-haiku-4-5-20251001"
 	}
 	return &Anthropic{
 		client: anthropic.NewClient(option.WithAPIKey(apiKey)),
@@ -43,28 +53,22 @@ func NewAnthropic(apiKey, model string) *Anthropic {
 func (a *Anthropic) Name() string { return "anthropic:" + a.model }
 
 func (a *Anthropic) Generate(ctx context.Context, promptContent, sourceText string) (string, error) {
-	userMessage := fmt.Sprintf("## Chỉ dẫn biên tập\n%s\n\n## Văn bản nguồn\n%s",
-		strings.TrimSpace(promptContent), strings.TrimSpace(sourceText))
-
 	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.Model(a.model),
-		MaxTokens: 16000,
-		System: []anthropic.TextBlockParam{{
-			Text: systemPrompt,
-			// Phần system cố định giữa mọi request -> cache để giảm chi phí.
-			CacheControl: anthropic.NewCacheControlEphemeralParam(),
-		}},
+		MaxTokens: anthropicMaxTokens,
+		System:    a.system(systemPrompt),
 		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(userMessage)),
+			anthropic.NewUserMessage(
+				anthropic.NewTextBlock(userMessage(promptContent, sourceText))),
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("gọi anthropic: %w", err)
+		return "", anthropicClassify(err)
 	}
 
 	if resp.StopReason == anthropic.StopReasonRefusal {
-		return "", domain.Permanent(fmt.Errorf("anthropic từ chối xử lý nội dung: %s",
-			resp.StopDetails.Explanation))
+		return "", domain.LLMFail(domain.LLMFailContent,
+			fmt.Errorf("anthropic từ chối xử lý nội dung: %s", resp.StopDetails.Explanation))
 	}
 
 	var b strings.Builder
@@ -76,7 +80,117 @@ func (a *Anthropic) Generate(ctx context.Context, promptContent, sourceText stri
 
 	out := strings.TrimSpace(b.String())
 	if out == "" {
-		return "", fmt.Errorf("anthropic trả về nội dung rỗng (stop_reason=%s)", resp.StopReason)
+		if resp.StopReason == anthropic.StopReasonMaxTokens {
+			return "", domain.LLMFail(domain.LLMFailContent,
+				fmt.Errorf("anthropic cắt đầu ra vì quá dài (max_tokens)"))
+		}
+		return "", emptyResult(a.Name(), "stop_reason="+string(resp.StopReason))
 	}
 	return out, nil
+}
+
+func (a *Anthropic) GenerateBatch(ctx context.Context, promptContent string, items []string) ([]string, error) {
+	schema := batchSchema(false)
+	props, _ := schema["properties"].(map[string]any)
+
+	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(a.model),
+		MaxTokens: anthropicBatchMaxTokens,
+		System:    a.system(batchSystemPrompt),
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(
+				anthropic.NewTextBlock(batchUserMessage(promptContent, items))),
+		},
+		Tools: []anthropic.ToolUnionParam{{OfTool: &anthropic.ToolParam{
+			Name:        batchToolName,
+			Description: param.NewOpt("Nộp kịch bản đọc đã viết lại cho từng văn bản nguồn."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: props,
+				Required:   []string{"results"},
+			},
+		}}},
+		// Ép gọi đúng tool đó, và đúng 1 lần.
+		ToolChoice: anthropic.ToolChoiceUnionParam{OfTool: &anthropic.ToolChoiceToolParam{
+			Name:                   batchToolName,
+			DisableParallelToolUse: param.NewOpt(true),
+		}},
+	})
+	if err != nil {
+		return nil, anthropicClassify(err)
+	}
+
+	if resp.StopReason == anthropic.StopReasonRefusal {
+		return nil, domain.LLMFail(domain.LLMFailContent,
+			fmt.Errorf("anthropic từ chối xử lý nội dung: %s", resp.StopDetails.Explanation))
+	}
+
+	for _, block := range resp.Content {
+		use, ok := block.AsAny().(anthropic.ToolUseBlock)
+		if !ok || use.Name != batchToolName {
+			continue
+		}
+		out, err := parseBatch(string(use.Input), len(items))
+		if err != nil {
+			return nil, domain.LLMFail(domain.LLMFailTransient,
+				fmt.Errorf("anthropic batch: %w", err))
+		}
+		return out, nil
+	}
+
+	return nil, emptyResult(a.Name(),
+		"không có tool_use nào, stop_reason="+string(resp.StopReason))
+}
+
+// system dựng khối system kèm cache: phần này cố định giữa mọi request nên
+// cache lại cắt được phần lớn chi phí input.
+func (a *Anthropic) system(text string) []anthropic.TextBlockParam {
+	return []anthropic.TextBlockParam{{
+		Text:         text,
+		CacheControl: anthropic.NewCacheControlEphemeralParam(),
+	}}
+}
+
+// anthropicClassify đổi lỗi của SDK sang phân loại chung của router.
+//
+// SDK trả *anthropic.Error mang cả status code lẫn error type, nên ở đây không
+// phải đoán từ chuỗi như hai nhà kia — trừ `invalid_request_error`, vốn gộp cả
+// "key sai" lẫn "prompt quá dài" vào một mã.
+func anthropicClassify(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var apiErr *anthropic.Error
+	if !errors.As(err, &apiErr) {
+		// Đứt mạng / timeout / context bị huỷ: key không liên quan.
+		return domain.LLMFail(domain.LLMFailTransient, err)
+	}
+
+	msg := err.Error()
+	switch apiErr.Type() {
+	case shared.ErrorTypeRateLimitError:
+		return domain.LLMFail(domain.LLMFailQuota, err)
+	case shared.ErrorTypeBillingError:
+		// Hết tiền: key vẫn đúng, nhưng chờ vài phút không giải quyết được gì.
+		return domain.LLMFailAfter(domain.LLMFailQuota, anthropicBillingCooldown, err)
+	case shared.ErrorTypeAuthenticationError, shared.ErrorTypePermissionError:
+		return domain.LLMFail(domain.LLMFailAuth, err)
+	case shared.ErrorTypeOverloadedError, shared.ErrorTypeTimeoutError, shared.ErrorTypeAPIError:
+		return domain.LLMFail(domain.LLMFailTransient, err)
+	case shared.ErrorTypeInvalidRequestError:
+		if looksLikeAuth(msg) {
+			return domain.LLMFail(domain.LLMFailAuth, err)
+		}
+		if looksLikeQuota(msg) {
+			return domain.LLMFail(domain.LLMFailQuota, err)
+		}
+		// Còn lại của 400 là lỗi về chính request/nội dung: prompt quá dài,
+		// schema sai. Xoay key chỉ lặp lại đúng lỗi đó trên mọi key.
+		return domain.LLMFail(domain.LLMFailContent, err)
+	}
+
+	if apiErr.StatusCode == http.StatusTooManyRequests {
+		return domain.LLMFail(domain.LLMFailQuota, err)
+	}
+	return domain.LLMFail(kindForStatus(apiErr.StatusCode), err)
 }

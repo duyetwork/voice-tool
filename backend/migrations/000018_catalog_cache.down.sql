@@ -1,0 +1,3 @@
+ALTER TABLE voice DROP COLUMN IF EXISTS author_country_id;
+DROP TABLE IF EXISTS hashtag;
+DROP TABLE IF EXISTS country;

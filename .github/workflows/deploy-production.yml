@@ -99,6 +99,11 @@ jobs:
           SITE_DOMAIN: ci-build.invalid
           POSTGRES_PASSWORD: ci-build
           DATABASE_URL: postgres://ci:ci-build@postgres:5432/ci?sslmode=disable
+          # minio đòi 2 biến này ngay lúc parse file compose. Thiếu chúng thì
+          # build chết ở dòng đầu với "required variable S3_ACCESS_KEY is
+          # missing a value" — chưa build image nào, chưa chạm tới VPS.
+          S3_ACCESS_KEY: ci-build
+          S3_SECRET_KEY: ci-build-secret
           SSH_PORT: ${{ env.SSH_PORT }}
           REMOTE_DIR: ${{ env.REMOTE_DIR }}
           IMAGE_TAG: prod

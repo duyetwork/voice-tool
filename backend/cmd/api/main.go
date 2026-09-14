@@ -12,6 +12,12 @@ import (
 	"syscall"
 	"time"
 
+	// Nhúng sẵn cơ sở dữ liệu múi giờ: lịch quét của từng kênh diễn giải theo
+	// múi giờ IANA (xem domain.ChannelSchedule), và image thiếu tzdata thì
+	// time.LoadLocation im lặng rơi về UTC — đúng cái sai mà tính năng đó sinh
+	// ra để sửa, và không có lỗi nào hiện ra để ai kịp nhận thấy.
+	_ "time/tzdata"
+
 	"github.com/strongbody/voice-tool/backend/internal/app"
 	"github.com/strongbody/voice-tool/backend/internal/config"
 	transporthttp "github.com/strongbody/voice-tool/backend/internal/transport/http"
@@ -48,10 +54,14 @@ func run() error {
 		List:       application.List,
 		Catalog:    application.Catalog,
 		AIEngine:   application.AIEngine,
+		LLMSets:    application.LLMSets,
+		Settings:   application.Settings,
+		FetchStats: application.FetchStats,
 		Audit:      application.Audit,
 		User:       application.User,
 
 		MultimeUsers: application.MultimeUsers,
+		CatalogCache: application.CatalogCache,
 		Platforms:    application.Platforms,
 		Modes:        application.Modes,
 	})

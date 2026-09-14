@@ -177,7 +177,19 @@ func (h *Handler) breakingDispatch(ctx context.Context, _ *asynq.Task) error {
 	sem := make(chan struct{}, h.parallelism)
 	var wg sync.WaitGroup
 
+	now := time.Now()
+	var outside int
+
 	for _, list := range lists {
+		// Ngoài khung giờ của kênh thì không quét. Lọc ở ĐÂY chứ không trong
+		// ScanBreaking: nút "Chạy ngay" trên UI enqueue thẳng breaking:scan, và
+		// đó là yêu cầu tường minh của người dùng — im lặng bỏ qua nó thì họ bấm
+		// mà không thấy gì xảy ra, cũng không biết vì sao.
+		if !breakingSchedule(list).Allows(now) {
+			outside++
+			continue
+		}
+
 		t, err := task.NewBreakingScan(task.BreakingScanPayload{ListID: list.ID.String()})
 		if err != nil {
 			h.log.ErrorContext(ctx, "tạo task breaking:scan thất bại", "error", err, "list_id", list.ID)
@@ -192,7 +204,14 @@ func (h *Handler) breakingDispatch(ctx context.Context, _ *asynq.Task) error {
 
 			// Unique theo khoảng nghỉ: vòng quét trước còn đang chạy thì không
 			// dồn thêm task cho cùng 1 kênh.
-			if _, err := h.client.EnqueueContext(ctx, t, asynq.Unique(h.scanInterval)); err != nil {
+			//
+			// ProcessIn rải lệch từng kênh trong cửa sổ jitter: không có nó thì
+			// mọi kênh tới hạn cùng vòng dispatch sẽ bắn trong cùng một giây, và
+			// nền tảng chỉ thấy một IP gọi dồn dập.
+			if _, err := h.client.EnqueueContext(ctx, t,
+				asynq.Unique(h.scanInterval),
+				asynq.ProcessIn(service.ScanJitter(listID.String(), h.jitterWindow())),
+			); err != nil {
 				if err == asynq.ErrDuplicateTask || err == asynq.ErrTaskIDConflict {
 					return
 				}
@@ -202,8 +221,27 @@ func (h *Handler) breakingDispatch(ctx context.Context, _ *asynq.Task) error {
 	}
 	wg.Wait()
 
-	h.log.DebugContext(ctx, "breaking:dispatch xong", "due_lists", len(lists))
+	h.log.DebugContext(ctx, "breaking:dispatch xong",
+		"due_lists", len(lists), "ngoài_khung_giờ", outside)
 	return nil
+}
+
+// jitterWindow: rải lệch trong tối đa 1/4 khoảng nghỉ, trần 30 giây. Rộng hơn
+// thì kênh "breaking" mất đúng cái nó có giá trị nhất là độ nhanh.
+func (h *Handler) jitterWindow() time.Duration {
+	window := h.scanInterval / 4
+	return min(window, 30*time.Second)
+}
+
+// breakingSchedule dựng khung giờ của 1 kênh Breaking. Kênh không cấu hình gì
+// thì mọi trường là zero value = quét 24/7, đúng hành vi trước migration 000017.
+func breakingSchedule(l repository.ListBreaking) domain.ChannelSchedule {
+	return domain.ChannelSchedule{
+		Timezone: l.Timezone,
+		FromMin:  l.ActiveFromMin,
+		ToMin:    l.ActiveToMin,
+		Weekdays: l.ActiveWeekdays,
+	}
 }
 
 func (h *Handler) rearmDispatch(ctx context.Context) {
@@ -257,6 +295,21 @@ func (h *Handler) scheduledScan(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("%w: list_id không hợp lệ", asynq.SkipRetry)
 	}
 
+	// Ngoài khung giờ của kênh thì bỏ vòng này. Chặn ở handler chứ không ở
+	// cronspec vì cron không diễn tả được mọi cấu hình (khung giờ vắt qua nửa
+	// đêm, tần suất không chia hết cho 60 phút) — và một chỗ chặn thì không có
+	// cửa cho hai chỗ nói khác nhau.
+	list, err := h.q.GetListScheduled(ctx, listID)
+	if err != nil {
+		return fmt.Errorf("đọc list_scheduled %s: %w", listID, err)
+	}
+	sched := scheduledSchedule(list)
+	if !sched.Allows(time.Now()) {
+		h.log.DebugContext(ctx, "scheduled:scan bỏ qua — ngoài khung giờ của kênh",
+			"list_id", listID, "schedule", sched.Describe())
+		return nil
+	}
+
 	res, err := h.scan.ScanScheduled(ctx, listID)
 	if err != nil {
 		return skipIfPermanent(err)
@@ -264,6 +317,17 @@ func (h *Handler) scheduledScan(ctx context.Context, t *asynq.Task) error {
 	h.log.InfoContext(ctx, "scheduled:scan xong",
 		"list_id", listID, "fetched", res.Fetched, "created", res.Created, "skipped", res.Skipped)
 	return nil
+}
+
+// scheduledSchedule dựng khung giờ của 1 kênh Định kỳ.
+func scheduledSchedule(l repository.ListScheduled) domain.ChannelSchedule {
+	return domain.ChannelSchedule{
+		Timezone:   l.Timezone,
+		FromMin:    l.ActiveFromMin,
+		ToMin:      l.ActiveToMin,
+		Weekdays:   l.ActiveWeekdays,
+		FixedTimes: l.FixedTimesMin,
+	}
 }
 
 // ---------------------------------------------------------------------------

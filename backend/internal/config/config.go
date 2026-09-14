@@ -44,9 +44,14 @@ type Config struct {
 	ThreeVoicesAPIKey  string `mapstructure:"THREEVOICES_API_KEY"`
 	ThreeVoicesBaseURL string `mapstructure:"THREEVOICES_BASE_URL"`
 	ThreeVoicesVoiceID string `mapstructure:"THREEVOICES_VOICE_ID"`
-	OpenAIAPIKey       string `mapstructure:"OPENAI_API_KEY"`
-	AnthropicAPIKey    string `mapstructure:"ANTHROPIC_API_KEY"`
-	AnthropicModel     string `mapstructure:"ANTHROPIC_MODEL"`
+	// Key LLM trong .env chỉ là ĐƯỜNG DỰ PHÒNG cho dev. Production dùng Bộ API
+	// key trong DB (bảng llm_api_key) để mỗi nhóm chạy bằng hạn mức của mình.
+	OpenAIAPIKey    string `mapstructure:"OPENAI_API_KEY"`
+	OpenAIModel     string `mapstructure:"OPENAI_MODEL"`
+	GeminiAPIKey    string `mapstructure:"GEMINI_API_KEY"`
+	GeminiModel     string `mapstructure:"GEMINI_MODEL"`
+	AnthropicAPIKey string `mapstructure:"ANTHROPIC_API_KEY"`
+	AnthropicModel  string `mapstructure:"ANTHROPIC_MODEL"`
 
 	// Binary ngoài mà worker gọi. YouTube dùng yt-dlp nên không cần API key;
 	// nền tảng mới sẽ tự khai credential của nó khi có adapter.
@@ -81,6 +86,9 @@ type Config struct {
 	SchedulerSyncInterval time.Duration `mapstructure:"SCHEDULER_SYNC_INTERVAL"`
 	// Giữ skipped_log bao lâu trước khi job dọn dẹp xoá.
 	SkippedLogRetention time.Duration `mapstructure:"SKIPPED_LOG_RETENTION"`
+	// Khoảng nghỉ tối thiểu giữa 2 lần gọi yt-dlp tới CÙNG một nền tảng.
+	// Xem service.PlatformGate.
+	PlatformMinGap time.Duration `mapstructure:"PLATFORM_MIN_GAP"`
 
 	// Ngôn ngữ mặc định hệ thống — đáy của cascade (business rule #9).
 	// "auto" = để nền tảng nguồn / multime.ai tự nhận diện.
@@ -149,7 +157,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("TTS_PROVIDER", "mock")
 	v.SetDefault("STT_PROVIDER", "mock")
 	v.SetDefault("LLM_PROVIDER", "mock")
-	v.SetDefault("ANTHROPIC_MODEL", "claude-opus-5")
+	// Mắt xích dự phòng rẻ nhất của từng nhà — cùng model với chuỗi mặc định
+	// trong domain.DefaultLLMChain, ghim ID đầy đủ chứ không dùng alias.
+	v.SetDefault("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+	v.SetDefault("GEMINI_MODEL", "gemini-2.5-flash-lite")
+	v.SetDefault("OPENAI_MODEL", "gpt-5.6-luna")
 	v.SetDefault("THREEVOICES_BASE_URL", "https://3voices.win")
 	v.SetDefault("YTDLP_PATH", "yt-dlp")
 	v.SetDefault("FFMPEG_PATH", "ffmpeg")
@@ -165,6 +177,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("BREAKING_SCAN_PARALLELISM", 4)
 	v.SetDefault("SCHEDULER_SYNC_INTERVAL", "30s")
 	v.SetDefault("SKIPPED_LOG_RETENTION", "168h") // 7 ngày
+	// 3s giữa 2 lần gọi cùng 1 nền tảng: đủ để N kênh không bắn cùng một giây,
+	// không đủ để làm chậm một vòng quét bình thường.
+	v.SetDefault("PLATFORM_MIN_GAP", "3s")
 	v.SetDefault("DEFAULT_LANGUAGE", "auto")
 	// B/C đã chạy được (TTS 3voices + LLM) nên bật sẵn cả 3 hình thức.
 	v.SetDefault("ENABLED_COLLECT_MODES", "A,B,C")
@@ -189,13 +204,14 @@ var allKeys = []string{
 	"S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY",
 	"S3_USE_PATH_STYLE", "S3_PUBLIC_BASE_URL",
 	"TTS_PROVIDER", "STT_PROVIDER", "LLM_PROVIDER",
-	"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+	"OPENAI_API_KEY", "OPENAI_MODEL", "GEMINI_API_KEY", "GEMINI_MODEL",
+	"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
 	"YTDLP_PATH", "FFMPEG_PATH", "FFPROBE_PATH",
 	"MULTIME_BASE_URL", "MULTIME_AUTH_BASE_URL", "MULTIME_SITE_URL",
 	"MULTIME_VISIBILITY", "MULTIME_CATEGORY_IDS",
 	"MULTIME_PUBLIC_DOWNLOAD",
 	"BREAKING_SCAN_INTERVAL", "SCAN_LIMIT_DEFAULT", "MAX_POSTS_PER_RUN_DEFAULT",
-	"BREAKING_SCAN_PARALLELISM", "SCHEDULER_SYNC_INTERVAL", "SKIPPED_LOG_RETENTION",
+	"BREAKING_SCAN_PARALLELISM", "SCHEDULER_SYNC_INTERVAL", "SKIPPED_LOG_RETENTION", "PLATFORM_MIN_GAP",
 	"DEFAULT_LANGUAGE", "ENABLED_COLLECT_MODES", "BOOTSTRAP_ADMIN_EMAIL", "DEFAULT_USER_ROLE",
 	"TOKEN_ENCRYPTION_KEY",
 	"THREEVOICES_API_KEY", "THREEVOICES_BASE_URL", "THREEVOICES_VOICE_ID",

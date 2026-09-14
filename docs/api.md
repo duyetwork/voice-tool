@@ -378,7 +378,7 @@ trả `400` ngay nếu thiếu author/hashtag, các điều kiện còn lại l�
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| POST | `/lists/breaking` | Body: `source_url`, `regex_patterns[]`, `collect_mode`, `prompt_id?`, `language_default?`, `auto_process?`, `auto_publish?`, `status?`, `scan_limit?`, `scan_interval?` |
+| POST | `/lists/breaking` | Body: `source_url`, `regex_patterns[]`, `collect_mode`, `prompt_id?`, `llm_api_set_id?`, `language_default?`, `auto_process?`, `auto_publish?`, `status?`, `scan_limit?`, `scan_interval?`, `schedule?` |
 | GET | `/lists/breaking` | Query: `status`, `search` (regex lọc theo `source_url`), `limit`, `offset` |
 | GET | `/lists/breaking/:id` | |
 | PATCH | `/lists/breaking/:id` | Mọi field ở trên đều optional |
@@ -408,11 +408,50 @@ Tối đa 20 pattern/kênh; pattern trùng nhau sau khi chuẩn hoá bị loại
 Response còn trả `last_scanned_at` — mốc vòng quét gần nhất, dùng để theo dõi
 lịch chạy thực tế.
 
+### `schedule` — lịch quét theo từng kênh
+
+Có ở cả Breaking lẫn Định kỳ. Bỏ trống cả object = quét 24/7 (hành vi cũ).
+
+```jsonc
+{
+  "schedule": {
+    "timezone": "Asia/Ho_Chi_Minh",  // tên IANA, không phải offset
+    "active_from_min": 360,          // 06:00 — số phút từ nửa đêm
+    "active_to_min": 1380,           // 23:00
+    "active_weekdays": [1,2,3,4,5],  // 0 = Chủ nhật … 6 = Thứ bảy; rỗng = mọi ngày
+    "fixed_times_min": [480, 720],   // 08:00 và 12:00 — CHỈ Danh sách Định kỳ
+    "clear_window": false            // true = bỏ khung giờ, quay lại 24/7
+  }
+}
+```
+
+- **`timezone` là phần bắt buộc của khung giờ**, không phải tuỳ chọn: lịch chạy
+  theo giờ container (UTC), nên "6h–23h" mà không nói múi giờ thì lệch 7 tiếng
+  so với ý người dùng.
+- `active_from_min` > `active_to_min` nghĩa là khung **vắt qua nửa đêm**
+  (22:00–06:00). Chỉ có một trong hai đầu thì bị từ chối `400` — không có cách
+  nào diễn giải "từ 6h" mà không tự bịa ra đầu còn lại.
+- `fixed_times_min` **thay thế** `scan_frequency`: có giá trị thì tần suất bị bỏ
+  qua. Với kênh đăng theo giờ cố định, đây vừa đúng hơn vừa rẻ hơn hẳn.
+- `clear_window` cần cờ riêng vì trong JSON, thiếu trường vừa có nghĩa "không
+  sửa" vừa có nghĩa "xoá" — không có cờ thì không bao giờ bỏ được khung giờ đã
+  đặt.
+- Nút **"Chạy ngay"** (`POST /lists/breaking/:id/run`) không bị khung giờ chặn:
+  đó là yêu cầu tường minh của người dùng.
+
+### `llm_api_set_id` — bộ API cho quét tự động
+
+Hình thức C của kênh gọi LLM mà **không có ai bấm nút để chọn bộ**, nên bộ phải
+nằm sẵn trên kênh. Không gán thì mode C của kênh đó không chạy (job dừng với câu
+hướng dẫn). Bộ được sao chép sang từng Voice lúc tạo, không đọc lại lúc worker
+chạy — kênh có thể bị sửa trong lúc bài còn nằm trong hàng đợi, và lúc đó voice
+phải chạy bằng đúng bộ đã chọn.
+
 ## Danh sách Định kỳ (F3)
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| POST | `/lists/scheduled` | Body như Breaking nhưng thay `regex_patterns` bằng `scan_frequency`; thêm `scan_limit?`, `max_posts_per_run?` |
+| POST | `/lists/scheduled` | Body như Breaking nhưng thay `regex_patterns` bằng `scan_frequency`; thêm `scan_limit?`, `max_posts_per_run?`. Cũng nhận `llm_api_set_id?` và `schedule?` (xem mục trên) |
 | GET | `/lists/scheduled` | Query: `status`, `search`, `limit`, `offset` |
 | GET | `/lists/scheduled/:id` | |
 | PATCH | `/lists/scheduled/:id` | |
@@ -432,6 +471,9 @@ Post tạo ra trong 1 vòng quét — chặn nổ chi phí AI khi kênh đăng �
 | POST / GET / PATCH | `/prompts`, `/prompts/:id` |
 | DELETE | `/prompts/:id` — **chỉ admin** |
 | POST / GET / PATCH / DELETE | `/ai-engines`, `/ai-engines/:id` |
+| POST / GET / PATCH / DELETE | `/llm-api-sets`, `/llm-api-sets/:id` |
+| POST | `/llm-api-sets/:id/keys` |
+| PATCH / DELETE | `/llm-api-keys/:key_id` |
 
 ### AI Engine = API key TTS của từng người
 
@@ -470,6 +512,150 @@ Voice chạy hình thức B/C mà chủ nhân chưa khai key thì job dừng v�
 *"Bạn chưa khai API key TTS — vào mục AI Engine thêm key 3voices rồi chạy lại"*
 (trừ khi `.env` có key chung `THREEVOICES_API_KEY` làm dự phòng).
 
+### Bộ API key LLM (`/llm-api-sets`)
+
+Tab "LLM Model" của màn AI Engine. Một **bộ** = túi key của nhiều nhà LLM, dùng
+chung cho một hoặc nhiều người — khác hẳn `ai_engine` (1 key TTS của 1 người),
+vì chuỗi dự phòng chỉ có ý nghĩa khi trong tay có key của nhiều nhà cùng lúc.
+
+```jsonc
+// POST /llm-api-sets
+{
+  "name": "Bộ chung phòng nội dung",
+  "note": "mua tháng 9",
+  "visible_to_users": false,       // CHỈ admin đặt được
+  "user_ids": ["<uuid>", "..."],   // chia sẻ cho ai
+  "keys": [
+    { "provider": "gemini", "api_key": "...", "label": "công ty", "priority": 0 }
+  ]
+}
+```
+
+**Luật xem/sửa** (chặn ở service, gọi thẳng API cũng không lách được):
+
+| Việc | Ai |
+|---|---|
+| Thấy bộ | người tạo + người được chia sẻ + mọi người nếu `visible_to_users` |
+| Sửa bộ / thêm-sửa-xoá key | người tạo hoặc admin (`can_manage` trong response) |
+| Bật `visible_to_users` | **chỉ admin** — bật lên là mở hạn mức của một nhóm cho cả hệ thống |
+
+- API **không bao giờ** trả key thật, chỉ `api_key_masked` (4 ký tự cuối).
+- `PATCH /llm-api-keys/:key_id` với `api_key` bỏ trống = **giữ key cũ**. Dán key
+  mới thì đồng thời **reset sức khoẻ** (`disabled_at`, `cooldown_until`,
+  `consecutive_failures`): người ta vào đây chính vì key hỏng, dán key mới mà
+  vẫn bị router bỏ qua thì không ai hiểu vì sao.
+- `user_ids` ở `PATCH` là **thay toàn bộ** danh sách chia sẻ, không phải thêm
+  dồn: form gửi lên đúng những ai được tick, nên bỏ tick phải là gỡ quyền.
+- Mỗi key có `health` ∈ `ok` | `cooldown` | `disabled`:
+
+  | health | Nghĩa | Phải làm gì |
+  |---|---|---|
+  | `cooldown` | hết hạn mức, đang nghỉ tới `cooldown_until` | chờ — tự khỏi |
+  | `disabled` | key sai hoặc bị thu hồi (`last_error` nói rõ) | dán key mới |
+
+  Hai thứ này tách riêng vì cách xử lý khác hẳn nhau: chờ bao lâu cũng không cứu
+  được một key đã bị thu hồi.
+
+- `GET /llm-api-sets` (danh sách) trả `key_counts` theo từng nhà, không trả key.
+  Chỉ `GET /llm-api-sets/:id` mới kèm mảng `keys`.
+- Bộ bị xoá thì key con đi theo (`ON DELETE CASCADE`), còn Voice đã sinh ra vẫn
+  giữ nguyên và chỉ mất con trỏ (`ON DELETE SET NULL`).
+
+### Cài đặt hệ thống (`/settings`) — chỉ admin
+
+| Method | Path | Ghi chú |
+|---|---|---|
+| GET | `/settings` | `{llm_chain, llm_batch, allowed_models, providers}` |
+| PATCH | `/settings` | Body: `llm_chain?`, `llm_batch?` |
+| GET | `/settings/fetch-stats` | Query `days` (1–365, mặc định 7) |
+
+```jsonc
+{
+  "llm_chain": [                                  // rẻ trước, đắt sau
+    { "provider": "gemini",    "model": "gemini-2.5-flash-lite" },
+    { "provider": "gemini",    "model": "gemini-2.5-flash" },
+    { "provider": "openai",    "model": "gpt-5.6-luna" },
+    { "provider": "anthropic", "model": "claude-haiku-4-5-20251001" }
+  ],
+  "llm_batch": { "enabled": true, "size": 5, "max_chars": 12000, "wait_ms": 2000 }
+}
+```
+
+**`allowed_models` là danh sách trắng, và `PATCH` từ chối mọi model ngoài nó.**
+Lý do: alias `gpt-5.6` không trỏ về Luna mà trỏ về Sol, đắt hơn khoảng 25 lần —
+viết thiếu hậu tố thì hệ thống vẫn chạy đúng, không có lỗi nào hiện ra, chỉ có
+hoá đơn đội lên; và vì mắt xích đó chỉ chạy khi Gemini đã cạn nên rất lâu mới có
+ai nhận ra. Frontend đọc `allowed_models` từ API chứ không giữ bản sao — bản sao
+sẽ lệch ngay ở lần thêm model tiếp theo.
+
+`size` / `max_chars` / `wait_ms` là **điểm khởi đầu phải đo lại**, không phải
+hằng số đúng sẵn — đó chính là lý do chúng nằm trong DB.
+
+`GET /settings/fetch-stats` trả `[{day, platform, kind, count, last_at}]` — số
+lần từng nền tảng chặn ta, gộp theo ngày. Đây là dữ liệu để trả lời một câu hỏi
+duy nhất: **có đáng mua proxy không**.
+
+| `kind` | Proxy có giúp không |
+|---|---|
+| `bot_block` | **có** — nền tảng nghi IP máy chủ |
+| `rate_limit` | một phần — giảm tần suất trước đã |
+| `login_required` | **không** — cần cookies |
+| `geo_blocked`, `unavailable`, `timeout`, `other` | không (`unavailable` = bài đã xoá, không phải bị chặn) |
+
+### Danh mục Quốc gia / Hashtag lưu trong DB
+
+Modal Tạo Voice **không gọi API cho từng ô chọn** nữa: cả ba danh mục về một
+lần qua `GET /meta/catalog` rồi nằm trong cache của trình duyệt.
+
+- **Quốc gia** — bảng `country`, đồng bộ từ Strongbody khi rỗng hoặc quá 24h.
+  Trước đây mỗi lần mở modal là một lần gọi sang Strongbody, tức là một thao tác
+  thường ngày phụ thuộc vào việc token bên đó còn hạn hay không — trong khi danh
+  mục ấy đổi vài năm một lần. Đồng bộ lỗi mà bảng đã có dữ liệu thì vẫn trả bản
+  cũ: danh mục lỗi thời vài ngày vẫn dùng được, modal không mở được thì không.
+- **Hashtag** — bảng `hashtag`. **Không có API danh mục hashtag nào để hỏi**:
+  client Strongbody chỉ *gửi* `hashtags` lúc đăng bài chứ không đọc về. Nguồn
+  duy nhất có thật là dữ liệu hệ thống đã tích — hashtag của Voice đã tạo và của
+  Bài Post đã lấy.
+- **Quan hệ hashtag ↔ ngôn ngữ** là thứ **quan sát được**, không phải danh mục
+  ai khai: mỗi Voice mang sẵn cả hashtag lẫn ngôn ngữ, nên cặp `(tag, language)`
+  đến thẳng từ dữ liệu. Dùng để **gợi ý** (tag cùng ngôn ngữ xếp lên đầu), không
+  để giới hạn — người dùng vẫn chọn được tag của ngôn ngữ khác và vẫn gõ được
+  tag mới.
+
+### Bốc tài khoản author diễn ra lúc ĐĂNG, không phải lúc chọn
+
+Chọn author trên form giờ chỉ lưu **giới tính** (`author_gender`) và **quốc gia
+lọc** (`author_country_id`). Việc bốc ra một tài khoản cụ thể lùi xuống bước
+`voice:publish` trong worker (`Engine.ensureAuthor`).
+
+- `POST /voices/:id/publish` chấp nhận voice chưa có `author_id`, miễn là đã có
+  `author_gender`. Không có cả hai thì chặn ngay ở API.
+- Worker bốc bằng token Strongbody của **người tạo voice**, rồi ghi
+  `author_id`/`author_email` lên chính voice đó — đăng lỗi rồi retry thì dùng
+  đúng tài khoản đã bốc, không bốc ra người khác ở lần thử thứ hai.
+- Voice đã có `author_id` (người dùng bốc tay) thì giữ nguyên, không bốc đè.
+- `PATCH /voices/:id` đổi `author_gender` hoặc `author_country_id` mà **không**
+  kèm `author_id` sẽ **xoá** tài khoản đã bốc trước đó: giữ lại nghĩa là bài lên
+  multime dưới tên một người không khớp thứ người dùng vừa chọn.
+
+Vì sao lùi: chọn giới tính là thao tác của form, còn bốc là một lần gọi mạng
+sang Strongbody. Gộp hai thứ khiến mỗi lần đổi ý là một lần chờ — và kết quả bốc
+sớm cũng không "giữ chỗ" được gì bên Strongbody trong lúc voice nằm trong hàng đợi.
+
+### Ảnh bìa: "Lấy ảnh từ nguồn" thay cho "Không có ảnh"
+
+Mặc định **không** lấy ảnh nguồn. Ba trường trong `voice` quyết định ảnh cuối cùng:
+
+| `no_image` | `image_url` | Kết quả |
+|---|---|---|
+| `false` | rỗng | Lấy ảnh bìa của bài gốc |
+| `false` | có | Dùng ảnh người dùng tải lên |
+| `true` | rỗng | Đăng **không kèm ảnh** |
+
+Tải ảnh lên là tự bỏ "lấy ảnh từ nguồn" — hai nguồn ảnh không cùng thắng được,
+và bắt người dùng đoán cái nào thắng là một lỗi thiết kế. Không có ảnh **không**
+chặn việc đăng.
+
 ### Sửa lời đọc rồi tạo lại voice
 
 `POST /voices/:id/regenerate` dùng cho cả Voice gõ tay lẫn Voice sinh từ Bài
@@ -506,7 +692,8 @@ Append-only — không có endpoint sửa/xoá.
 |---|---|---|
 | GET | `/healthz` | Không cần auth |
 | GET | `/meta/platforms` | Danh sách nền tảng đang được tích hợp |
-| GET | `/meta/collect-modes` | `[{mode, enabled, reason?}]` — hình thức nào đang bật. `reason` chỉ có khi tắt và nói rõ vì sao: người vận hành tự tắt trong `ENABLED_COLLECT_MODES`, hoặc thiếu provider (mode C mà `LLM_PROVIDER=mock` thì không có gì viết lại nội dung) |
+| GET | `/meta/collect-modes` | `[{mode, enabled, reason?}]` — hình thức nào đang bật. `reason` chỉ có khi tắt và nói rõ vì sao: người vận hành tự tắt trong `ENABLED_COLLECT_MODES`, hoặc không có LLM thật nào (mode C bị tắt khi `LLM_PROVIDER=mock` **và** trong DB chưa có Bộ API key nào) |
 | GET | `/meta/publish` | `{category_ids, min_duration_seconds}` — điều kiện multime đòi ở 1 bài đăng |
 | GET | `/meta/authors/random` | Query: `gender` (`male`/`female`/`other`, bắt buộc), `country_id` (tuỳ chọn). Trả `{author: {id, email, gender, full_name, avatar_url}}` — **bốc ngẫu nhiên 1 tài khoản** bên Strongbody (`GET /v1/admin/user` + `filter_names=gender` + `country_id`) bằng token của người đang đăng nhập; tool không giữ bản sao danh bạ. `id` chính là `author_id` khi đăng voice. Mỗi lần gọi là một lần bốc mới |
+| GET | `/meta/catalog` | `{countries, hashtags, language_order}` — **cả 3 danh mục của modal Tạo Voice trong 1 lần gọi**. Frontend cache vĩnh viễn trong phiên: mở modal lần sau không gọi lại, mọi thao tác search chạy trên dữ liệu này. `countries` đọc từ bảng `country` (đồng bộ từ Strongbody mỗi 24h, sắp theo thứ tự nghiệp vụ — Việt Nam trước); `hashtags` là `[{tag, count, languages}]` dựng từ chính dữ liệu hệ thống; `language_order` là mã ngôn ngữ theo thứ tự suy ra từ thứ tự quốc gia |
 | GET | `/meta/countries` | `{countries: [{id, name, code}]}` — danh mục quốc gia để lọc author. Đọc từ `GET /v1/buyer/countries` của Strongbody (bản `/v1/admin/countries` trả `403 unauthorized application` với token tài khoản thường) |

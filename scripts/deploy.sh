@@ -87,9 +87,18 @@ dirty=$($COMPOSE exec -T postgres psql -U "${POSTGRES_USER:-voice}" -d "${POSTGR
 version=$($COMPOSE exec -T postgres psql -U "${POSTGRES_USER:-voice}" -d "${POSTGRES_DB:-voice_tool}" \
 	-tAc "select version from schema_migrations" 2>/dev/null || echo "?")
 
+# SITE_DOMAIN có thể đã kèm scheme — khi chưa trỏ tên miền, người ta điền tạm
+# "http://<ip>". Ghép thêm https:// nữa thì ra "https://http://<ip>": URL đó
+# không bao giờ gọi được, nên bước kiểm tra luôn rơi xuống nhánh dự phòng và
+# báo "chưa vào được qua tên miền" dù web vẫn chạy hoàn toàn bình thường.
+case "$SITE_DOMAIN" in
+http://* | https://*) SITE_URL="$SITE_DOMAIN" ;;
+*) SITE_URL="https://$SITE_DOMAIN" ;;
+esac
+
 sleep 3
-if curl -sfk "https://${SITE_DOMAIN}/healthz" >/dev/null 2>&1; then
-	health="https://${SITE_DOMAIN}/healthz OK"
+if curl -sfk "${SITE_URL}/healthz" >/dev/null 2>&1; then
+	health="${SITE_URL}/healthz OK"
 elif $COMPOSE exec -T api wget -qO- http://localhost:8080/healthz >/dev/null 2>&1; then
 	health="api OK (chưa vào được qua tên miền — kiểm tra DNS đã trỏ về máy này chưa)"
 else
@@ -106,6 +115,6 @@ cat <<EOF
   Đĩa       : $(df -h / | awk 'NR==2 {print $4}') trống
   RAM       : $(free -h | awk '/^Mem:/ {printf "%s dùng / %s", $3, $2}')  |  swap: $(free -h | awk '/^Swap:/ {print $3}')
 
-  Web: https://${SITE_DOMAIN}
+  Web: ${SITE_URL}
 
 EOF

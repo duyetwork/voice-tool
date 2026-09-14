@@ -97,6 +97,30 @@ export const LANGUAGE_OPTIONS: LanguageOption[] = [
   { value: "et", label: "Estonian (et)" },
 ];
 
+/**
+ * sortLanguages sắp lại danh sách ngôn ngữ theo thứ tự ưu tiên `order`.
+ *
+ * `order` do backend tính ra từ THỨ TỰ QUỐC GIA (Vietnam → vi, United States →
+ * en, …) và đi kèm trong `/meta/catalog`. Giữ quy tắc đó ở backend, không chép
+ * lại thành một mảng thứ hai ở đây: hai bản sao của cùng một thứ tự chắc chắn
+ * lệch nhau ở lần sửa tiếp theo.
+ *
+ * Ngôn ngữ không có trong `order` giữ nguyên thứ tự vốn có và xếp phía dưới.
+ */
+export function sortLanguages(
+  options: LanguageOption[],
+  order: string[] | undefined,
+): LanguageOption[] {
+  if (!order?.length) return options;
+  const rank = new Map(order.map((code, i) => [code, i]));
+  const at = (o: LanguageOption) => rank.get(o.value) ?? Number.MAX_SAFE_INTEGER;
+  // Sắp ỔN ĐỊNH: phần không được ưu tiên phải giữ đúng thứ tự nghiệp vụ cũ.
+  return options
+    .map((option, index) => ({ option, index }))
+    .sort((a, b) => at(a.option) - at(b.option) || a.index - b.index)
+    .map((x) => x.option);
+}
+
 export function languageLabel(value?: string | null): string {
   if (!value) return "—";
   return LANGUAGE_OPTIONS.find((o) => o.value === value)?.label ?? value;

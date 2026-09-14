@@ -2,9 +2,13 @@
 INSERT INTO list_scheduled (
   source_url, platform, content_type, collect_mode, prompt_id, scan_frequency,
   language_default, auto_process, auto_publish, status, scan_limit,
-  max_posts_per_run, created_by
+  max_posts_per_run, created_by, llm_api_set_id,
+  timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min
 ) VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+  sqlc.narg('llm_api_set_id'), sqlc.arg('timezone'),
+  sqlc.narg('active_from_min'), sqlc.narg('active_to_min'),
+  sqlc.arg('active_weekdays'), sqlc.arg('fixed_times_min')
 )
 RETURNING *;
 
@@ -46,7 +50,18 @@ SET source_url        = COALESCE(sqlc.narg('source_url'), source_url),
     auto_publish      = COALESCE(sqlc.narg('auto_publish'), auto_publish),
     status            = COALESCE(sqlc.narg('status'), status),
     scan_limit        = COALESCE(sqlc.narg('scan_limit'), scan_limit),
-    max_posts_per_run = COALESCE(sqlc.narg('max_posts_per_run'), max_posts_per_run)
+    max_posts_per_run = COALESCE(sqlc.narg('max_posts_per_run'), max_posts_per_run),
+    llm_api_set_id    = COALESCE(sqlc.narg('llm_api_set_id'), llm_api_set_id),
+    timezone          = COALESCE(sqlc.narg('timezone'), timezone),
+    -- Khung giờ dùng cờ `clear_*` chứ không chỉ COALESCE: NULL ở đây vừa có
+    -- nghĩa "không sửa" vừa có nghĩa "bỏ khung giờ, quay lại 24/7", và chỉ
+    -- COALESCE thì người dùng không bao giờ xoá được khung giờ đã đặt.
+    active_from_min   = CASE WHEN sqlc.arg('clear_window')::bool THEN NULL
+                             ELSE COALESCE(sqlc.narg('active_from_min'), active_from_min) END,
+    active_to_min     = CASE WHEN sqlc.arg('clear_window')::bool THEN NULL
+                             ELSE COALESCE(sqlc.narg('active_to_min'), active_to_min) END,
+    active_weekdays   = COALESCE(sqlc.narg('active_weekdays'), active_weekdays),
+    fixed_times_min   = COALESCE(sqlc.narg('fixed_times_min'), fixed_times_min)
 WHERE id = sqlc.arg('id')
 RETURNING *;
 

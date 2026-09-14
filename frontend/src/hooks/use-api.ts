@@ -10,6 +10,14 @@ import type {
   DuplicatePost,
   AIEngine,
   AuditLog,
+  Catalog,
+  ChannelSchedule,
+  Hashtag,
+  FetchErrorStat,
+  LLMAPIKey,
+  LLMAPISet,
+  LLMProvider,
+  Settings,
   CollectMode,
   CollectModeMeta,
   Platform,
@@ -34,9 +42,15 @@ export const keys = {
   scheduled: (filters: Record<string, unknown>) => ["lists", "scheduled", filters] as const,
   prompts: (filters: Record<string, unknown>) => ["prompts", filters] as const,
   aiEngines: ["ai-engines"] as const,
+  llmApiSets: ["llm-api-sets"] as const,
+  llmApiSet: (id: string) => ["llm-api-sets", id] as const,
+  settings: ["settings"] as const,
+  fetchStats: (days: number) => ["settings", "fetch-stats", days] as const,
   auditLog: (filters: Record<string, unknown>) => ["audit-log", filters] as const,
   platforms: ["meta", "platforms"] as const,
   publishMeta: ["meta", "publish"] as const,
+  catalog: ["meta", "catalog"] as const,
+  hashtags: (q: string) => ["meta", "hashtags", q] as const,
 
   collectModes: ["meta", "collect-modes"] as const,
 };
@@ -112,6 +126,8 @@ export interface CreateSourcePostInput {
 /** VoiceSeedInput — mọi trường đều tuỳ chọn, để trống thì lấy từ bài gốc. */
 export interface VoiceSeedInput {
   title?: string;
+  /** Bộ API key viết lại nội dung — chỉ hình thức C mới cần. */
+  llm_api_set_id?: string | null;
   /** Gộp với hashtag của bài gốc chứ không thay thế. */
   hashtag?: string;
   language?: string;
@@ -122,6 +138,13 @@ export interface VoiceSeedInput {
   author_id?: number | null;
   author_email?: string | null;
   author_gender?: Gender | null;
+  /**
+   * Quốc gia đã lọc lúc chọn author.
+   *
+   * Đi theo voice vì việc BỐC tài khoản diễn ra lúc worker đăng bài — lúc đó
+   * không còn form nào để hỏi lại người dùng đã lọc theo quốc gia nào.
+   */
+  author_country_id?: number | null;
   /** Tạo xong audio thì đăng luôn lên multime. */
   publish_when_ready?: boolean;
 }
@@ -217,7 +240,9 @@ export function useVoices(filters: VoiceFilters = {}, pendingIds: string[] = [])
         (v) =>
           v.publish_status === "processing" ||
           waiting.has(v.id) ||
-          (v.publish_when_ready && v.publish_status !== "published" && v.publish_status !== "failed"),
+          (v.publish_when_ready &&
+            v.publish_status !== "published" &&
+            v.publish_status !== "failed"),
       ),
     ),
   });
@@ -235,6 +260,8 @@ export interface CreateTextVoiceInput {
   collect_mode: Exclude<CollectMode, "A">;
   prompt_id?: string | null;
   language?: string;
+  /** Bộ API key viết lại nội dung — chỉ hình thức C mới cần. */
+  llm_api_set_id?: string | null;
 }
 
 export function useCreateTextVoice() {
@@ -256,6 +283,8 @@ export interface RegenerateVoiceInput {
   collect_mode: Exclude<CollectMode, "A">;
   prompt_id?: string | null;
   language?: string;
+  /** Bỏ trống = giữ bộ API voice đang dùng. */
+  llm_api_set_id?: string | null;
 }
 
 export function useRegenerateVoice() {
@@ -341,7 +370,22 @@ export interface CreateBreakingInput {
   auto_publish?: boolean;
   scan_limit?: number;
   scan_interval?: string;
+  /**
+   * Bộ API key cho hình thức C. Quét tự động không có ai bấm nút để chọn bộ,
+   * nên bộ phải nằm sẵn trên kênh.
+   */
+  llm_api_set_id?: string | null;
+  /** Bỏ trống = quét 24/7 (hành vi cũ). */
+  schedule?: ChannelSchedule;
 }
+
+/** Sửa kênh: mọi trường tuỳ chọn, chỉ gửi thứ thật sự đổi. */
+export type UpdateBreakingInput = Partial<
+  Omit<ListBreaking, "id" | "created_at" | "created_by" | "scan_interval">
+> & {
+  scan_interval?: string;
+  schedule?: ChannelSchedule;
+};
 
 export function useCreateBreakingList() {
   const qc = useQueryClient();
@@ -354,7 +398,7 @@ export function useCreateBreakingList() {
 export function useUpdateBreakingList() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: { id: string } & Partial<ListBreaking>) =>
+    mutationFn: ({ id, ...body }: { id: string } & UpdateBreakingInput) =>
       api.patch<ListBreaking>(`/lists/breaking/${id}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["lists", "breaking"] }),
   });
@@ -397,7 +441,20 @@ export interface CreateScheduledInput {
   auto_publish?: boolean;
   scan_limit?: number;
   max_posts_per_run?: number;
+  llm_api_set_id?: string | null;
+  /**
+   * Bỏ trống = quét 24/7 theo `scan_frequency`. Đặt `fixed_times_min` thì giờ
+   * cố định THAY THẾ tần suất.
+   */
+  schedule?: ChannelSchedule;
 }
+
+export type UpdateScheduledInput = Partial<
+  Omit<ListScheduled, "id" | "created_at" | "created_by" | "scan_frequency">
+> & {
+  scan_frequency?: string;
+  schedule?: ChannelSchedule;
+};
 
 export function useCreateScheduledList() {
   const qc = useQueryClient();
@@ -410,7 +467,7 @@ export function useCreateScheduledList() {
 export function useUpdateScheduledList() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: { id: string } & Partial<ListScheduled>) =>
+    mutationFn: ({ id, ...body }: { id: string } & UpdateScheduledInput) =>
       api.patch<ListScheduled>(`/lists/scheduled/${id}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["lists", "scheduled"] }),
   });
@@ -525,6 +582,156 @@ export function useDeleteAIEngine() {
 }
 
 // ---------------------------------------------------------------------------
+// Bộ API key LLM (tab "LLM Model")
+// ---------------------------------------------------------------------------
+
+/** 1 key gửi lên khi tạo bộ hoặc thêm vào bộ. */
+export interface LLMAPIKeyInput {
+  provider: LLMProvider;
+  api_key: string;
+  label?: string;
+  priority?: number;
+}
+
+export interface CreateLLMAPISetInput {
+  name: string;
+  note?: string;
+  /** Chỉ admin đặt được — backend ép người khác về false. */
+  visible_to_users?: boolean;
+  /** Chia sẻ bộ cho ai. */
+  user_ids?: string[];
+  keys?: LLMAPIKeyInput[];
+}
+
+export interface UpdateLLMAPISetInput {
+  name?: string;
+  note?: string;
+  visible_to_users?: boolean;
+  /** Gửi lên đúng những ai được tick: bỏ tick = gỡ quyền. */
+  user_ids?: string[];
+}
+
+/** `api_key` bỏ trống = giữ key cũ (và không reset sức khoẻ key). */
+export interface UpdateLLMAPIKeyInput {
+  provider?: LLMProvider;
+  api_key?: string;
+  label?: string;
+  priority?: number;
+}
+
+/**
+ * Danh sách bộ API: backend quyết định ai thấy bộ nào (bộ mình tạo, bộ được
+ * chia sẻ, bộ admin đã bật hiển thị). Đây cũng là nguồn cho ô "Bộ API" ở form
+ * tạo voice.
+ */
+export function useLLMAPISets() {
+  return useQuery({
+    queryKey: keys.llmApiSets,
+    queryFn: () => api.get<{ items: LLMAPISet[] }>("/llm-api-sets"),
+  });
+}
+
+/** Mở 1 bộ ra: chỉ endpoint này mới trả kèm danh sách key bên trong. */
+export function useLLMAPISet(id: string | null) {
+  return useQuery({
+    queryKey: keys.llmApiSet(id ?? ""),
+    queryFn: () => api.get<LLMAPISet>(`/llm-api-sets/${id}`),
+    enabled: !!id,
+  });
+}
+
+function invalidateLLMSets(qc: ReturnType<typeof useQueryClient>) {
+  // Một khoá cho cả danh sách lẫn từng bộ: mọi key của bộ đều bắt đầu bằng
+  // "llm-api-sets", nên sửa key bên trong cũng làm mới được bảng ngoài.
+  qc.invalidateQueries({ queryKey: keys.llmApiSets });
+}
+
+export function useCreateLLMAPISet() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateLLMAPISetInput) => api.post<LLMAPISet>("/llm-api-sets", input),
+    onSuccess: () => invalidateLLMSets(qc),
+  });
+}
+
+export function useUpdateLLMAPISet() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string } & UpdateLLMAPISetInput) =>
+      api.patch<LLMAPISet>(`/llm-api-sets/${id}`, body),
+    onSuccess: () => invalidateLLMSets(qc),
+  });
+}
+
+export function useDeleteLLMAPISet() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/llm-api-sets/${id}`),
+    onSuccess: () => invalidateLLMSets(qc),
+  });
+}
+
+export function useAddLLMAPIKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ setId, ...body }: { setId: string } & LLMAPIKeyInput) =>
+      api.post<LLMAPIKey>(`/llm-api-sets/${setId}/keys`, body),
+    onSuccess: () => invalidateLLMSets(qc),
+  });
+}
+
+export function useUpdateLLMAPIKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string } & UpdateLLMAPIKeyInput) =>
+      api.patch<LLMAPIKey>(`/llm-api-keys/${id}`, body),
+    onSuccess: () => invalidateLLMSets(qc),
+  });
+}
+
+export function useDeleteLLMAPIKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/llm-api-keys/${id}`),
+    onSuccess: () => invalidateLLMSets(qc),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cài đặt (chỉ admin)
+// ---------------------------------------------------------------------------
+
+export function useSettings() {
+  return useQuery({
+    queryKey: keys.settings,
+    queryFn: () => api.get<Settings>("/settings"),
+  });
+}
+
+export function useUpdateSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Partial<Pick<Settings, "llm_chain" | "llm_batch">>) =>
+      api.patch<Settings>("/settings", body),
+    onSuccess: (data) => qc.setQueryData(keys.settings, data),
+  });
+}
+
+/**
+ * Thống kê lỗi bị nền tảng chặn — dữ liệu để quyết định có cần proxy không.
+ *
+ * Chỉ `bot_block` và `rate_limit` là hai loại proxy giải quyết được;
+ * `login_required` thì phải có cookies chứ proxy không giúp gì.
+ */
+export function useFetchStats(days = 7) {
+  return useQuery({
+    queryKey: keys.fetchStats(days),
+    queryFn: () =>
+      api.get<{ items: FetchErrorStat[]; days: number }>("/settings/fetch-stats", { days }),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Nhật ký thao tác
 // ---------------------------------------------------------------------------
 
@@ -564,6 +771,14 @@ export function usePlatforms() {
  * Là mutation chứ không phải query vì mỗi lần gọi phải ra một người KHÁC: bấm
  * nút random là bốc lại, cache ở đây sẽ trả về đúng người cũ.
  */
+/**
+ * useRandomAuthor bốc 1 tài khoản đứng tên bài đăng.
+ *
+ * KHÔNG dùng ở luồng tạo Voice nữa: việc bốc đã lùi xuống bước đăng ở backend
+ * (Engine.ensureAuthor), nên chọn giới tính trên form không còn gọi mạng. Giữ
+ * lại vì endpoint vẫn tồn tại và vẫn là cách duy nhất để bốc tay một tài khoản
+ * cụ thể khi cần.
+ */
 export function useRandomAuthor() {
   return useMutation({
     mutationFn: ({ gender, countryId }: { gender: Gender; countryId?: number | null }) =>
@@ -584,6 +799,49 @@ export function useCountries() {
     queryKey: ["meta", "countries"] as const,
     queryFn: () => api.get<{ countries: Country[] }>("/meta/countries"),
     staleTime: 24 * 60 * 60_000,
+  });
+}
+
+/**
+ * useHashtagSearch tìm hashtag trong danh mục ĐÃ LƯU của tool.
+ *
+ * Phải hỏi server vì danh mục MultiMe có ~94.000 mục — tải hết về trình duyệt
+ * để lọc tại chỗ là vài MB cho mỗi lần mở modal. Đây KHÔNG phải gọi sang
+ * MultiMe: nó lọc trong DB của tool, và chỉ chạy khi người dùng đã gõ.
+ *
+ * `enabled` tắt khi chưa gõ gì: lúc đó dropdown dùng phần đầu danh mục đã nằm
+ * sẵn trong cache của useCatalog, không tốn thêm request nào.
+ */
+export function useHashtagSearch(q: string) {
+  const keyword = q.trim();
+  return useQuery({
+    queryKey: keys.hashtags(keyword),
+    queryFn: () => api.get<{ items: Hashtag[] }>("/meta/hashtags", { q: keyword }),
+    enabled: keyword.length > 0,
+    staleTime: 5 * 60_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * useCatalog — danh mục Quốc gia + Hashtag + thứ tự Ngôn ngữ, LẤY MỘT LẦN.
+ *
+ * `staleTime: Infinity` là điều kiện của yêu cầu "modal Tạo Voice không gọi API
+ * để lấy danh sách": react-query chỉ fetch ở lần đầu trong phiên, những lần mở
+ * modal sau đọc thẳng từ cache và mọi thao tác search chạy trên đó.
+ *
+ * Danh mục thay đổi rất chậm (quốc gia vài năm, hashtag theo lượng voice mới),
+ * nên tải lại trang là đủ để thấy bản mới — không đáng đánh đổi bằng một lần
+ * gọi mạng ở mỗi lần mở modal.
+ */
+export function useCatalog() {
+  return useQuery({
+    queryKey: keys.catalog,
+    queryFn: () => api.get<Catalog>("/meta/catalog"),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 

@@ -112,9 +112,23 @@ type STTProvider interface {
 	Transcribe(ctx context.Context, audioFile []byte, language string) (text string, err error)
 }
 
+// LLMProvider là 1 cặp (nhà cung cấp, model) đã gắn sẵn API key. Nó KHÔNG biết
+// gì về bộ API, chuỗi dự phòng hay hạn mức — việc đó thuộc về LLMRouter đứng
+// trên nó (xem service/llmrouter.go).
+//
+// Mọi lỗi trả ra từ đây phải được phân loại bằng domain.LLMFail*: adapter là
+// nơi duy nhất đọc được mã lỗi của nhà mình, và router không có cách nào tự
+// đoán "429 vì hết quota" khác với "400 vì nội dung bị chặn".
 type LLMProvider interface {
 	Name() string
 	Generate(ctx context.Context, promptContent, sourceText string) (resultText string, err error)
+	// GenerateBatch viết lại NHIỀU mẩu text trong 1 request, dùng structured
+	// output theo JSON schema của từng nhà.
+	//
+	// Bắt buộc trả về đúng len(items) phần tử theo đúng thứ tự, hoặc trả lỗi —
+	// router không có cách nào đoán mẩu nào ứng với kết quả nào, và đoán sai ở
+	// đây nghĩa là voice của bài A đọc nội dung của bài B.
+	GenerateBatch(ctx context.Context, promptContent string, items []string) ([]string, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +172,33 @@ type MultimeDirectory interface {
 	RandomUser(ctx context.Context, token string, gender Gender, countryID int64) (MultimeUser, error)
 	// Countries liệt kê quốc gia để người dùng chọn.
 	Countries(ctx context.Context, token string) ([]MultimeCountry, error)
+	// VoiceHashtags lấy 1 trang danh mục hashtag của voice bên MultiMe.
+	//
+	// Trả kèm tổng số để người gọi biết còn bao nhiêu trang: danh mục này có
+	// ~94.000 mục nên không lấy một lượt được.
+	VoiceHashtags(ctx context.Context, token string, page, limit int) ([]MultimeHashtag, int, error)
+}
+
+// MultimeHashtag là 1 hashtag của voice bên MultiMe.
+//
+// Bên đó hashtag KHÔNG phải một thực thể riêng: nó là `category` có
+// `type = 'voice'` (strongbody-api: entity.CategoryTypeVoice). Vì thế mới có
+// những trường nghe như của danh mục — `slug`, `ordering`, `is_featured`.
+//
+// KHÔNG có trường ngôn ngữ. Đã kiểm tra tận entity.Category, và
+// category_translation_service.go ghi rõ "Voice hashtags are not translated by
+// this cron" — nên không tồn tại quan hệ hashtag ↔ ngôn ngữ để mà lấy về.
+type MultimeHashtag struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	// NormalizedName là dạng đã chuẩn hoá của MultiMe, dùng để tìm kiếm.
+	NormalizedName string `json:"normalized_name"`
+	Slug           string `json:"slug"`
+	// VoiceTagKind: system | user | campaign. `system` là tag MultiMe tuyển
+	// chọn — thứ đáng hiện trước trong ô chọn.
+	VoiceTagKind string `json:"voice_tag_kind"`
+	IsFeatured   bool   `json:"is_featured"`
+	Ordering     int64  `json:"ordering"`
 }
 
 // MultimeCountry là 1 quốc gia trong danh mục của Strongbody.

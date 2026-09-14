@@ -57,8 +57,13 @@ type voiceSeedRequest struct {
 	AuthorID     *int64  `json:"author_id"`
 	AuthorEmail  *string `json:"author_email"`
 	AuthorGender *string `json:"author_gender"`
+	// AuthorCountryID: quốc gia đã lọc. Việc bốc tài khoản diễn ra lúc ĐĂNG nên
+	// bộ lọc phải đi theo voice, không giữ trong form.
+	AuthorCountryID *int64 `json:"author_country_id"`
 	// PublishWhenReady: tạo xong audio thì đăng luôn lên multime.
 	PublishWhenReady bool `json:"publish_when_ready"`
+	// LLMAPISetID: Bộ API key viết lại nội dung — chỉ hình thức C mới cần.
+	LLMAPISetID *uuid.UUID `json:"llm_api_set_id"`
 }
 
 // seed đổi request sang input của service; nil = không điền sẵn gì.
@@ -76,7 +81,9 @@ func (r *voiceSeedRequest) seed() service.VoiceSeed {
 		AuthorID:         r.AuthorID,
 		AuthorEmail:      r.AuthorEmail,
 		AuthorGender:     r.AuthorGender,
+		AuthorCountryID:  r.AuthorCountryID,
 		PublishWhenReady: r.PublishWhenReady,
+		LLMAPISetID:      r.LLMAPISetID,
 	}
 }
 

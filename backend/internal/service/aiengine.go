@@ -36,12 +36,16 @@ type Actor struct {
 
 func (a Actor) IsAdmin() bool { return a.Role == domain.RoleAdmin }
 
-// mayManage: admin qua hết; còn lại chỉ key của chính mình.
+// mayManage: admin qua hết; còn lại chỉ bản ghi của chính mình.
+//
+// Dùng chung cho cả API key TTS lẫn Bộ API key LLM, nên câu lỗi nói "bản ghi"
+// chứ không nói "API key": người dùng bị chặn ở màn Bộ API mà đọc thấy "API key
+// này thuộc về người khác" sẽ đi tìm nhầm chỗ.
 func (a Actor) mayManage(ownerID uuid.UUID) error {
 	if a.IsAdmin() || a.ID == ownerID {
 		return nil
 	}
-	return fmt.Errorf("%w: API key này thuộc về người khác", domain.ErrForbidden)
+	return fmt.Errorf("%w: bản ghi này thuộc về người khác", domain.ErrForbidden)
 }
 
 // AIEngineService quản lý API key TTS.
@@ -294,24 +298,10 @@ func (s *AIEngineService) view(e repository.AiEngine, ownerEmail, authorEmail st
 		UserEmail:      ownerEmail,
 		CreatedBy:      e.CreatedBy,
 		CreatedByEmail: authorEmail,
-		APIKeyMasked:   s.mask(e.ApiKeyEncrypted),
+		APIKeyMasked:   maskSecret(s.box, e.ApiKeyEncrypted),
 		CreatedAt:      e.CreatedAt,
 		LastUsedAt:     e.LastUsedAt,
 	}
-}
-
-// mask hiện 4 ký tự cuối để người dùng đối chiếu, phần còn lại là dấu chấm.
-// Giải mã hỏng thì coi như chưa có key, không bao giờ lộ ciphertext.
-func (s *AIEngineService) mask(encrypted string) string {
-	raw, err := s.box.Decrypt(encrypted)
-	if err != nil || raw == "" {
-		return ""
-	}
-	runes := []rune(raw)
-	if len(runes) <= 4 {
-		return strings.Repeat("•", len(runes))
-	}
-	return "••••" + string(runes[len(runes)-4:])
 }
 
 // engineOf đổi row của GetAIEngine (có kèm email) về đúng struct bảng.

@@ -10,6 +10,7 @@ import { Can } from "@/components/permission";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
+import { Combobox, MultiCombobox, type ComboOption } from "@/components/ui/combobox";
 import { Checkbox, Field, Input, Select, Textarea } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { Pagination, usePaging } from "@/components/ui/pagination";
@@ -17,15 +18,16 @@ import { EmptyRow, RowActions, SortButton, Table, Td, Th, useSorting } from "@/c
 import {
   duplicateOf,
   useCollectModes,
-  useCountries,
+  useCatalog,
+  useHashtagSearch,
   useCreateSourcePost,
   useCreateTextVoice,
   useDeleteVoice,
+  useLLMAPISets,
   usePlatforms,
   usePrompts,
   usePublishVoice,
   usePublishRequirements,
-  useRandomAuthor,
   useRegenerateVoice,
   useUpdateVoice,
   useUploadPendingImage,
@@ -33,9 +35,22 @@ import {
   useVoices,
 } from "@/hooks/use-api";
 import { coverImageUrl } from "@/lib/api";
-import { LANGUAGE_AUTO, LANGUAGE_OPTIONS, languageOptionsFor } from "@/lib/languages";
+import {
+  LANGUAGE_AUTO,
+  LANGUAGE_OPTIONS,
+  languageOptionsFor,
+  sortLanguages,
+} from "@/lib/languages";
 import { COLLECT_MODE_LABELS, PUBLISH_STATUS_LABELS, platformLabel } from "@/lib/utils";
-import type { CollectMode, DuplicatePost, Gender, PublishRequirements, Voice } from "@/types/api";
+import type {
+  CollectMode,
+  Country,
+  DuplicatePost,
+  Gender,
+  Hashtag,
+  PublishRequirements,
+  Voice,
+} from "@/types/api";
 
 /**
  * multimeBlockers trả về các lý do multime.ai sẽ từ chối bài đăng.
@@ -417,10 +432,7 @@ export default function VoicesPage() {
                       ? "incomplete"
                       : voice.publish_status;
                   const errorNote =
-                    voice.last_error ??
-                    (blockers.length > 0
-                      ? `${blockers.join(", ")}.`
-                      : null);
+                    voice.last_error ?? (blockers.length > 0 ? `${blockers.join(", ")}.` : null);
                   return (
                     <tr key={voice.id}>
                       <Can permission="can_write">
@@ -680,11 +692,7 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
         ))}
       </div>
 
-      {inputMode === "url" ? (
-        <FromURLTab onClose={onClose} />
-      ) : (
-        <FromTextTab onClose={onClose} />
-      )}
+      {inputMode === "url" ? <FromURLTab onClose={onClose} /> : <FromTextTab onClose={onClose} />}
     </Modal>
   );
 }
@@ -705,6 +713,70 @@ function useModeGate() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Danh mục cho các ô chọn có tìm kiếm
+// ---------------------------------------------------------------------------
+
+/** normalizeHashtag: bỏ '#', gộp khoảng trắng, hạ chữ thường. */
+function normalizeHashtag(raw: string): string {
+  return raw.replace(/#/g, "").trim().replace(/\s+/g, "").toLowerCase();
+}
+
+/**
+ * useLanguageCombo sắp ngôn ngữ theo thứ tự ưu tiên backend đưa xuống (suy ra
+ * từ thứ tự quốc gia: Vietnam → vi, United States → en, …).
+ *
+ * Bỏ `auto` khỏi danh sách: ở modal này "không chọn" đã có nghĩa là lấy theo
+ * bài gốc, nên một mục "Tự nhận diện" nữa là hai cách nói cùng một điều.
+ */
+function useLanguageCombo(order: string[] | undefined): ComboOption[] {
+  return React.useMemo(
+    () =>
+      sortLanguages(
+        LANGUAGE_OPTIONS.filter((o) => o.value !== LANGUAGE_AUTO),
+        order,
+      ).map((o) => ({ value: o.value, label: o.label })),
+    [order],
+  );
+}
+
+/** useCountryCombo giữ nguyên thứ tự backend trả về (đã sắp theo sort_order). */
+function useCountryCombo(countries: Country[] | undefined): ComboOption[] {
+  return React.useMemo(
+    () => (countries ?? []).map((c) => ({ value: String(c.id), label: c.name })),
+    [countries],
+  );
+}
+
+/**
+ * useHashtagCombo dựng danh sách cho ô Hashtag.
+ *
+ * KHÔNG lọc theo ngôn ngữ đang chọn — vì không có gì để lọc. Bên MultiMe
+ * hashtag là `category` và entity đó không mang trường ngôn ngữ nào, nên quan
+ * hệ hashtag ↔ ngôn ngữ không tồn tại. Lọc theo một tiêu chí không có thật chỉ
+ * giấu mất phần lớn tag khỏi người dùng.
+ *
+ * Chưa gõ gì thì dùng phần đầu danh mục đã nằm sẵn trong cache (tag MultiMe
+ * tuyển chọn). Gõ rồi thì hỏi server, vì danh mục có ~94.000 mục.
+ */
+function useHashtagCombo(featured: Hashtag[] | undefined, keyword: string): ComboOption[] {
+  const search = useHashtagSearch(keyword);
+  const searched = search.data?.items;
+  const typing = keyword.trim().length > 0;
+
+  return React.useMemo(
+    () =>
+      (typing ? (searched ?? []) : (featured ?? [])).map((h) => ({
+        value: h.tag,
+        label: h.tag,
+        // `system` là tag MultiMe tuyển chọn — nói ra để người dùng biết cái
+        // nào là danh mục chính thức, cái nào do người dùng bên đó tự đặt.
+        hint: h.kind === "system" ? "chính thức" : undefined,
+      })),
+    [typing, searched, featured],
+  );
+}
+
 /**
  * FromURLTab — điền hết trong MỘT bước rồi bấm Đăng.
  *
@@ -719,14 +791,16 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
   const create = useCreateSourcePost();
   const uploadImage = useUploadPendingImage();
   const prompts = usePrompts();
-  const countries = useCountries();
+  // Danh mục quốc gia/hashtag/thứ tự ngôn ngữ: lấy 1 lần rồi cache — mở modal
+  // lần sau không gọi API, search chạy hoàn toàn trên dữ liệu này.
+  const catalog = useCatalog();
   const gate = useModeGate();
 
   const [collectMode, setCollectMode] = React.useState<CollectMode>("A");
   const [promptId, setPromptId] = React.useState("");
   const [sourceUrl, setSourceUrl] = React.useState("");
   const [title, setTitle] = React.useState("");
-  const [hashtag, setHashtag] = React.useState("");
+  const [hashtags, setHashtags] = React.useState<string[]>([]);
   const [language, setLanguage] = React.useState("");
   const [countryId, setCountryId] = React.useState("");
   const [author, setAuthor] = React.useState<AuthorChoice>({
@@ -739,7 +813,10 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
   // (bucket riêng tư, host chỉ tồn tại trong mạng Docker) nên thẻ <img> không
   // tải được — mà voice chưa tồn tại thì cũng chưa có endpoint ảnh để đi qua.
   const [preview, setPreview] = React.useState("");
-  const [noImage, setNoImage] = React.useState(false);
+  // "Lấy ảnh từ nguồn" MẶC ĐỊNH TẮT: bài đăng không ảnh là hợp lệ, nên không
+  // bắt người dùng phải có ảnh. Tick thì dùng ảnh bìa của bài gốc; không tick
+  // và cũng không tải ảnh lên thì voice không có ảnh.
+  const [useSourceImage, setUseSourceImage] = React.useState(false);
 
   // Thu hồi object URL khi đổi ảnh hoặc đóng hộp thoại, không thì file giữ
   // trong bộ nhớ tới lúc tải lại trang.
@@ -750,12 +827,19 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
   const titleTooLong = title.length > MAX_TITLE_LENGTH;
   const pending = create.isPending || uploadImage.isPending;
 
+  const languageOptions = useLanguageCombo(catalog.data?.language_order);
+  const countryOptions = useCountryCombo(catalog.data?.countries);
+  const [hashtagKeyword, setHashtagKeyword] = React.useState("");
+  const hashtagOptions = useHashtagCombo(catalog.data?.hashtags, hashtagKeyword);
+
   async function pickImage(file: File | undefined) {
     if (!file) return;
     const uploaded = await uploadImage.mutateAsync(file);
     setImage({ url: uploaded.image_url, uploaded: true });
     setPreview(URL.createObjectURL(file));
-    setNoImage(false);
+    // Tải ảnh lên là chọn ảnh đó — bỏ tick "lấy ảnh từ nguồn" thay vì để hai
+    // nguồn ảnh cùng bật rồi người dùng phải đoán cái nào thắng.
+    setUseSourceImage(false);
   }
 
   async function send(allowDuplicate: boolean) {
@@ -769,14 +853,18 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
         allow_duplicate: allowDuplicate || undefined,
         voice: {
           title: title.trim() || undefined,
-          hashtag: hashtag.trim() || undefined,
+          hashtag: hashtags.join(" ") || undefined,
           language: language || undefined,
-          image_url: noImage ? undefined : image.url || undefined,
+          image_url: useSourceImage ? undefined : image.url || undefined,
           image_uploaded: image.uploaded,
-          no_image: noImage,
-          author_id: author.id,
-          author_email: author.email,
+          // no_image = "chủ động không ảnh". Chỉ đúng khi người dùng KHÔNG lấy
+          // ảnh nguồn và cũng không tải ảnh lên; bỏ trống cả hai mà gửi false
+          // thì worker lại tự điền ảnh bài gốc vào.
+          no_image: !useSourceImage && !image.url,
+          // author_id để trống: việc BỐC tài khoản lùi tới lúc worker đăng bài
+          // (xem Engine.ensureAuthor). Ở đây chỉ gửi ý muốn: giới tính + quốc gia.
           author_gender: author.gender,
+          author_country_id: countryId ? Number(countryId) : null,
           publish_when_ready: true,
         },
       });
@@ -845,60 +933,74 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
         <CharCount length={title.length} max={MAX_TITLE_LENGTH} />
       </Field>
 
-      <Field label="Hashtag">
-        <Input
-          value={hashtag}
-          onChange={(e) => setHashtag(e.target.value)}
-          placeholder="#tinnong #vietnam"
-        />
-      </Field>
-
+      {/* Ngôn ngữ và Quốc gia đứng TRƯỚC Hashtag: ngôn ngữ quyết định hashtag
+          nào được gợi ý, nên hỏi sau thì gợi ý tới muộn hơn lúc cần. */}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Ngôn ngữ">
-          <Select value={language} onChange={(e) => setLanguage(e.target.value)}>
-            <option value="">— Lấy theo bài gốc —</option>
-            {LANGUAGE_OPTIONS.filter((o) => o.value !== LANGUAGE_AUTO).map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </Select>
+          <Combobox
+            value={language}
+            options={languageOptions}
+            onChange={setLanguage}
+            emptyLabel="— Lấy theo bài gốc —"
+            placeholder="— Lấy theo bài gốc —"
+          />
         </Field>
 
         <Field label="Quốc gia">
-          <Select
+          <Combobox
             value={countryId}
-            onChange={(e) => {
-              setCountryId(e.target.value);
-              // Đổi quốc gia thì author đã bốc không còn khớp nữa.
-              setAuthor({ id: null, email: null, gender: null });
-            }}
-          >
-            <option value="">— Tất cả quốc gia —</option>
-            {(countries.data?.countries ?? []).map((c) => (
-              <option key={c.id} value={String(c.id)}>
-                {c.name}
-              </option>
-            ))}
-          </Select>
+            options={countryOptions}
+            onChange={setCountryId}
+            emptyLabel="— Tất cả quốc gia —"
+            placeholder="— Tất cả quốc gia —"
+          />
         </Field>
       </div>
 
-      <Field label="Tài khoản đứng tên bài đăng (author)" required>
-        <AuthorPicker
-          value={author}
-          onChange={setAuthor}
-          countryId={countryId ? Number(countryId) : null}
+      <Field
+        label="Hashtag"
+        hint="Danh mục lấy từ MultiMe. Gõ để tìm, hoặc gõ tag mới rồi Enter để thêm."
+      >
+        <MultiCombobox
+          values={hashtags}
+          options={hashtagOptions}
+          onChange={setHashtags}
+          onSearch={setHashtagKeyword}
+          placeholder="#tinnong #vietnam"
+          allowCreate
+          normalize={normalizeHashtag}
         />
+      </Field>
+
+      <Field label="Tài khoản đứng tên bài đăng (author)" required>
+        <AuthorPicker value={author} onChange={setAuthor} />
       </Field>
 
       <Field label="Ảnh bìa">
         <div className="space-y-2">
+          {/* Mặc định KHÔNG tick: bài không ảnh vẫn đăng được, nên không bắt
+              người dùng phải có ảnh. */}
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <Checkbox
+              checked={useSourceImage}
+              onChange={(e) => {
+                setUseSourceImage(e.target.checked);
+                if (e.target.checked) {
+                  // Hai nguồn ảnh không cùng thắng được: chọn ảnh nguồn thì bỏ
+                  // ảnh vừa tải lên.
+                  setImage({ url: "", uploaded: false });
+                  setPreview("");
+                }
+              }}
+            />
+            Lấy ảnh từ nguồn
+          </label>
+
           <div className="flex items-center gap-3">
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp,image/gif"
-              disabled={uploadImage.isPending || noImage}
+              disabled={uploadImage.isPending}
               onChange={(e) => {
                 void pickImage(e.target.files?.[0]);
                 // Xoá giá trị input để chọn lại đúng file vừa rồi vẫn kích hoạt onChange.
@@ -911,23 +1013,7 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
             ) : null}
           </div>
 
-          {/* "Không có ảnh" khác với để trống: để trống thì hệ thống lấy ảnh bìa
-              của bài gốc, tick ô này là đăng bài không ảnh. */}
-          <label className="flex items-center gap-2 text-sm text-slate-700">
-            <Checkbox
-              checked={noImage}
-              onChange={(e) => {
-                setNoImage(e.target.checked);
-                if (e.target.checked) {
-                  setImage({ url: "", uploaded: false });
-                  setPreview("");
-                }
-              }}
-            />
-            Không có ảnh
-          </label>
-
-          {preview && !noImage ? (
+          {preview ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={preview} alt="" className="h-24 rounded object-cover" />
           ) : null}
@@ -951,8 +1037,8 @@ function FromURLTab({ onClose }: { onClose: () => void }) {
         </Button>
         <Button
           type="submit"
-          disabled={pending || duplicate !== null || titleTooLong || !author.id}
-          title={author.id ? undefined : "Chọn giới tính để bốc author trước khi đăng"}
+          disabled={pending || duplicate !== null || titleTooLong || !author.gender}
+          title={author.gender ? undefined : "Chọn giới tính tài khoản đứng tên bài đăng"}
         >
           {pending ? "Đang xử lý…" : "Đăng"}
         </Button>
@@ -1222,83 +1308,60 @@ const GENDER_LABELS: Record<Gender, string> = {
 };
 
 /**
- * AuthorPicker — chọn tài khoản đứng tên bài đăng bằng giới tính.
+ * AuthorPicker — chọn GIỚI TÍNH của tài khoản đứng tên bài đăng.
  *
- * Chọn một giới tính là bốc ngay một tài khoản khớp; nút random bốc lại người
- * khác trong cùng giới tính. Danh bạ Strongbody có hàng nghìn tài khoản mà
- * việc cần làm chỉ là "rải bài đều cho nhiều người", nên chọn đích danh email
- * vừa chậm vừa không giải quyết được gì.
+ * Chỉ chọn giới tính, KHÔNG bốc tài khoản. Việc bốc lùi xuống lúc hệ thống đăng
+ * bài (xem Engine.ensureAuthor ở backend).
+ *
+ * Vì sao tách: chọn giới tính là thao tác của form, còn bốc là một lần gọi sang
+ * Strongbody. Gộp hai thứ khiến mỗi lần đổi ý về giới tính là một lần chờ mạng
+ * — và kết quả bốc ra cũng chẳng "giữ chỗ" được gì bên Strongbody trong lúc
+ * voice còn nằm trong hàng đợi.
+ *
+ * Danh bạ Strongbody có hàng nghìn tài khoản mà việc cần làm chỉ là "rải bài
+ * đều cho nhiều người", nên chọn đích danh email vừa chậm vừa không giải quyết
+ * được gì.
  */
 function AuthorPicker({
   value,
   onChange,
   disabled,
   compact,
-  countryId,
 }: {
   value: AuthorChoice;
   onChange: (next: AuthorChoice) => void;
   disabled?: boolean;
   /** compact: bản gọn cho ô trong bảng. */
   compact?: boolean;
-  /** Chỉ bốc tài khoản thuộc quốc gia này; bỏ trống = toàn bộ danh bạ. */
-  countryId?: number | null;
 }) {
-  const random = useRandomAuthor();
-
-  async function pick(gender: Gender) {
-    const { author } = await random.mutateAsync({ gender, countryId });
-    onChange({ id: author.id, email: author.email, gender: author.gender });
-  }
-
-  const busy = random.isPending;
   const small = compact ? "text-xs" : "text-sm";
 
   return (
     <div className="space-y-1">
-      <div className="flex items-center gap-2">
-        {/* Giới tính + email hiện NGAY TRONG ô: đó là một giá trị duy nhất, tách
-            ra 2 dòng thì mỗi lần đọc phải ghép lại. Ô giữ nguyên bề ngang, chuỗi
-            dài thì trình duyệt tự cắt — bảng không được co giãn theo độ dài
-            email của từng dòng. */}
-        <Select
-          className={"truncate " + (compact ? "h-8 w-44 text-xs" : "h-10 w-full")}
-          value={value.gender ?? ""}
-          disabled={disabled || busy}
-          onChange={(e) => void pick(e.target.value as Gender)}
-        >
-          <option value="" disabled>
-            — Giới tính —
+      {/* Giới tính + email hiện NGAY TRONG ô: đó là một giá trị duy nhất, tách
+          ra 2 dòng thì mỗi lần đọc phải ghép lại. Email chỉ có khi bài đã đăng
+          (lúc đó hệ thống mới bốc xong và ghi lại). */}
+      <Select
+        className={"truncate " + (compact ? "h-8 w-44 text-xs" : "h-10 w-full")}
+        value={value.gender ?? ""}
+        disabled={disabled}
+        onChange={(e) =>
+          // Đổi giới tính là bỏ tài khoản đã bốc trước đó: giữ lại nghĩa là bài
+          // lên multime dưới tên một người không khớp giới tính vừa chọn.
+          onChange({ id: null, email: null, gender: e.target.value as Gender })
+        }
+      >
+        <option value="" disabled>
+          — Giới tính —
+        </option>
+        {(Object.keys(GENDER_LABELS) as Gender[]).map((gender) => (
+          <option key={gender} value={gender}>
+            {gender === value.gender && value.email
+              ? `${GENDER_LABELS[gender]} - ${value.email}`
+              : GENDER_LABELS[gender]}
           </option>
-          {(Object.keys(GENDER_LABELS) as Gender[]).map((gender) => (
-            <option key={gender} value={gender}>
-              {gender === value.gender && value.email
-                ? `${GENDER_LABELS[gender]} - ${value.email}`
-                : GENDER_LABELS[gender]}
-            </option>
-          ))}
-        </Select>
-
-        {/* Random lại chỉ có nghĩa khi đã chọn giới tính — bốc lại trong đúng
-            giới tính đó, không đổi lựa chọn của người dùng. */}
-        <button
-          type="button"
-          disabled={disabled || busy || !value.gender}
-          onClick={() => value.gender && void pick(value.gender)}
-          title="Bốc lại một tài khoản khác cùng giới tính"
-          className={
-            "shrink-0 rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-600 " +
-            "hover:border-slate-400 hover:text-slate-900 disabled:text-slate-300 " +
-            small
-          }
-        >
-          ⟳
-        </button>
-
-        {busy ? <span className={small + " shrink-0 text-slate-500"}>Đang bốc…</span> : null}
-      </div>
-
-      {random.error ? <p className={small + " text-red-700"}>{random.error.message}</p> : null}
+        ))}
+      </Select>
     </div>
   );
 }
@@ -1440,7 +1503,10 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
   const [collectMode, setCollectMode] = React.useState<"B" | "C">(initialMode === "C" ? "C" : "B");
   const [promptId, setPromptId] = React.useState(voice.prompt_id ?? voice.source_prompt_id ?? "");
   const [language, setLanguage] = React.useState(voice.language);
+  // Giữ bộ API voice đang dùng; đổi ở đây là đổi cả hạn mức sẽ bị trừ.
+  const [llmSetId, setLlmSetId] = React.useState(voice.llm_api_set_id ?? "");
 
+  const llmSets = useLLMAPISets();
   const needsPrompt = collectMode === "C";
   const modeMeta = modes.data?.collect_modes ?? [];
   const metaOf = (mode: string) => modeMeta.find((m) => m.mode === mode);
@@ -1453,6 +1519,7 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
       text: text.trim(),
       collect_mode: collectMode,
       prompt_id: needsPrompt && promptId ? promptId : null,
+      llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
       language,
     });
     onClose();
@@ -1508,16 +1575,35 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
       ) : null}
 
       {needsPrompt ? (
-        <Field label="Prompt mẫu" required>
-          <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
-            <option value="">— Chọn prompt —</option>
-            {prompts.data?.items.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Prompt mẫu" required>
+            <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
+              <option value="">— Chọn prompt —</option>
+              {prompts.data?.items.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field
+            label="Bộ API"
+            hint={
+              voice.llm_model_used
+                ? `Lần trước chạy bằng ${voice.llm_model_used}.`
+                : "Túi key LLM dùng để viết lại nội dung."
+            }
+          >
+            <Select value={llmSetId} onChange={(e) => setLlmSetId(e.target.value)}>
+              <option value="">— Không chọn —</option>
+              {llmSets.data?.items.map((set) => (
+                <option key={set.id} value={set.id}>
+                  {set.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
       ) : null}
 
       <ErrorNote error={regenerate.error} />

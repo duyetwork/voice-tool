@@ -27,10 +27,18 @@ type RouterDeps struct {
 	List       *service.List
 	Catalog    *service.Catalog
 	AIEngine   *service.AIEngineService
+	// LLMSets: Bộ API key LLM (tab "LLM Model"). Settings/FetchStats là cấu
+	// hình chung — chỉ admin.
+	LLMSets    *service.LLMAPISetService
+	Settings   *service.Settings
+	FetchStats *service.FetchStats
 	Audit      *service.Audit
 	User       *service.User
 	// MultimeUsers tra danh bạ tài khoản Strongbody (ô chọn tác giả).
 	MultimeUsers *service.MultimeUsers
+	// CatalogCache: danh mục quốc gia/hashtag đã lưu trong DB cho modal Tạo
+	// Voice. Khác `Catalog` ở trên — cái đó là CRUD Prompt mẫu.
+	CatalogCache *service.CatalogCache
 	Platforms    interface{ Supported() []domain.Platform }
 	// Modes: hình thức thu thập đang bật + lý do cái còn lại bị tắt.
 	Modes service.ModeGate
@@ -104,10 +112,17 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	})
 	// Bốc ngẫu nhiên tác giả bài đăng theo giới tính. Đọc trực tiếp từ
 	// Strongbody bằng token của người đang đăng nhập — tool không giữ bản sao.
-	directory := handler.NewMultimeUsers(d.MultimeUsers)
+	directory := handler.NewMultimeUsers(d.MultimeUsers, d.CatalogCache)
 	authed.GET("/meta/authors/random", directory.Random)
 	// Danh mục quốc gia để lọc author theo quốc gia.
 	authed.GET("/meta/countries", directory.Countries)
+	// Danh mục cho modal Tạo Voice: quốc gia + hashtag + thứ tự ngôn ngữ, 1 lần
+	// gọi rồi frontend cache lại — mở modal không gọi API nữa.
+	authed.GET("/meta/catalog", directory.Catalog)
+	// Tìm hashtag trong danh mục đã lưu — danh mục MultiMe có ~94.000 mục nên
+	// không tải hết về trình duyệt được. Lọc chạy trong DB của tool, không gọi
+	// sang MultiMe theo từng phím gõ.
+	authed.GET("/meta/hashtags", directory.Hashtags)
 	// Kèm `reason` khi mode bị tắt: FE hiện đúng lý do (thiếu ANTHROPIC_API_KEY,
 	// hay người vận hành tự tắt) thay vì mỗi chữ "chưa hỗ trợ".
 	authed.GET("/meta/collect-modes", func(c *gin.Context) {
@@ -138,9 +153,17 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	remover := api.Group("", middleware.Auth(d.Tokens), middleware.RequireDelete())
 	registerDelete(remover, d)
 
-	// admin: quản lý tài khoản.
+	// admin: quản lý tài khoản + cấu hình chung.
 	admin := api.Group("", middleware.Auth(d.Tokens), middleware.RequireAdmin())
 	handler.NewUser(d.User).Register(admin)
+
+	// Cài đặt: chuỗi dự phòng LLM + batch. Chặn bằng middleware được vì đây là
+	// cấu hình của cả hệ thống, không có "chủ sở hữu" nào để so như API key.
+	settings := handler.NewSettings(d.Settings, d.FetchStats)
+	admin.GET("/settings", settings.Get)
+	admin.PATCH("/settings", settings.Update)
+	// Số lần bị từng nền tảng chặn — dữ liệu để quyết định có cần proxy không.
+	admin.GET("/settings/fetch-stats", settings.FetchStats)
 
 	return r
 }
@@ -170,6 +193,13 @@ func registerReadOnly(g *gin.RouterGroup, d RouterDeps) {
 	aiEngine := handler.NewAIEngine(d.AIEngine)
 	g.GET("/ai-engines", aiEngine.List)
 	g.GET("/ai-engines/:id", aiEngine.Get)
+
+	// Bộ API key LLM: ai thấy bộ nào do service quyết định (bộ mình tạo, bộ
+	// được chia sẻ, bộ admin đã bật hiển thị), nên route chỉ cần đăng nhập.
+	// Danh sách này cũng là nguồn cho ô "Bộ API" ở form tạo voice.
+	llmSets := handler.NewLLMAPISet(d.LLMSets)
+	g.GET("/llm-api-sets", llmSets.List)
+	g.GET("/llm-api-sets/:id", llmSets.Get)
 
 	handler.NewAuditLog(d.Audit).Register(g)
 }
@@ -216,6 +246,18 @@ func registerWrite(g *gin.RouterGroup, d RouterDeps) {
 	g.POST("/ai-engines", aiEngine.Create)
 	g.PATCH("/ai-engines/:id", aiEngine.Update)
 	g.DELETE("/ai-engines/:id", aiEngine.Delete)
+
+	// Bộ API key LLM nằm chung nhóm "write" vì cùng lý do với ai_engine: key là
+	// của chính người dùng. Riêng toggle `visible_to_users` thì service chặn —
+	// chỉ admin bật được, vì bật nó lên là mở hạn mức của một nhóm cho cả
+	// hệ thống dùng.
+	llmSets := handler.NewLLMAPISet(d.LLMSets)
+	g.POST("/llm-api-sets", llmSets.Create)
+	g.PATCH("/llm-api-sets/:id", llmSets.Update)
+	g.DELETE("/llm-api-sets/:id", llmSets.Delete)
+	g.POST("/llm-api-sets/:id/keys", llmSets.AddKey)
+	g.PATCH("/llm-api-keys/:key_id", llmSets.UpdateKey)
+	g.DELETE("/llm-api-keys/:key_id", llmSets.DeleteKey)
 }
 
 // registerDelete gắn các route xoá — chỉ admin.

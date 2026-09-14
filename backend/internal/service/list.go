@@ -17,7 +17,15 @@ import (
 const (
 	// minScanFrequency chặn cấu hình quét quá dày gây vượt rate-limit nền tảng
 	// (specs mục 5, câu 3/4).
-	minScanFrequency = time.Minute
+	//
+	// 5 phút, không phải 1 phút: quét 1 phút/lần gần như không bao giờ bắt được
+	// bài mới (kênh không đăng dày thế) nhưng lại nhân số request lên 5 lần, và
+	// nền tảng nhìn vào chỉ thấy một IP máy chủ gọi liên tục — đúng cái kích
+	// hoạt bot-check của YouTube và 429 của Facebook (xem infra/platform/
+	// ytdlperr.go, nơi cả hai lỗi này đã phải có nhãn riêng vì đã gặp thật).
+	// Bài mới vẫn được lấy đủ nhờ watermark last_synced_post_id, chỉ là biết
+	// muộn hơn vài phút.
+	minScanFrequency = 5 * time.Minute
 	// minBreakingScanInterval thấp hơn vì Breaking ưu tiên tốc độ.
 	minBreakingScanInterval = 15 * time.Second
 	// maxRegexPatterns chặn 1 kênh có quá nhiều pattern (mỗi vòng quét phải
@@ -80,6 +88,11 @@ type BreakingInput struct {
 	Status        string
 	ScanLimit     *int32
 	ScanInterval  *time.Duration
+	// LLMAPISetID: bộ API key dùng cho mode C của kênh này. Quét tự động không
+	// có ai bấm nút để chọn bộ, nên bộ phải nằm sẵn trên kênh.
+	LLMAPISetID *uuid.UUID
+	// Schedule: khung giờ / thứ được phép quét. Zero value = 24/7.
+	Schedule domain.ChannelSchedule
 }
 
 func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingInput) (repository.ListBreaking, error) {
@@ -101,6 +114,9 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 	if err != nil {
 		return repository.ListBreaking{}, err
 	}
+	if err := in.Schedule.Validate(); err != nil {
+		return repository.ListBreaking{}, err
+	}
 
 	list, err := l.q.CreateListBreaking(ctx, repository.CreateListBreakingParams{
 		SourceUrl:       strings.TrimSpace(in.SourceURL),
@@ -111,12 +127,17 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 		RegexPatterns:   patterns,
 		LanguageDefault: resolveLanguage(in.Language, "", l.defaultLanguage),
 		// Breaking ưu tiên tốc độ -> auto_process mặc định bật (specs -1).
-		AutoProcess:  boolOr(in.AutoProcess, true),
-		AutoPublish:  boolOr(in.AutoPublish, false),
-		Status:       statusOr(in.Status),
-		ScanLimit:    l.scanLimitOr(in.ScanLimit),
-		ScanInterval: interval,
-		CreatedBy:    actor,
+		AutoProcess:    boolOr(in.AutoProcess, true),
+		AutoPublish:    boolOr(in.AutoPublish, false),
+		Status:         statusOr(in.Status),
+		ScanLimit:      l.scanLimitOr(in.ScanLimit),
+		ScanInterval:   interval,
+		CreatedBy:      actor,
+		LlmApiSetID:    in.LLMAPISetID,
+		Timezone:       timezoneOr(in.Schedule.Timezone),
+		ActiveFromMin:  in.Schedule.FromMin,
+		ActiveToMin:    in.Schedule.ToMin,
+		ActiveWeekdays: in.Schedule.Weekdays,
 	})
 	if err != nil {
 		return repository.ListBreaking{}, fmt.Errorf("tạo list_breaking: %w", err)
@@ -200,6 +221,12 @@ type BreakingUpdate struct {
 	Status        *string
 	ScanLimit     *int32
 	ScanInterval  *time.Duration
+	LLMAPISetID   *uuid.UUID
+	// Schedule khác nil = thay toàn bộ cấu hình lịch. ClearWindow xử lý riêng
+	// việc XOÁ khung giờ: trong Schedule, nil vừa có nghĩa "không sửa" vừa có
+	// nghĩa "bỏ khung giờ", và chỉ một trong hai diễn giải được.
+	Schedule    *domain.ChannelSchedule
+	ClearWindow bool
 }
 
 func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in BreakingUpdate) (repository.ListBreaking, error) {
@@ -217,6 +244,17 @@ func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in Break
 		AutoPublish:     in.AutoPublish,
 		Status:          in.Status,
 		ScanLimit:       in.ScanLimit,
+		LlmApiSetID:     in.LLMAPISetID,
+		ClearWindow:     in.ClearWindow,
+	}
+	if in.Schedule != nil {
+		if err := in.Schedule.Validate(); err != nil {
+			return repository.ListBreaking{}, err
+		}
+		params.Timezone = nilIfEmpty(in.Schedule.Timezone)
+		params.ActiveFromMin = in.Schedule.FromMin
+		params.ActiveToMin = in.Schedule.ToMin
+		params.ActiveWeekdays = in.Schedule.Weekdays
 	}
 
 	if in.SourceURL != nil {
@@ -307,6 +345,8 @@ type ScheduledInput struct {
 	Status         string
 	ScanLimit      *int32
 	MaxPostsPerRun *int32
+	LLMAPISetID    *uuid.UUID
+	Schedule       domain.ChannelSchedule
 }
 
 func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in ScheduledInput) (repository.ListScheduled, error) {
@@ -320,7 +360,13 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 	if err := validateMode(in.CollectMode, in.PromptID); err != nil {
 		return repository.ListScheduled{}, err
 	}
-	freq, err := toInterval(in.ScanFrequency)
+	if err := in.Schedule.Validate(); err != nil {
+		return repository.ListScheduled{}, err
+	}
+	// Giờ chạy cố định THAY THẾ "mỗi N phút", nên khi có nó thì tần suất không
+	// còn phải vượt sàn: kênh chạy đúng 3 mốc trong ngày không đụng gì tới
+	// rate-limit, mà bắt nhập kèm một tần suất hợp lệ chỉ là thủ tục vô nghĩa.
+	freq, err := scheduledInterval(in.ScanFrequency, in.Schedule)
 	if err != nil {
 		return repository.ListScheduled{}, err
 	}
@@ -340,6 +386,12 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 		ScanLimit:      l.scanLimitOr(in.ScanLimit),
 		MaxPostsPerRun: l.maxPostsOr(in.MaxPostsPerRun),
 		CreatedBy:      actor,
+		LlmApiSetID:    in.LLMAPISetID,
+		Timezone:       timezoneOr(in.Schedule.Timezone),
+		ActiveFromMin:  in.Schedule.FromMin,
+		ActiveToMin:    in.Schedule.ToMin,
+		ActiveWeekdays: in.Schedule.Weekdays,
+		FixedTimesMin:  in.Schedule.FixedTimes,
 	})
 	if err != nil {
 		return repository.ListScheduled{}, fmt.Errorf("tạo list_scheduled: %w", err)
@@ -407,6 +459,9 @@ type ScheduledUpdate struct {
 	Status         *string
 	ScanLimit      *int32
 	MaxPostsPerRun *int32
+	LLMAPISetID    *uuid.UUID
+	Schedule       *domain.ChannelSchedule
+	ClearWindow    bool
 }
 
 func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in ScheduledUpdate) (repository.ListScheduled, error) {
@@ -425,7 +480,19 @@ func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in Sche
 		Status:          in.Status,
 		ScanLimit:       in.ScanLimit,
 		MaxPostsPerRun:  in.MaxPostsPerRun,
+		LlmApiSetID:     in.LLMAPISetID,
+		ClearWindow:     in.ClearWindow,
 		// pgtype.Interval zero value = NULL -> COALESCE giữ giá trị cũ.
+	}
+	if in.Schedule != nil {
+		if err := in.Schedule.Validate(); err != nil {
+			return repository.ListScheduled{}, err
+		}
+		params.Timezone = nilIfEmpty(in.Schedule.Timezone)
+		params.ActiveFromMin = in.Schedule.FromMin
+		params.ActiveToMin = in.Schedule.ToMin
+		params.ActiveWeekdays = in.Schedule.Weekdays
+		params.FixedTimesMin = in.Schedule.FixedTimes
 	}
 
 	if in.SourceURL != nil {
@@ -568,6 +635,24 @@ func validateScanLimit(v int32) error {
 		return fmt.Errorf("%w: scan_limit phải trong khoảng 1..%d", domain.ErrInvalidInput, maxScanLimit)
 	}
 	return nil
+}
+
+// timezoneOr điền múi giờ mặc định khi form không gửi gì — cột là NOT NULL, và
+// chuỗi rỗng ở đó sẽ làm time.LoadLocation rơi về UTC, đúng cái sai cần tránh.
+func timezoneOr(tz string) string {
+	if tz = strings.TrimSpace(tz); tz != "" {
+		return tz
+	}
+	return domain.DefaultTimezone
+}
+
+// scheduledInterval: có giờ chạy cố định thì scan_frequency không còn được
+// dùng, nên chỉ cần một giá trị hợp lệ để thoả cột NOT NULL.
+func scheduledInterval(d time.Duration, sched domain.ChannelSchedule) (pgtype.Interval, error) {
+	if len(sched.FixedTimes) > 0 && d < minScanFrequency {
+		d = minScanFrequency
+	}
+	return toInterval(d)
 }
 
 func toInterval(d time.Duration) (pgtype.Interval, error) {

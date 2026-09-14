@@ -7,11 +7,12 @@ INSERT INTO voice (
   hashtag, language, image_url, publish_status, title, mime_type, size_bytes,
   sample_rate, created_by,
   author_id, author_email, author_gender,
-  image_uploaded, no_image, publish_when_ready
+  image_uploaded, no_image, publish_when_ready, llm_api_set_id, author_country_id
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   sqlc.narg('author_id'), sqlc.narg('author_email'), sqlc.narg('author_gender'),
-  sqlc.arg('image_uploaded'), sqlc.arg('no_image'), sqlc.arg('publish_when_ready')
+  sqlc.arg('image_uploaded'), sqlc.arg('no_image'), sqlc.arg('publish_when_ready'),
+  sqlc.narg('llm_api_set_id'), sqlc.narg('author_country_id')
 )
 RETURNING *;
 
@@ -20,10 +21,12 @@ RETURNING *;
 -- Tạo ở trạng thái `processing` để người dùng thấy ngay dòng voice đang chạy,
 -- worker điền file + metadata vào đúng dòng đó (FinishVoice).
 INSERT INTO voice (
-  input_text, collect_mode, prompt_id, language, publish_status, title, created_by
+  input_text, collect_mode, prompt_id, language, publish_status, title, created_by,
+  llm_api_set_id
 ) VALUES (
   sqlc.arg('input_text'), sqlc.arg('collect_mode'), sqlc.narg('prompt_id'),
-  sqlc.arg('language'), 'processing', sqlc.narg('title'), sqlc.arg('created_by')
+  sqlc.arg('language'), 'processing', sqlc.narg('title'), sqlc.arg('created_by'),
+  sqlc.narg('llm_api_set_id')
 )
 RETURNING *;
 
@@ -38,6 +41,7 @@ SET input_text     = sqlc.arg('input_text'),
     collect_mode   = sqlc.arg('collect_mode'),
     prompt_id      = sqlc.narg('prompt_id'),
     language       = COALESCE(sqlc.narg('language'), language),
+    llm_api_set_id = COALESCE(sqlc.narg('llm_api_set_id'), llm_api_set_id),
     publish_status = 'processing',
     last_error     = NULL
 WHERE id = sqlc.arg('id') AND publish_status <> 'published'
@@ -157,6 +161,9 @@ SET ai_engine_id     = sqlc.narg('ai_engine_id'),
     mime_type        = sqlc.narg('mime_type'),
     size_bytes       = sqlc.narg('size_bytes'),
     sample_rate      = sqlc.narg('sample_rate'),
+    -- Model THẬT đã viết lại nội dung. COALESCE vì mode B không qua LLM: ghi
+    -- thẳng NULL sẽ xoá mất model của lần chạy trước trên chính voice đó.
+    llm_model_used   = COALESCE(sqlc.narg('llm_model_used'), llm_model_used),
     publish_status   = 'draft',
     last_error       = NULL
 WHERE id = sqlc.arg('id')
@@ -166,19 +173,26 @@ RETURNING *;
 SELECT * FROM voice WHERE source_post_id = $1 ORDER BY created_at DESC;
 
 -- name: UpdateVoiceMetadata :one
--- author_id/author_email/author_gender đi thành một bộ: bốc tác giả là nhận cả
--- ba, nên không COALESCE riêng lẻ để tránh trạng thái id của người này còn
--- email/giới tính của người kia.
+-- Chọn giới tính KHÔNG còn kéo theo việc bốc tài khoản — việc đó lùi xuống bước
+-- đăng. Vì thế author_gender giờ sửa được độc lập với author_id.
+--
+-- `reset_author` là hệ quả bắt buộc của điều đó: đổi giới tính hoặc quốc gia mà
+-- vẫn giữ tài khoản đã bốc trước đó nghĩa là bài lên multime dưới tên một người
+-- không khớp thứ người dùng vừa chọn.
 UPDATE voice
-SET hashtag       = COALESCE(sqlc.narg('hashtag'), hashtag),
-    language      = COALESCE(sqlc.narg('language'), language),
-    image_url     = COALESCE(sqlc.narg('image_url'), image_url),
-    title         = COALESCE(sqlc.narg('title'), title),
-    author_id     = COALESCE(sqlc.narg('author_id'), author_id),
-    author_email  = CASE WHEN sqlc.narg('author_id')::bigint IS NULL
-                         THEN author_email ELSE sqlc.narg('author_email') END,
-    author_gender = CASE WHEN sqlc.narg('author_id')::bigint IS NULL
-                         THEN author_gender ELSE sqlc.narg('author_gender') END
+SET hashtag           = COALESCE(sqlc.narg('hashtag'), hashtag),
+    language          = COALESCE(sqlc.narg('language'), language),
+    image_url         = COALESCE(sqlc.narg('image_url'), image_url),
+    title             = COALESCE(sqlc.narg('title'), title),
+    author_gender     = COALESCE(sqlc.narg('author_gender'), author_gender),
+    author_country_id = CASE WHEN sqlc.arg('set_country')::bool
+                             THEN sqlc.narg('author_country_id')
+                             ELSE author_country_id END,
+    author_id         = CASE WHEN sqlc.arg('reset_author')::bool THEN NULL
+                             ELSE COALESCE(sqlc.narg('author_id'), author_id) END,
+    author_email      = CASE WHEN sqlc.arg('reset_author')::bool THEN NULL
+                             WHEN sqlc.narg('author_id')::bigint IS NULL THEN author_email
+                             ELSE sqlc.narg('author_email') END
 WHERE id = sqlc.arg('id')
 RETURNING *;
 

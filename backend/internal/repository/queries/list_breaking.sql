@@ -2,9 +2,12 @@
 INSERT INTO list_breaking (
   source_url, platform, content_type, collect_mode, prompt_id, regex_patterns,
   language_default, auto_process, auto_publish, status, scan_limit, scan_interval,
-  created_by
+  created_by, llm_api_set_id,
+  timezone, active_from_min, active_to_min, active_weekdays
 ) VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+  sqlc.narg('llm_api_set_id'), sqlc.arg('timezone'),
+  sqlc.narg('active_from_min'), sqlc.narg('active_to_min'), sqlc.arg('active_weekdays')
 )
 RETURNING *;
 
@@ -57,7 +60,14 @@ SET source_url       = COALESCE(sqlc.narg('source_url'), source_url),
     auto_publish     = COALESCE(sqlc.narg('auto_publish'), auto_publish),
     status           = COALESCE(sqlc.narg('status'), status),
     scan_limit       = COALESCE(sqlc.narg('scan_limit'), scan_limit),
-    scan_interval    = COALESCE(sqlc.narg('scan_interval'), scan_interval)
+    scan_interval    = COALESCE(sqlc.narg('scan_interval'), scan_interval),
+    llm_api_set_id   = COALESCE(sqlc.narg('llm_api_set_id'), llm_api_set_id),
+    timezone         = COALESCE(sqlc.narg('timezone'), timezone),
+    active_from_min  = CASE WHEN sqlc.arg('clear_window')::bool THEN NULL
+                            ELSE COALESCE(sqlc.narg('active_from_min'), active_from_min) END,
+    active_to_min    = CASE WHEN sqlc.arg('clear_window')::bool THEN NULL
+                            ELSE COALESCE(sqlc.narg('active_to_min'), active_to_min) END,
+    active_weekdays  = COALESCE(sqlc.narg('active_weekdays'), active_weekdays)
 WHERE id = sqlc.arg('id')
 RETURNING *;
 

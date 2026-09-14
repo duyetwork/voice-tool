@@ -53,7 +53,7 @@ services:
       - "443:443"
       - "443:443/udp" # HTTP/3
     environment:
-      SITE_DOMAIN: ${SITE_DOMAIN:?SITE_DOMAIN là bắt buộc, ví dụ voice.duyet.work}
+      SITE_DOMAIN: ${SITE_DOMAIN:?SITE_DOMAIN là bắt buộc, ví dụ voice.example.com}
       ACME_EMAIL: ${ACME_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

@@ -17,9 +17,14 @@ import (
 // Strongbody theo giới tính.
 type MultimeUsers struct {
 	svc *service.MultimeUsers
+	// catalog phục vụ danh mục ĐÃ LƯU trong DB (quốc gia, hashtag) — modal Tạo
+	// Voice đọc từ đây thay vì hỏi Strongbody mỗi lần mở.
+	catalog *service.CatalogCache
 }
 
-func NewMultimeUsers(svc *service.MultimeUsers) *MultimeUsers { return &MultimeUsers{svc: svc} }
+func NewMultimeUsers(svc *service.MultimeUsers, catalog *service.CatalogCache) *MultimeUsers {
+	return &MultimeUsers{svc: svc, catalog: catalog}
+}
 
 // Random trả 1 tài khoản bất kỳ có giới tính `gender`.
 //
@@ -43,11 +48,43 @@ func (h *MultimeUsers) Random(c *gin.Context) {
 }
 
 // Countries trả danh mục quốc gia cho ô chọn quốc gia của author.
+//
+// Đọc từ bảng `country` trong DB; chỉ khi bảng rỗng hoặc quá cũ mới hỏi lại
+// Strongbody. Danh mục này đổi vài năm một lần nên hỏi mỗi lần mở modal là
+// buộc một thao tác thường ngày phụ thuộc vào token của hệ thống khác.
 func (h *MultimeUsers) Countries(c *gin.Context) {
-	countries, err := h.svc.Countries(c.Request.Context(), middleware.ActorID(c))
+	countries, err := h.catalog.Countries(c.Request.Context(), middleware.ActorID(c))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
 	httpx.OK(c, gin.H{"countries": countries})
+}
+
+// Catalog trả CẢ BA danh mục mà modal Tạo Voice cần trong 1 lần gọi: quốc gia,
+// hashtag, và thứ tự ưu tiên của ngôn ngữ.
+//
+// Gộp làm một vì modal cần cả ba cùng lúc, và mỗi lần tải là một lần chờ.
+// Frontend cache nguyên khối này nên mở modal lần sau không gọi lại gì.
+// Hashtags tìm trong danh mục hashtag ĐÃ LƯU của tool, không hỏi MultiMe.
+//
+// Có endpoint riêng vì danh mục bên MultiMe có ~94.000 mục: không tải hết về
+// trình duyệt để lọc tại chỗ được. `/meta/catalog` trả sẵn phần đầu (tag tuyển
+// chọn) cho lần mở modal đầu tiên; ô tìm kiếm gọi đây khi người dùng gõ.
+func (h *MultimeUsers) Hashtags(c *gin.Context) {
+	items, err := h.catalog.Hashtags(c.Request.Context(), middleware.ActorID(c), c.Query("q"))
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, gin.H{"items": items})
+}
+
+func (h *MultimeUsers) Catalog(c *gin.Context) {
+	view, err := h.catalog.Catalog(c.Request.Context(), middleware.ActorID(c))
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, view)
 }

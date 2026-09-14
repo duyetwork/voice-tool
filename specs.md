@@ -178,7 +178,8 @@ Cách này giữ được đầy đủ tính linh hoạt của mô hình 3 tần
 | Nhóm | Mã | Chức năng | Mô tả |
 |---|---|---|---|
 | **Quản lý danh mục** | A1 | Quản lý Prompt mẫu | CRUD thư viện prompt cho Mode C |
-| | A2 | Quản lý AI Engine (TTS) | Danh sách các AI TTS có sẵn được tích hợp, chọn engine áp dụng theo kênh/job |
+| | A2 | Quản lý AI Engine | 2 tab: **TTS Model** (sổ API key 3voices theo từng người) và **LLM Model** (Bộ API key nhiều nhà, dùng chung, có chuỗi dự phòng) |
+| | A3 | Cài đặt hệ thống | Chỉ admin: chuỗi dự phòng LLM, batch, thống kê bị nền tảng chặn |
 | **Danh sách Breaking (F2)** | B1 | Quản lý Danh sách Breaking | CRUD kênh: nguồn, Hình thức thu thập, Regex Pattern, ngôn ngữ default, `auto_process` |
 | | B2 | Filter/Search theo Regex | Tìm kiếm trong danh sách bằng regex |
 | | B3 | Chạy Danh sách (engine quét liên tục/anytime) | Worker chạy nền, đối chiếu regex ngay khi có bài mới → tạo **Bài Post** |
@@ -227,7 +228,12 @@ Cách này giữ được đầy đủ tính linh hoạt của mô hình 3 tần
 |---|---|---|
 | URL/kênh nguồn | Có | Auto-detect nền tảng khi nhập |
 | Hình thức thu thập (A/B/C) | Có | Kèm Prompt mẫu nếu chọn C |
-| **Tần suất quét** | Có | Vd: mỗi giờ / mỗi 6 giờ / mỗi ngày — cấu hình riêng từng kênh |
+| **Tần suất quét** | Có | Vd: mỗi giờ / mỗi 6 giờ / mỗi ngày — cấu hình riêng từng kênh. Tối thiểu 5 phút |
+| **Bộ API** | Với hình thức C | Túi key LLM dùng để viết lại nội dung. Quét tự động không có ai bấm nút để chọn, nên bộ phải nằm sẵn trên kênh |
+| **Múi giờ** | Có (mặc định `Asia/Ho_Chi_Minh`) | Khung giờ bên dưới diễn giải theo múi giờ này, không theo giờ máy chủ |
+| **Khung giờ hoạt động** | Không | Vd 06:00–23:00. Bỏ trống = quét 24/7. Giờ kết thúc sớm hơn giờ bắt đầu = khung vắt qua nửa đêm |
+| **Ngày trong tuần** | Không | Kênh chỉ đăng ngày làm việc thì không quét cuối tuần |
+| **Giờ chạy cố định** | Không | Vd 08:00 / 12:00 / 18:00 — **thay thế** tần suất "mỗi N phút" |
 | Ngôn ngữ default | Có | |
 | Trạng thái (bật/tắt) | Có | |
 
@@ -235,13 +241,86 @@ Cách này giữ được đầy đủ tính linh hoạt của mô hình 3 tần
 - Biết kênh nào "đến giờ" chạy tiếp theo, tránh 2 kênh cùng tần suất dồn task chạy cùng lúc gây quá tải.
 - Cho phép xem "lịch chạy" tổng thể (kênh nào chạy khi nào) — phục vụ vận hành, không phải chỉ chạy cron mù.
 
-### 3.3 A2 — Quản lý AI Engine (TTS)
+**Vì sao khung giờ phải đi kèm múi giờ:** scheduler chạy theo giờ container
+(UTC). "Chỉ quét 6h–23h" mà tính theo UTC thì lệch 7 tiếng — kênh nghỉ đúng lúc
+đang đăng bài và quét rát đúng lúc không có gì. Múi giờ lưu theo tên IANA chứ
+không phải offset, vì offset không biết tới giờ mùa hè.
 
-**Mô tả:** Vì hệ thống dùng AI TTS có sẵn (bên thứ 3) thay vì tự xây dựng, cần 1 danh mục các engine đã tích hợp (vd Google TTS, ElevenLabs, Azure TTS...) để:
-- Chọn engine áp dụng mặc định toàn hệ thống, hoặc theo từng kênh/job.
-- Dễ dàng thêm/bớt engine khi có nhà cung cấp mới hoặc ngừng dùng 1 engine.
+**Vì sao cần khung giờ:** kênh tin tức không đăng lúc 3h sáng; quét lúc đó là
+đốt hạn mức LLM/TTS và mời gọi rate-limit đúng vào lúc chẳng thu được gì.
 
-**Business rule:** mỗi engine có thể hỗ trợ tập ngôn ngữ khác nhau — cần validate ngôn ngữ đã chọn (mục 1.5) có được engine đang dùng hỗ trợ không, báo lỗi sớm nếu không.
+### 3.3 A2 — Quản lý AI Engine
+
+Màn này có **2 tab**, cho 2 loại credential khác hẳn nhau.
+
+#### Tab "TTS Model" — sổ API key 3voices
+
+Chỉ còn 1 nhà cung cấp TTS nên không có gì để *chọn*: mỗi bản ghi là **API key
+của một người**, và worker chạy TTS bằng key của chính người tạo voice — hạn
+mức và hoá đơn rơi đúng vào người dùng nó.
+
+**Business rule:** mỗi engine có thể hỗ trợ tập ngôn ngữ khác nhau — cần validate ngôn ngữ đã chọn (mục 1.5) có được engine đang dùng hỗ trợ không, báo lỗi sớm nếu không. Danh sách ngôn ngữ hỏi thẳng nhà cung cấp, không khai tay trong DB.
+
+#### Tab "LLM Model" — Bộ API key
+
+Một **bộ** = túi key của **nhiều nhà LLM** (Gemini / OpenAI / Anthropic), dùng
+chung cho **một hoặc nhiều người**. Đây là thứ hình thức C chạy bằng.
+
+| Chức năng | Ghi chú |
+|---|---|
+| CRUD bộ + CRUD key trong bộ | Key không bao giờ hiển thị lại, chỉ 4 ký tự cuối |
+| Chia sẻ bộ cho người dùng khác | Người được chia sẻ *dùng* được, không *sửa* được |
+| Toggle "hiện với mọi người" | **Chỉ admin** — bật lên là mở hạn mức của một nhóm cho cả hệ thống |
+| Xem sức khoẻ từng key | `ok` / `đang nghỉ vì hết hạn mức` / `đã tắt vì key sai` |
+
+**Vì sao là "bộ" chứ không phải từng key rời:** chuỗi dự phòng chỉ có ý nghĩa
+khi trong tay có key của nhiều nhà cùng lúc — hết hạn mức Gemini thì còn OpenAI,
+hết OpenAI thì còn Anthropic. Một key rời không dự phòng được cho ai.
+
+**LLM Router** (chạy ngầm, không có màn riêng): thử lần lượt theo chuỗi dự phòng
+cấu hình trong mục Cài đặt, **tất định — không xoay vòng ngẫu nhiên**. Hết hạn
+mức thì cho key nghỉ và sang mắt xích kế; key sai thì tắt hẳn và chờ người dán
+key mới. Lỗi do **nội dung** (bị chặn, quá dài) thì KHÔNG đổi key — đổi key trên
+một input chắc chắn thất bại chỉ đốt sạch hạn mức rồi báo nhầm là "hết quota".
+
+### 3.4 Cài đặt hệ thống (chỉ admin)
+
+| Mục | Nội dung |
+|---|---|
+| **Chuỗi dự phòng LLM** | Thứ tự (nhà, model) thử khi tạo voice hình thức C. Mặc định: `gemini-2.5-flash-lite` → `gemini-2.5-flash` → `gpt-5.6-luna` → `claude-haiku-4-5-20251001` |
+| **Batch** | Bật/tắt, số mẩu mỗi lô, trần ký tự, thời gian chờ gom |
+| **Thống kê bị nền tảng chặn** | Số lần theo từng nền tảng và từng loại chặn — dữ liệu để quyết định có cần proxy không |
+
+**Model ghim ID đầy đủ, không dùng alias** — hệ thống từ chối model ngoài danh
+sách cho phép. Alias `gpt-5.6` không trỏ về Luna mà trỏ về Sol, đắt hơn khoảng
+25 lần; viết thiếu hậu tố thì hệ thống vẫn chạy đúng, không có lỗi nào hiện ra,
+chỉ có hoá đơn đội lên — và vì mắt xích đó chỉ chạy khi Gemini đã cạn nên rất
+lâu mới có ai nhận ra.
+
+Ba con số của batch là **điểm khởi đầu phải đo lại**, không phải hằng số đúng
+sẵn: chốt bằng cách chạy thử trên text thật rồi so chất lượng với chi phí. Đó
+chính là lý do chúng nằm trong Cài đặt chứ không trong code.
+
+### 3.5 Rủi ro khi quét nhiều bài — và vì sao CHƯA làm proxy
+
+Rủi ro là thật: bộ phân loại lỗi yt-dlp đã phải có nhãn riêng cho "confirm
+you're not a bot" (chặn IP máy chủ) và HTTP 429, tức là chúng đã xảy ra. Nhưng
+proxy là bậc gần cuối của thang xử lý:
+
+| Bậc | Việc | Trạng thái |
+|---|---|---|
+| 1 | Watermark giới hạn khối lượng phải lấy | đã có |
+| 2 | Sàn tần suất (≥ 5 phút) + rải lệch giờ chạy giữa các kênh | **đã làm** |
+| 3 | Mỗi nền tảng 1 lần tải tại một thời điểm, có khoảng nghỉ giữa hai lần | **đã làm** |
+| 4 | Tinh chỉnh yt-dlp (`--sleep-requests`, UA thật) | chưa |
+| 5 | Cookies (tài khoản rác, KHÔNG dùng tài khoản cá nhân) | chưa |
+| 6 | **Đếm** số lần bị chặn theo từng nền tảng | **đã làm** — xem mục Cài đặt |
+| 7 | Proxy | **chưa — chờ số đếm ở bậc 6** |
+
+Proxy chỉ giải quyết được chặn-theo-IP; Facebook/Instagram đòi đăng nhập thì
+phải có cookies chứ proxy không giúp gì. Mua trước khi có số đếm là trả tiền cho
+một phỏng đoán. Khi số liệu cho thấy cần: bảng `proxy` (URL mã hoá, loại, trạng
+thái), gán proxy theo người dùng, admin quản lý tập trung.
 
 ---
 
@@ -285,7 +364,7 @@ status (new|processed|failed), created_by, created_at
 
 **Voice** (tầng cuối — thay thế Job+Post cũ)
 ```
-id, source_post_id, ai_engine_id,
+id, source_post_id, ai_engine_id, llm_api_set_id, llm_model_used,
 voice_file (nullable — chỉ tồn tại khi CHƯA đăng, xoá sau khi đăng thành công),
 description, hashtag, language, image_url (nullable),
 publish_status (draft|ready|published|failed),
@@ -298,6 +377,44 @@ created_by, created_at, published_at
 - Ngay sau khi **đăng thành công** lên multime.ai (`publish_status = published`): hệ thống **xoá file voice khỏi storage nội bộ**, chỉ giữ lại `multime_post_url` làm nguồn tham chiếu duy nhất — tránh lưu trùng dữ liệu (file vừa có trên multime.ai, vừa có trên hệ thống) và tiết kiệm chi phí storage.
 - Nếu đăng **thất bại** (`publish_status = failed`): vẫn giữ nguyên `voice_file` để cho phép retry đăng lại mà không cần tạo lại voice từ đầu.
 - Hệ quả: sau khi đã đăng, chức năng "Nghe lại" ở màn Chi tiết Voice (nếu có) cần phát trực tiếp từ `multime_post_url` thay vì từ file nội bộ (vì file đã bị xoá).
+
+**LLMApiSet / LLMApiKey / LLMApiSetUser** (Bộ API key LLM)
+```
+llm_api_set:      id, name, note, visible_to_users, created_by, created_at, last_used_at
+llm_api_key:      id, set_id, provider (gemini|openai|anthropic), api_key_encrypted,
+                  label, priority,
+                  -- 3 cột SỨC KHOẺ: router ghi, người dùng chỉ đọc
+                  disabled_at, cooldown_until, consecutive_failures,
+                  last_used_at, last_error, created_at
+llm_api_set_user: set_id, user_id            -- 1 bộ dùng chung cho nhiều người
+```
+
+`disabled_at` (key sai / bị thu hồi — chờ người sửa) tách khỏi `cooldown_until`
+(hết hạn mức — tự hồi phục) vì hai tình huống này xử lý khác hẳn nhau: một cái
+cần người can thiệp, một cái chỉ cần chờ.
+
+**AppSetting** (cấu hình chung, chỉ admin ghi)
+```
+key, value (JSONB), updated_by, updated_at
+   llm.chain  -> chuỗi dự phòng (nhà, model) theo thứ tự rẻ trước đắt sau
+   llm.batch  -> { enabled, size, max_chars, wait_ms }
+```
+JSONB để thêm khoá cấu hình mới không cần migration.
+
+**Lịch quét theo kênh** (cột thêm vào `list_scheduled` và `list_breaking`)
+```
+llm_api_set_id, timezone,
+active_from_min, active_to_min,   -- phút từ nửa đêm; cả hai NULL = 24/7
+active_weekdays,                  -- 0 = CN … 6 = T7; rỗng = mọi ngày
+fixed_times_min                   -- chỉ list_scheduled; THAY THẾ scan_frequency
+```
+
+**FetchErrorStat** (đếm số lần bị nền tảng chặn, để quyết định có cần proxy)
+```
+day, platform, kind, count, last_at
+   kind: bot_block | login_required | rate_limit | geo_blocked
+       | unavailable | timeout | other
+```
 
 **SkippedLog** (cho Breaking)
 ```

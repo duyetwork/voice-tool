@@ -12,7 +12,7 @@ Ubuntu 24.04 x64, 2 vCPU / 2GB RAM / 30GB, đang đăng nhập bằng `root` + m
 
 | # | Câu hỏi | Đề xuất | Vì sao |
 |---|---|---|---|
-| 1 | **Tên miền** để chạy HTTPS | Một subdomain bạn sở hữu, ví dụ `voice.duyet.work`. Chưa có thì tạm dùng `103-121-89-215.sslip.io` (miễn phí, Let's Encrypt cấp cert được) | Không có tên miền thì không có HTTPS thật; mà không HTTPS thì token đăng nhập đi qua mạng ở dạng trần |
+| 1 | **Tên miền** để chạy HTTPS | Một subdomain bạn sở hữu, ví dụ `voice.example.com`. Chưa có thì tạm dùng `103-121-89-215.sslip.io` (miễn phí, Let's Encrypt cấp cert được) | Không có tên miền thì không có HTTPS thật; mà không HTTPS thì token đăng nhập đi qua mạng ở dạng trần |
 | 2 | **Lưu file voice ở đâu** | Dùng S3 sẵn có (`strongbody-files-api`, prefix `voice-tool/`) thay vì chạy MinIO trên VPS | Bỏ được ~250MB RAM + toàn bộ áp lực ghi đĩa. Đây là khoản tiết kiệm lớn nhất trên máy 2GB |
 | 3 | **Build image ở đâu** | KHÔNG build trên VPS. Build ở máy bạn rồi đẩy image sang | `npm run build` của Next cần ~1.5–2GB RAM; trên máy 2GB nó sẽ bị OOM killer bắn giữa chừng, hoặc kéo cả Postgres chết theo |
 
@@ -28,11 +28,11 @@ Cần phân biệt 2 thứ khác nhau:
   người dùng gõ gì vào trình duyệt và Let's Encrypt cấp cert cho ai. Hostname
   của máy KHÔNG tự thành tên miền.
 
-Nếu bạn sở hữu `duyet.work` thì tạo bản ghi:
+Nếu bạn sở hữu `example.com` thì tạo bản ghi:
 
 ```
-A     voice.duyet.work    103.121.89.215    TTL 300
-AAAA  voice.duyet.work    2403:6a40:0:89:2a2e:94ff:fe30:adc8    TTL 300
+A     voice.example.com    103.121.89.215    TTL 300
+AAAA  voice.example.com    2403:6a40:0:89:2a2e:94ff:fe30:adc8    TTL 300
 ```
 
 ---
@@ -112,7 +112,7 @@ nên đặt cao hơn chỉ tổ ăn lỗi 429.
                         Internet
                      │ 80/443 (chỉ 2 cổng này mở)
                 ┌────▼─────┐
-                │  Caddy   │  voice.duyet.work — TLS tự động
+                │  Caddy   │  voice.example.com — TLS tự động
                 └──┬────┬──┘
         /api/*     │    │   còn lại
              ┌─────▼┐  ┌▼──────────┐
@@ -212,7 +212,7 @@ Rồi trên VPS:
 cd /opt/voice-tool
 docker compose -f docker-compose.prod.yml up -d      # migrate chạy tự động trước api/worker
 docker compose -f docker-compose.prod.yml ps
-curl -sf https://voice.duyet.work/healthz
+curl -sf https://voice.example.com/healthz
 ```
 
 ### Giai đoạn E — Kiểm tra sau deploy

@@ -38,6 +38,8 @@ type createVoiceRequest struct {
 	CollectMode string     `json:"collect_mode" binding:"required,oneof=B C"`
 	PromptID    *uuid.UUID `json:"prompt_id"`
 	Language    string     `json:"language"`
+	// LLMAPISetID: Bộ API key viết lại nội dung — chỉ hình thức C mới cần.
+	LLMAPISetID *uuid.UUID `json:"llm_api_set_id"`
 }
 
 // Create tạo Voice từ text và đưa vào hàng đợi đọc luôn — trả về record
@@ -53,6 +55,7 @@ func (h *Voice) Create(c *gin.Context) {
 		CollectMode: domain.CollectMode(req.CollectMode),
 		PromptID:    req.PromptID,
 		Language:    req.Language,
+		LLMAPISetID: req.LLMAPISetID,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -175,6 +178,9 @@ type updateVoiceRequest struct {
 	AuthorID     *int64  `json:"author_id"`
 	AuthorEmail  *string `json:"author_email"`
 	AuthorGender *string `json:"author_gender"`
+	// AuthorCountryID: đổi quốc gia lọc author. Đổi nó (hoặc đổi giới tính) mà
+	// không kèm author_id thì tài khoản đã bốc trước đó bị bỏ, để bước đăng bốc lại.
+	AuthorCountryID *int64 `json:"author_country_id"`
 }
 
 func (h *Voice) Update(c *gin.Context) {
@@ -191,13 +197,14 @@ func (h *Voice) Update(c *gin.Context) {
 
 	voice, err := h.svc.UpdateMetadata(c.Request.Context(), middleware.ActorID(c), id,
 		service.UpdateMetadataInput{
-			Title:        req.Title,
-			Hashtag:      req.Hashtag,
-			Language:     req.Language,
-			ImageURL:     req.ImageURL,
-			AuthorID:     req.AuthorID,
-			AuthorEmail:  req.AuthorEmail,
-			AuthorGender: req.AuthorGender,
+			Title:           req.Title,
+			Hashtag:         req.Hashtag,
+			Language:        req.Language,
+			ImageURL:        req.ImageURL,
+			AuthorID:        req.AuthorID,
+			AuthorEmail:     req.AuthorEmail,
+			AuthorGender:    req.AuthorGender,
+			AuthorCountryID: req.AuthorCountryID,
 		})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -214,6 +221,8 @@ type regenerateVoiceRequest struct {
 	CollectMode string     `json:"collect_mode" binding:"required,oneof=B C"`
 	PromptID    *uuid.UUID `json:"prompt_id"`
 	Language    string     `json:"language"`
+	// LLMAPISetID rỗng = giữ bộ API voice đang dùng.
+	LLMAPISetID *uuid.UUID `json:"llm_api_set_id"`
 }
 
 func (h *Voice) Regenerate(c *gin.Context) {
@@ -233,6 +242,7 @@ func (h *Voice) Regenerate(c *gin.Context) {
 			CollectMode: domain.CollectMode(req.CollectMode),
 			PromptID:    req.PromptID,
 			Language:    req.Language,
+			LLMAPISetID: req.LLMAPISetID,
 		})
 	if err != nil {
 		httpx.Fail(c, err)

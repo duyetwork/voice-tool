@@ -31,6 +31,15 @@
 //	  (đối chiếu strongbody-api: api/user/v1.ListUsersReq + dto.BuildWhere, nơi
 //	   filter_names/filter_values thành mệnh đề `users.<name> = <value>`)
 //
+//	Danh mục hashtag của voice (= category type=voice):
+//	  GET {auth_base}/v1/admin/category/list?type=voice&page=&limit=
+//	                                        &order_by=id&order_dir=ASC
+//	  resp: {"code":0,"data":{"list":[{"id":…,"name":…,"normalized_name":…,
+//	         "slug":…,"voice_tag_kind":"system|user|campaign","is_featured":…,
+//	         "ordering":…}],"total":…,"total_page":…}}
+//	  (~94.000 mục, phải phân trang. order_by=id ASC đưa nhóm `system` do
+//	   MultiMe tuyển chọn lên trước — đó là phần đáng hiện trong ô chọn.)
+//
 //	URL công khai: https://multime.ai/voice/<id>
 package multime
 
@@ -65,6 +74,11 @@ const (
 	// {"code":403,"message":"unauthorized application"} với token của tài khoản
 	// thường. Bản /buyer đọc được và cùng một bảng dữ liệu.
 	countriesPath = "/v1/buyer/countries"
+	// Hashtag của voice bên MultiMe KHÔNG phải thực thể riêng: nó là `category`
+	// có type='voice' (strongbody-api: entity.CategoryTypeVoice). Controller
+	// category chỉ đăng ký ở adminRouter, nhưng bản /v1/admin này token tài
+	// khoản thường vẫn đọc được — khác với /v1/admin/countries (403).
+	voiceHashtagsPath = "/v1/admin/category/list"
 
 	// minDurationSeconds: UI của multime chặn voice ngắn hơn 15 giây.
 	minDurationSeconds = 15
@@ -743,4 +757,57 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// voiceHashtagListData là `data` của GET /v1/admin/category/list?type=voice.
+//
+// Khoá là `list`, KHÔNG phải `data` như endpoint countries — cùng một backend
+// nhưng hai endpoint trả hai hình dạng khác nhau, nên không dùng chung được bộ
+// giải mã.
+type voiceHashtagListData struct {
+	List  []domain.MultimeHashtag `json:"list"`
+	Total int                     `json:"total"`
+}
+
+// VoiceHashtags lấy 1 trang danh mục hashtag của voice.
+func (c *Client) VoiceHashtags(
+	ctx context.Context,
+	token string,
+	page, limit int,
+) ([]domain.MultimeHashtag, int, error) {
+	if token == "" {
+		return nil, 0, domain.ErrReloginRequired
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 500
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.authBaseURL+voiceHashtagsPath, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	q := req.URL.Query()
+	q.Set("type", "voice")
+	q.Set("page", strconv.Itoa(page))
+	q.Set("limit", strconv.Itoa(limit))
+	// id ASC = thứ tự tạo. Nhóm `system` MultiMe tuyển chọn có id nhỏ nhất nên
+	// nằm ở những trang đầu — đồng bộ dở chừng vẫn có phần dùng được.
+	q.Set("order_by", "id")
+	q.Set("order_dir", "ASC")
+	req.URL.RawQuery = q.Encode()
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Scope", scopeHeader)
+
+	var data voiceHashtagListData
+	if err := c.do(req, &data); err != nil {
+		if isUnauthorized(err) {
+			return nil, 0, domain.ErrTokenExpired
+		}
+		return nil, 0, fmt.Errorf("lấy danh mục hashtag: %w", err)
+	}
+	return data.List, data.Total, nil
 }

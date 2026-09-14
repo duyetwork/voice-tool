@@ -16,6 +16,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/strongbody/voice-tool/backend/internal/domain"
 	"github.com/strongbody/voice-tool/backend/internal/repository"
 	"github.com/strongbody/voice-tool/backend/internal/worker/task"
 )
@@ -46,7 +47,7 @@ func (p *Provider) GetConfigs() ([]*asynq.PeriodicTaskConfig, error) {
 
 	configs := make([]*asynq.PeriodicTaskConfig, 0, len(lists)+1)
 	for _, list := range lists {
-		spec, err := cronSpec(list.ScanFrequency)
+		specs, err := listCronSpecs(list)
 		if err != nil {
 			p.log.Warn("bỏ qua lịch không hợp lệ", "error", err, "list_id", list.ID)
 			continue
@@ -56,7 +57,9 @@ func (p *Provider) GetConfigs() ([]*asynq.PeriodicTaskConfig, error) {
 			p.log.Warn("tạo task scheduled:scan thất bại", "error", err, "list_id", list.ID)
 			continue
 		}
-		configs = append(configs, &asynq.PeriodicTaskConfig{Cronspec: spec, Task: t})
+		for _, spec := range specs {
+			configs = append(configs, &asynq.PeriodicTaskConfig{Cronspec: spec, Task: t})
+		}
 	}
 
 	// Job dọn dẹp chạy hằng ngày.
@@ -67,6 +70,63 @@ func (p *Provider) GetConfigs() ([]*asynq.PeriodicTaskConfig, error) {
 	}
 
 	return configs, nil
+}
+
+// listCronSpecs chốt lịch của 1 kênh. Trả về NHIỀU cronspec vì kênh chạy theo
+// giờ cố định cần mỗi mốc một dòng cron (xem fixedTimeSpecs).
+//
+// Hai kiểu lịch, GIỜ CỐ ĐỊNH THẮNG:
+//
+//   - Có fixed_times_min -> cron thật theo giờ đồng hồ, kèm CRON_TZ để 08:00 là
+//     08:00 ở múi giờ của kênh chứ không phải của container. Với kênh đăng theo
+//     giờ cố định, đây vừa đúng hơn vừa rẻ hơn hẳn "mỗi N phút".
+//   - Không có -> "@every N" như cũ.
+//
+// Khung giờ hoạt động (active_from/to) KHÔNG nằm ở đây mà ở handler: cron không
+// diễn tả được khung vắt qua nửa đêm hay tần suất không chia hết cho 60 phút, và
+// để hai nơi cùng quyết định thì sớm muộn chúng nói khác nhau. Riêng `weekdays`
+// thì cron diễn tả được trọn vẹn, nên đưa vào spec luôn để không phải đánh thức
+// worker vào ngày kênh nghỉ.
+func listCronSpecs(list repository.ListScheduled) ([]string, error) {
+	sched := domain.ChannelSchedule{
+		Timezone:   list.Timezone,
+		Weekdays:   list.ActiveWeekdays,
+		FixedTimes: list.FixedTimesMin,
+	}
+	if len(sched.FixedTimes) > 0 {
+		return fixedTimeSpecs(sched), nil
+	}
+	spec, err := cronSpec(list.ScanFrequency)
+	if err != nil {
+		return nil, err
+	}
+	return []string{spec}, nil
+}
+
+// fixedTimeSpecs dựng 1 dòng cron cho MỖI mốc giờ:
+// "CRON_TZ=<tz> <phút> <giờ> * * <thứ>".
+//
+// Mỗi mốc một dòng chứ không gộp: robfig/cron (bộ phân tích của asynq) nhận
+// danh sách ở cả trường phút lẫn trường giờ, nên gộp 08:00/12:30/18:00 thành
+// "0,30 8,12,18" sẽ sinh ra cả 08:30 và 12:00 — hai lần quét không ai yêu cầu.
+func fixedTimeSpecs(sched domain.ChannelSchedule) []string {
+	dow := "*"
+	if len(sched.Weekdays) > 0 {
+		dow = ""
+		for i, d := range sched.Weekdays {
+			if i > 0 {
+				dow += ","
+			}
+			dow += fmt.Sprint(d)
+		}
+	}
+
+	tz := sched.Location().String()
+	specs := make([]string, 0, len(sched.FixedTimes))
+	for _, m := range sched.FixedTimes {
+		specs = append(specs, fmt.Sprintf("CRON_TZ=%s %d %d * * %s", tz, m%60, m/60, dow))
+	}
+	return specs
 }
 
 // New tạo PeriodicTaskManager. Gọi Run() trong goroutine riêng ở cmd/scheduler.

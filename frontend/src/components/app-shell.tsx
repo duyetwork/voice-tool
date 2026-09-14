@@ -41,6 +41,9 @@ const NAV = [
     items: [
       { href: "/audit-log", label: "Nhật ký thao tác" },
       { href: "/users", label: "Tài khoản", adminOnly: true },
+      // Chuỗi dự phòng LLM + batch: cấu hình ảnh hưởng hạn mức và chi phí của
+      // cả hệ thống, nên chỉ admin.
+      { href: "/settings", label: "Cài đặt", adminOnly: true },
     ],
   },
   {

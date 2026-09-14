@@ -53,8 +53,8 @@ export default function HuongDanPage() {
                   <Td className="font-medium text-slate-900">Bài Post</Td>
                   <Td>Một bài đăng cụ thể đã lấy được nội dung</Td>
                   <Td>
-                    Duyệt trước khi tốn tiền AI, và tạo lại voice khác từ cùng bài mà không
-                    phải fetch lại
+                    Duyệt trước khi tốn tiền AI, và tạo lại voice khác từ cùng bài mà không phải
+                    fetch lại
                   </Td>
                 </tr>
                 <tr>
@@ -65,8 +65,8 @@ export default function HuongDanPage() {
               </tbody>
             </Table>
             <Note>
-              Ngoại lệ duy nhất: <b>gõ text tay thì tạo thẳng Voice</b>, không sinh Bài Post —
-              text không có bài gốc nào để truy vết về.
+              Ngoại lệ duy nhất: <b>gõ text tay thì tạo thẳng Voice</b>, không sinh Bài Post — text
+              không có bài gốc nào để truy vết về.
             </Note>
           </Section>
 
@@ -136,18 +136,19 @@ export default function HuongDanPage() {
 
           <Section title="Các bước thao tác">
             <Step n={0} title="Đăng nhập (làm 1 lần)">
-              Dùng <b>chính tài khoản strongbody/multime</b> của bạn — hệ thống không có đăng ký
-              và không lưu mật khẩu riêng. Điều này quan trọng ở chỗ: voice bạn tạo được đăng lên
+              Dùng <b>chính tài khoản strongbody/multime</b> của bạn — hệ thống không có đăng ký và
+              không lưu mật khẩu riêng. Điều này quan trọng ở chỗ: voice bạn tạo được đăng lên
               multime <b>dưới đúng tài khoản đó</b>, không phải một tài khoản dùng chung.
             </Step>
 
             <Step n={1} title="Khai API key TTS (bắt buộc nếu dùng hình thức B/C)">
-              Vào <NavLink href="/ai-engines">AI Engine</NavLink> → <b>Thêm API key</b> → dán key
-              3voices (dạng <code className="rounded bg-slate-100 px-1">sk-ov-…</code>).
+              Vào <NavLink href="/ai-engines">AI Engine</NavLink> → tab <b>TTS Model</b> →{" "}
+              <b>Thêm API key</b> → dán key 3voices (dạng{" "}
+              <code className="rounded bg-slate-100 px-1">sk-ov-…</code>).
               <br />
-              Key được mã hoá trước khi lưu và <b>không hiển thị lại</b> — bảng chỉ còn 4 ký tự
-              cuối để đối chiếu. Voice của bạn chạy bằng key của bạn, nên quota và hoá đơn 3voices
-              về đúng người dùng nó.
+              Key được mã hoá trước khi lưu và <b>không hiển thị lại</b> — bảng chỉ còn 4 ký tự cuối
+              để đối chiếu. Voice của bạn chạy bằng key của bạn, nên quota và hoá đơn 3voices về
+              đúng người dùng nó.
               {isAdmin ? (
                 <>
                   {" "}
@@ -156,12 +157,40 @@ export default function HuongDanPage() {
               ) : null}
             </Step>
 
-            <Step n={2} title="Tạo voice — chọn 1 trong 3 đường">
+            <Step n={2} title="Khai Bộ API key LLM (chỉ cần nếu dùng hình thức C)">
+              Vào <NavLink href="/ai-engines">AI Engine</NavLink> → tab <b>LLM Model</b> →{" "}
+              <b>Thêm bộ API</b>.
               <div className="mt-2 space-y-2">
                 <p>
-                  <b>Từ URL:</b> <NavLink href="/on-demand">Tạo voice</NavLink> → tab{" "}
-                  <b>Từ URL</b> → dán link (YouTube, Facebook, TikTok, Instagram, X) → chọn hình
-                  thức → <b>Tạo Bài Post</b>. Màn hình chuyển sang Voice, dòng mới ở trạng thái{" "}
+                  Một <b>bộ</b> là túi key của nhiều nhà (Gemini, OpenAI, Anthropic) chứ không phải
+                  một key lẻ. Lý do: hệ thống thử lần lượt từ model rẻ nhất, hết hạn mức thì tự
+                  chuyển sang nhà kế tiếp — có key của một nhà thôi thì không dự phòng được cho ai.
+                </p>
+                <p>
+                  Cột <b>Sức khoẻ</b> của từng key nói luôn phải làm gì: <i>Đang nghỉ</i> = hết hạn
+                  mức, cứ chờ tới giờ ghi trong đó; <i>Đã tắt</i> = key sai hoặc bị thu hồi, phải
+                  dán key mới. Dán key mới là key tự bật lại.
+                </p>
+                <p>
+                  Bộ dùng chung được: chọn người ở ô <b>Dùng chung với</b>. Họ dùng được bộ khi tạo
+                  voice nhưng không sửa được key.
+                  {isAdmin ? (
+                    <>
+                      {" "}
+                      Là admin, bạn còn bật được <b>Hiện với mọi người</b> — nhưng nhớ rằng bật lên
+                      là mở hạn mức và chi phí của bộ đó cho cả hệ thống.
+                    </>
+                  ) : null}
+                </p>
+              </div>
+            </Step>
+
+            <Step n={3} title="Tạo voice — chọn 1 trong 3 đường">
+              <div className="mt-2 space-y-2">
+                <p>
+                  <b>Từ URL:</b> <NavLink href="/on-demand">Tạo voice</NavLink> → tab <b>Từ URL</b>{" "}
+                  → dán link (YouTube, Facebook, TikTok, Instagram, X) → chọn hình thức →{" "}
+                  <b>Tạo Bài Post</b>. Màn hình chuyển sang Voice, dòng mới ở trạng thái{" "}
                   <i>Đang xử lý</i> rồi thành <i>Nháp</i>.
                 </p>
                 <p>
@@ -171,22 +200,23 @@ export default function HuongDanPage() {
                 </p>
                 <p>
                   <b>Một bước từ URL:</b> ở màn <NavLink href="/voices">Voice</NavLink> bấm{" "}
-                  <b>+ Tạo Voice</b> → tab <b>Thông tin</b>: dán URL, điền sẵn tiêu đề/hashtag/
-                  ngôn ngữ/quốc gia/author/ảnh rồi bấm <b>Đăng</b>. Hộp thoại đóng ngay, hệ thống
-                  tạo audio rồi tự đăng lên multime khi xong. Ô nào để trống thì lấy từ bài gốc;
-                  hashtag thì gộp cả hai.
+                  <b>+ Tạo Voice</b> → tab <b>Thông tin</b>: dán URL, điền sẵn tiêu đề/hashtag/ ngôn
+                  ngữ/quốc gia/author/ảnh rồi bấm <b>Đăng</b>. Hộp thoại đóng ngay, hệ thống tạo
+                  audio rồi tự đăng lên multime khi xong. Ô nào để trống thì lấy từ bài gốc; hashtag
+                  thì gộp cả hai.
                 </p>
                 <p>
                   <b>Tự động theo kênh:</b>{" "}
                   <NavLink href="/lists/breaking">Danh sách Breaking</NavLink> (quét liên tục theo
                   regex) hoặc <NavLink href="/lists/scheduled">Định kỳ</NavLink> (theo tần suất
-                  riêng từng kênh). Bật <code className="rounded bg-slate-100 px-1">auto_process</code>{" "}
-                  thì quét xong tạo voice luôn.
+                  riêng từng kênh). Bật{" "}
+                  <code className="rounded bg-slate-100 px-1">auto_process</code> thì quét xong tạo
+                  voice luôn.
                 </p>
               </div>
             </Step>
 
-            <Step n={3} title="Kiểm tra và sửa">
+            <Step n={4} title="Kiểm tra và sửa">
               Ở màn <NavLink href="/voices">Voice</NavLink>: <b>▶ Nghe thử</b> / <b>⤓ Tải về</b> để
               kiểm tra audio. Nút <b>Sửa</b> có 2 tab:
               <ul className="mt-2 list-disc space-y-1 pl-5">
@@ -197,20 +227,20 @@ export default function HuongDanPage() {
                   buộc), ngôn ngữ, ảnh bìa (dán URL hoặc tải ảnh từ máy). Không đụng tới file audio.
                 </li>
                 <li>
-                  <b>Nội dung</b> — sửa lời đọc rồi <b>Tạo lại voice</b>: đọc lại và ghi đè file
-                  cũ, giữ nguyên tiêu đề/hashtag/ảnh bìa đã điền.
+                  <b>Nội dung</b> — sửa lời đọc rồi <b>Tạo lại voice</b>: đọc lại và ghi đè file cũ,
+                  giữ nguyên tiêu đề/hashtag/ảnh bìa đã điền.
                 </li>
               </ul>
             </Step>
 
-            <Step n={4} title="Đăng lên multime.ai">
-              Voice thiếu bất kỳ điều kiện nào dưới đây mang trạng thái{" "}
-              <b>Chưa đủ điều kiện</b> (lọc được ở ô Trạng thái) và nút <b>Đăng</b> tự mờ kèm lý
-              do: phải <b>chọn author</b>, có <b>tiêu đề</b>, có <b>ít nhất 1 hashtag</b> (không
-              còn hashtag mặc định), và audio dài <b>tối thiểu 15 giây</b>.
+            <Step n={5} title="Đăng lên multime.ai">
+              Voice thiếu bất kỳ điều kiện nào dưới đây mang trạng thái <b>Chưa đủ điều kiện</b>{" "}
+              (lọc được ở ô Trạng thái) và nút <b>Đăng</b> tự mờ kèm lý do: phải <b>chọn author</b>,
+              có <b>tiêu đề</b>, có <b>ít nhất 1 hashtag</b> (không còn hashtag mặc định), và audio
+              dài <b>tối thiểu 15 giây</b>.
               <Note>
-                Đăng thành công thì file audio bị xoá khỏi hệ thống, chỉ giữ link bài trên multime
-                — multime mới là nơi lưu trữ chính thức. Ảnh bìa tải từ máy cũng bị xoá theo, vì
+                Đăng thành công thì file audio bị xoá khỏi hệ thống, chỉ giữ link bài trên multime —
+                multime mới là nơi lưu trữ chính thức. Ảnh bìa tải từ máy cũng bị xoá theo, vì
                 multime đã giữ một bản.
               </Note>
             </Step>
@@ -218,9 +248,9 @@ export default function HuongDanPage() {
 
           <Section title="Tips và lưu ý">
             <Tip title="Tiêu đề là toàn bộ phần chữ của bài đăng">
-              Hệ thống không có trường mô tả riêng vì multime cũng không hiển thị nó. Tiêu đề bị
-              cắt còn <b>200 ký tự</b> khi đăng — nội dung dài thì sửa cho gọn trước.
-              Hashtag được tách sẵn sang trường riêng, không cần xoá tay.
+              Hệ thống không có trường mô tả riêng vì multime cũng không hiển thị nó. Tiêu đề bị cắt
+              còn <b>200 ký tự</b> khi đăng — nội dung dài thì sửa cho gọn trước. Hashtag được tách
+              sẵn sang trường riêng, không cần xoá tay.
             </Tip>
             <Tip title="Những thứ máy tự thêm đã được bỏ">
               Số liệu tương tác của Facebook (&quot;42K views · 824 reactions&quot;), tên tài khoản
@@ -228,23 +258,30 @@ export default function HuongDanPage() {
               Instagram — tất cả đều bị loại, chỉ giữ chữ của người đăng.
             </Tip>
             <Tip title="Ngôn ngữ: cứ để Tự nhận diện">
-              3voices đọc được <code className="rounded bg-slate-100 px-1">vi, en, zh, ja, ko, fr, de, es, th</code>.
-              Chọn tay một tiếng ngoài danh sách thì bị từ chối kèm lý do; để{" "}
-              <i>Tự nhận diện</i> thì kể cả bài tiếng Nga vẫn đọc được (3voices tự xử theo nội
-              dung).
+              3voices đọc được{" "}
+              <code className="rounded bg-slate-100 px-1">vi, en, zh, ja, ko, fr, de, es, th</code>.
+              Chọn tay một tiếng ngoài danh sách thì bị từ chối kèm lý do; để <i>Tự nhận diện</i>{" "}
+              thì kể cả bài tiếng Nga vẫn đọc được (3voices tự xử theo nội dung).
             </Tip>
+            <Tip title="Kênh tự động: nhớ gán Bộ API và khung giờ">
+              Kênh chạy hình thức C phải chọn <b>Bộ API</b> ngay trên kênh — quét tự động không có
+              ai ngồi đó bấm nút để chọn, không gán thì kênh đó không tạo được voice. Phần{" "}
+              <b>Lịch quét</b> cho đặt khung giờ (vd 06:00–23:00), ngày trong tuần, hoặc giờ chạy cố
+              định; kênh tin tức không đăng lúc 3h sáng nên quét lúc đó chỉ tốn hạn mức.
+            </Tip>
+
             <Tip title="TTS có giới hạn tốc độ">
-              3voices cho <b>10 request/phút, 2 job đồng thời</b>. Tạo hàng loạt thì cứ để đó —
-              gặp giới hạn hệ thống tự thử lại, không mất bài.
+              3voices cho <b>10 request/phút, 2 job đồng thời</b>. Tạo hàng loạt thì cứ để đó — gặp
+              giới hạn hệ thống tự thử lại, không mất bài.
             </Tip>
             <Tip title="Voice ngắn hơn 15 giây không đăng được">
               Audio ra là WAV (~5,5MB mỗi phút). Text quá ngắn thì tạo được voice nhưng multime từ
               chối.
             </Tip>
             <Tip title="Hình thức A hay hỏng trên server hơn ở máy cá nhân">
-              YouTube chặn IP máy chủ mạnh hơn IP nhà. Lỗi kiểu <i>&quot;Sign in to confirm you&apos;re
-              not a bot&quot;</i> là do vậy, không phải hệ thống hỏng — cần cấu hình cookies cho
-              yt-dlp.
+              YouTube chặn IP máy chủ mạnh hơn IP nhà. Lỗi kiểu{" "}
+              <i>&quot;Sign in to confirm you&apos;re not a bot&quot;</i> là do vậy, không phải hệ
+              thống hỏng — cần cấu hình cookies cho yt-dlp.
             </Tip>
             <Tip title="Bài lỗi chạy lại được">
               Lỗi luôn hiện câu cụ thể ở cột <b>Lỗi gần nhất</b> (&quot;Tài khoản 3voices hết
@@ -253,8 +290,8 @@ export default function HuongDanPage() {
               tạm thời (mạng, quá tải) hệ thống tự thử lại 3 lần.
             </Tip>
             <Tip title="Chống trùng theo ID bài đăng, không theo URL">
-              Cùng một bài Facebook có nhiều dạng link vẫn chỉ tạo 1 Bài Post. Muốn tạo thêm bản
-              nữa thì hệ thống hỏi lại chứ không tự quyết.
+              Cùng một bài Facebook có nhiều dạng link vẫn chỉ tạo 1 Bài Post. Muốn tạo thêm bản nữa
+              thì hệ thống hỏi lại chứ không tự quyết.
             </Tip>
           </Section>
         </div>

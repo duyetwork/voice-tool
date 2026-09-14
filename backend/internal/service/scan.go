@@ -25,10 +25,47 @@ type Scan struct {
 	platforms domain.PlatformRegistry
 	enq       domain.Enqueuer
 	log       *slog.Logger
+	// gate giữ nhịp gọi yt-dlp theo từng nền tảng; stats đếm số lần bị chặn.
+	gate  *PlatformGate
+	stats *FetchStats
 }
 
-func NewScan(q *repository.Queries, platforms domain.PlatformRegistry, enq domain.Enqueuer, log *slog.Logger) *Scan {
-	return &Scan{q: q, platforms: platforms, enq: enq, log: log}
+type ScanDeps struct {
+	Queries    *repository.Queries
+	Platforms  domain.PlatformRegistry
+	Enqueuer   domain.Enqueuer
+	Logger     *slog.Logger
+	Gate       *PlatformGate
+	FetchStats *FetchStats
+}
+
+func NewScan(d ScanDeps) *Scan {
+	return &Scan{
+		q: d.Queries, platforms: d.Platforms, enq: d.Enqueuer, log: d.Logger,
+		gate: d.Gate, stats: d.FetchStats,
+	}
+}
+
+// latestPosts gọi adapter qua PlatformGate: mỗi nền tảng 1 yt-dlp tại một thời
+// điểm, có khoảng nghỉ giữa hai lần — và mọi lỗi bị chặn đều được đếm.
+func (s *Scan) latestPosts(
+	ctx context.Context,
+	adapter domain.PlatformAdapter,
+	platform, channelURL string,
+	limit int,
+) ([]domain.RemotePost, error) {
+	release, err := s.gate.Acquire(ctx, platform)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	posts, err := adapter.FetchLatestPosts(ctx, channelURL, limit)
+	if err != nil {
+		s.stats.Record(ctx, platform, err)
+		return nil, err
+	}
+	return posts, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +99,7 @@ func (s *Scan) ScanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 		return res, domain.Permanent(err)
 	}
 
-	posts, err := adapter.FetchLatestPosts(ctx, list.SourceUrl, int(list.ScanLimit))
+	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, int(list.ScanLimit))
 	if err != nil {
 		return res, fmt.Errorf("quét kênh %s: %w", list.SourceUrl, err)
 	}
@@ -101,6 +138,7 @@ func (s *Scan) ScanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 			Language:    list.LanguageDefault,
 			CreatedBy:   list.CreatedBy,
 			AutoProcess: list.AutoProcess,
+			LLMAPISetID: list.LlmApiSetID,
 		})
 		if err != nil {
 			s.log.ErrorContext(ctx, "breaking:scan tạo source_post thất bại",
@@ -134,7 +172,7 @@ func (s *Scan) ScanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 		return res, domain.Permanent(err)
 	}
 
-	posts, err := adapter.FetchLatestPosts(ctx, list.SourceUrl, int(list.ScanLimit))
+	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, int(list.ScanLimit))
 	if err != nil {
 		return res, fmt.Errorf("quét kênh %s: %w", list.SourceUrl, err)
 	}
@@ -168,6 +206,7 @@ func (s *Scan) ScanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 			Language:    list.LanguageDefault,
 			CreatedBy:   list.CreatedBy,
 			AutoProcess: list.AutoProcess,
+			LLMAPISetID: list.LlmApiSetID,
 		})
 
 		switch {
@@ -266,6 +305,11 @@ type remoteInput struct {
 	Language    string
 	CreatedBy   uuid.UUID
 	AutoProcess bool
+	// LLMAPISetID: bộ API gán cho chính kênh này.
+	//
+	// Mode C tự động không có ai bấm nút để chọn bộ, nên bộ phải nằm sẵn trên
+	// kênh — không gán thì luồng tự động không chạy được mode C.
+	LLMAPISetID *uuid.UUID
 }
 
 // createFromRemote tạo Bài Post từ 1 bài thô. created=false nghĩa là bài đã có
@@ -328,7 +372,8 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 	}
 
 	if in.AutoProcess {
-		if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, in.CreatedBy, VoiceSeed{}); err != nil {
+		seed := VoiceSeed{LLMAPISetID: in.LLMAPISetID}
+		if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, in.CreatedBy, seed); err != nil {
 			return true, fmt.Errorf("enqueue voice:process: %w", err)
 		}
 	}

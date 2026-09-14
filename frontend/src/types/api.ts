@@ -81,6 +81,41 @@ export interface Country {
 }
 
 /**
+ * 1 hashtag trong danh mục đồng bộ từ MultiMe.
+ *
+ * Bên MultiMe hashtag KHÔNG phải thực thể riêng: nó là `category` có
+ * `type = 'voice'`. Vì thế mới có `slug`, `is_featured` — và vì thế **không có
+ * ngôn ngữ**: entity Category không hề mang trường ngôn ngữ nào, nên không tồn
+ * tại quan hệ hashtag ↔ ngôn ngữ để lọc theo.
+ */
+export interface Hashtag {
+  /** id category bên MultiMe. */
+  id: number;
+  tag: string;
+  slug: string;
+  /** system | user | campaign — `system` là tag MultiMe tuyển chọn. */
+  kind: string;
+  is_featured: boolean;
+}
+
+/**
+ * Catalog — 3 danh mục modal Tạo Voice cần, lấy 1 lần rồi cache.
+ *
+ * Gộp làm một response vì modal cần cả ba cùng lúc; và vì đã cache nên mở modal
+ * lần sau không gọi API nữa, search chạy hoàn toàn trên dữ liệu này.
+ */
+export interface Catalog {
+  countries: Country[];
+  /**
+   * PHẦN ĐẦU danh mục hashtag (tag MultiMe tuyển chọn), không phải toàn bộ —
+   * danh mục bên đó có ~94.000 mục. Phần còn lại tìm qua `/meta/hashtags?q=`.
+   */
+  hashtags: Hashtag[];
+  /** Mã ngôn ngữ theo thứ tự ưu tiên (suy ra từ thứ tự quốc gia ở backend). */
+  language_order: string[];
+}
+
+/**
  * Author là tài khoản Strongbody đứng tên bài đăng trên multime.
  *
  * Không chọn đích danh: người dùng chỉ chọn giới tính, hệ thống bốc ngẫu nhiên
@@ -152,6 +187,15 @@ export interface Voice {
   collect_mode: CollectMode | null;
   prompt_id: string | null;
   ai_engine_id: string | null;
+  /** Bộ API key đã dùng để viết lại nội dung (hình thức C). */
+  llm_api_set_id: string | null;
+  /**
+   * Model THẬT đã viết lại nội dung, vd "gemini:gemini-2.5-flash-lite".
+   *
+   * Không suy lại được từ `llm_api_set_id`: cùng một bộ, hôm nay chạy model rẻ
+   * nhất, mai hết hạn mức thì chạy mắt xích sau.
+   */
+  llm_model_used: string | null;
   voice_file_url: string | null;
   duration_seconds: number | null;
   /** Nội dung Bài Post gộp về 1 dòng, cắt 200 ký tự — giới hạn của multime. */
@@ -199,6 +243,28 @@ export interface Voice {
   created_by_email?: string;
 }
 
+/**
+ * Khung giờ quét của 1 kênh.
+ *
+ * Giờ đi qua API dưới dạng SỐ PHÚT TÍNH TỪ NỬA ĐÊM (0–1439) — khớp thẳng với
+ * <input type="time"> sau khi tách, và khớp thẳng với cột trong DB, nên không
+ * có chỗ nào phải parse chuỗi giờ.
+ *
+ * Bỏ trống cả `active_from_min` lẫn `active_to_min` = quét 24/7.
+ */
+export interface ChannelSchedule {
+  /** Tên IANA, vd "Asia/Ho_Chi_Minh". */
+  timezone: string;
+  active_from_min: number | null;
+  active_to_min: number | null;
+  /** 0 = Chủ nhật … 6 = Thứ bảy. Rỗng = mọi ngày. */
+  active_weekdays: number[] | null;
+  /** Giờ chạy cố định — THAY THẾ "mỗi N phút". Chỉ Danh sách Định kỳ có. */
+  fixed_times_min?: number[] | null;
+  /** Xoá khung giờ đang đặt (chỉ gửi lên khi sửa). */
+  clear_window?: boolean;
+}
+
 export interface ListBreaking {
   id: string;
   source_url: string;
@@ -217,6 +283,12 @@ export interface ListBreaking {
   created_by: string;
   created_at: string;
   created_by_email?: string;
+  /** Bộ API key dùng cho hình thức C của kênh này. */
+  llm_api_set_id: string | null;
+  timezone: string;
+  active_from_min: number | null;
+  active_to_min: number | null;
+  active_weekdays: number[] | null;
 }
 
 /** Postgres INTERVAL do pgx trả về. */
@@ -246,6 +318,12 @@ export interface ListScheduled {
   created_by: string;
   created_at: string;
   created_by_email?: string;
+  llm_api_set_id: string | null;
+  timezone: string;
+  active_from_min: number | null;
+  active_to_min: number | null;
+  active_weekdays: number[] | null;
+  fixed_times_min: number[] | null;
 }
 
 export interface Prompt {
@@ -273,6 +351,124 @@ export interface AIEngine {
   created_at: string;
   /** Lần gần nhất key thật sự đọc ra audio; null = khai xong chưa dùng. */
   last_used_at: string | null;
+}
+
+/** Nhà cung cấp LLM — đúng 3 giá trị backend chấp nhận. */
+export type LLMProvider = "gemini" | "openai" | "anthropic";
+
+/**
+ * Sức khoẻ 1 API key LLM, do router ghi:
+ *
+ *   ok       — dùng được.
+ *   cooldown — hết hạn mức, ĐANG NGHỈ và tự khỏi khi tới giờ.
+ *   disabled — key sai hoặc bị thu hồi; chờ bao lâu cũng không tự khỏi, phải
+ *              dán key mới.
+ */
+export type LLMKeyHealth = "ok" | "cooldown" | "disabled";
+
+/** 1 API key trong bộ. API không bao giờ trả key thật — chỉ 4 ký tự cuối. */
+export interface LLMAPIKey {
+  id: string;
+  set_id: string;
+  provider: LLMProvider;
+  label: string | null;
+  /** Nhỏ hơn = router thử trước, trong cùng 1 nhà. */
+  priority: number;
+  api_key_masked: string;
+
+  health: LLMKeyHealth;
+  disabled_at: string | null;
+  cooldown_until: string | null;
+  consecutive_failures: number;
+  last_used_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+/** 1 người được dùng chung bộ API. */
+export interface LLMAPISetUser {
+  user_id: string;
+  email: string;
+}
+
+/**
+ * Bộ API key LLM: 1 túi key của NHIỀU nhà, dùng chung cho NHIỀU người.
+ *
+ * Khác hẳn AIEngine (1 key TTS của 1 người): chuỗi dự phòng chỉ có ý nghĩa khi
+ * trong tay có key của nhiều nhà cùng lúc.
+ */
+export interface LLMAPISet {
+  id: string;
+  name: string;
+  note: string | null;
+  /** Toggle của admin: bộ này có hiện ra cho người khác chọn không. */
+  visible_to_users: boolean;
+
+  created_by: string;
+  created_by_email: string;
+  created_at: string;
+  last_used_at: string | null;
+
+  /** Số key theo từng nhà, vd { gemini: 2, openai: 1 }. */
+  key_counts: Record<string, number>;
+  users: LLMAPISetUser[];
+  /** Bộ `visible_to_users` thì ai cũng THẤY nhưng chỉ chủ/admin mới SỬA. */
+  can_manage: boolean;
+
+  /** Chỉ có khi mở 1 bộ ra (GET /llm-api-sets/:id). */
+  keys?: LLMAPIKey[];
+}
+
+/** 1 mắt xích của chuỗi dự phòng: gọi model này, của nhà này. */
+export interface LLMChainStep {
+  provider: LLMProvider;
+  model: string;
+}
+
+/** Gộp N mẩu text vào 1 request để giảm chi phí và số lần gọi. */
+export interface LLMBatchConfig {
+  enabled: boolean;
+  /** Số mẩu mỗi request. */
+  size: number;
+  /** Chặn trên theo ký tự — 5 bài dài vẫn có thể quá ngưỡng dù đúng `size`. */
+  max_chars: number;
+  /** Chờ bao lâu để gom đủ mẩu trước khi gửi đi. */
+  wait_ms: number;
+}
+
+/**
+ * Cấu hình chung (màn Cài đặt, chỉ admin).
+ *
+ * `allowed_models` do backend trả về chứ không phải hằng số trong code FE: giữ
+ * một bản sao ở đây thì nó lệch với backend ngay ở lần thêm model tiếp theo.
+ */
+export interface Settings {
+  llm_chain: LLMChainStep[];
+  llm_batch: LLMBatchConfig;
+  allowed_models: Record<LLMProvider, string[]>;
+  providers: LLMProvider[];
+}
+
+/**
+ * Số lần 1 nền tảng chặn ta trong 1 ngày.
+ *
+ * Đây là dữ liệu để trả lời đúng một câu hỏi: có đáng mua proxy không. Chỉ
+ * `bot_block` và `rate_limit` là hai loại proxy giải quyết được; `login_required`
+ * thì phải có cookies chứ proxy không giúp gì.
+ */
+export interface FetchErrorStat {
+  day: string;
+  platform: string;
+  kind:
+    | "bot_block"
+    | "login_required"
+    | "rate_limit"
+    | "geo_blocked"
+    | "unavailable"
+    | "timeout"
+    | "other";
+  count: number;
+  last_at: string;
 }
 
 export interface AuditLog {

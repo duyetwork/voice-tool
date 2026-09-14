@@ -11,7 +11,13 @@ import (
 	"log"
 	"os/signal"
 	"syscall"
+
 	"time"
+	// Nhúng sẵn cơ sở dữ liệu múi giờ: lịch quét của từng kênh diễn giải theo
+	// múi giờ IANA (xem domain.ChannelSchedule), và image thiếu tzdata thì
+	// time.LoadLocation im lặng rơi về UTC — đúng cái sai mà tính năng đó sinh
+	// ra để sửa, và không có lỗi nào hiện ra để ai kịp nhận thấy.
+	_ "time/tzdata"
 
 	"github.com/hibiken/asynq"
 

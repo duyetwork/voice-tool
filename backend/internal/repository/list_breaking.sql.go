@@ -46,11 +46,14 @@ const createListBreaking = `-- name: CreateListBreaking :one
 INSERT INTO list_breaking (
   source_url, platform, content_type, collect_mode, prompt_id, regex_patterns,
   language_default, auto_process, auto_publish, status, scan_limit, scan_interval,
-  created_by
+  created_by, llm_api_set_id,
+  timezone, active_from_min, active_to_min, active_weekdays
 ) VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+  $14, $15,
+  $16, $17, $18
 )
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays
 `
 
 type CreateListBreakingParams struct {
@@ -67,6 +70,11 @@ type CreateListBreakingParams struct {
 	ScanLimit       int32           `json:"scan_limit"`
 	ScanInterval    pgtype.Interval `json:"scan_interval"`
 	CreatedBy       uuid.UUID       `json:"created_by"`
+	LlmApiSetID     *uuid.UUID      `json:"llm_api_set_id"`
+	Timezone        string          `json:"timezone"`
+	ActiveFromMin   *int16          `json:"active_from_min"`
+	ActiveToMin     *int16          `json:"active_to_min"`
+	ActiveWeekdays  []int16         `json:"active_weekdays"`
 }
 
 func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreakingParams) (ListBreaking, error) {
@@ -84,6 +92,11 @@ func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreaking
 		arg.ScanLimit,
 		arg.ScanInterval,
 		arg.CreatedBy,
+		arg.LlmApiSetID,
+		arg.Timezone,
+		arg.ActiveFromMin,
+		arg.ActiveToMin,
+		arg.ActiveWeekdays,
 	)
 	var i ListBreaking
 	err := row.Scan(
@@ -103,6 +116,11 @@ func (q *Queries) CreateListBreaking(ctx context.Context, arg CreateListBreaking
 		&i.ScanLimit,
 		&i.ScanInterval,
 		&i.LastScannedAt,
+		&i.LlmApiSetID,
+		&i.Timezone,
+		&i.ActiveFromMin,
+		&i.ActiveToMin,
+		&i.ActiveWeekdays,
 	)
 	return i, err
 }
@@ -120,7 +138,7 @@ func (q *Queries) DeleteListBreaking(ctx context.Context, id uuid.UUID) (int64, 
 }
 
 const getListBreaking = `-- name: GetListBreaking :one
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at FROM list_breaking WHERE id = $1
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays FROM list_breaking WHERE id = $1
 `
 
 func (q *Queries) GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaking, error) {
@@ -143,12 +161,17 @@ func (q *Queries) GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaki
 		&i.ScanLimit,
 		&i.ScanInterval,
 		&i.LastScannedAt,
+		&i.LlmApiSetID,
+		&i.Timezone,
+		&i.ActiveFromMin,
+		&i.ActiveToMin,
+		&i.ActiveWeekdays,
 	)
 	return i, err
 }
 
 const listActiveListBreakings = `-- name: ListActiveListBreakings :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at FROM list_breaking WHERE status = 'active' ORDER BY created_at
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays FROM list_breaking WHERE status = 'active' ORDER BY created_at
 `
 
 func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, error) {
@@ -177,6 +200,11 @@ func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, 
 			&i.ScanLimit,
 			&i.ScanInterval,
 			&i.LastScannedAt,
+			&i.LlmApiSetID,
+			&i.Timezone,
+			&i.ActiveFromMin,
+			&i.ActiveToMin,
+			&i.ActiveWeekdays,
 		); err != nil {
 			return nil, err
 		}
@@ -189,7 +217,7 @@ func (q *Queries) ListActiveListBreakings(ctx context.Context) ([]ListBreaking, 
 }
 
 const listDueListBreakings = `-- name: ListDueListBreakings :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at FROM list_breaking
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays FROM list_breaking
 WHERE status = 'active'
   AND (
     last_scanned_at IS NULL
@@ -226,6 +254,11 @@ func (q *Queries) ListDueListBreakings(ctx context.Context, defaultInterval pgty
 			&i.ScanLimit,
 			&i.ScanInterval,
 			&i.LastScannedAt,
+			&i.LlmApiSetID,
+			&i.Timezone,
+			&i.ActiveFromMin,
+			&i.ActiveToMin,
+			&i.ActiveWeekdays,
 		); err != nil {
 			return nil, err
 		}
@@ -238,7 +271,7 @@ func (q *Queries) ListDueListBreakings(ctx context.Context, defaultInterval pgty
 }
 
 const listListBreakings = `-- name: ListListBreakings :many
-SELECT lb.id, lb.source_url, lb.platform, lb.content_type, lb.collect_mode, lb.prompt_id, lb.language_default, lb.auto_process, lb.auto_publish, lb.status, lb.created_by, lb.created_at, lb.regex_patterns, lb.scan_limit, lb.scan_interval, lb.last_scanned_at, u.email AS created_by_email
+SELECT lb.id, lb.source_url, lb.platform, lb.content_type, lb.collect_mode, lb.prompt_id, lb.language_default, lb.auto_process, lb.auto_publish, lb.status, lb.created_by, lb.created_at, lb.regex_patterns, lb.scan_limit, lb.scan_interval, lb.last_scanned_at, lb.llm_api_set_id, lb.timezone, lb.active_from_min, lb.active_to_min, lb.active_weekdays, u.email AS created_by_email
 FROM list_breaking lb
 JOIN app_user u ON u.id = lb.created_by
 WHERE ($1::varchar   IS NULL OR lb.status     = $1)
@@ -284,6 +317,11 @@ type ListListBreakingsRow struct {
 	ScanLimit       int32           `json:"scan_limit"`
 	ScanInterval    pgtype.Interval `json:"scan_interval"`
 	LastScannedAt   *time.Time      `json:"last_scanned_at"`
+	LlmApiSetID     *uuid.UUID      `json:"llm_api_set_id"`
+	Timezone        string          `json:"timezone"`
+	ActiveFromMin   *int16          `json:"active_from_min"`
+	ActiveToMin     *int16          `json:"active_to_min"`
+	ActiveWeekdays  []int16         `json:"active_weekdays"`
 	CreatedByEmail  string          `json:"created_by_email"`
 }
 
@@ -323,6 +361,11 @@ func (q *Queries) ListListBreakings(ctx context.Context, arg ListListBreakingsPa
 			&i.ScanLimit,
 			&i.ScanInterval,
 			&i.LastScannedAt,
+			&i.LlmApiSetID,
+			&i.Timezone,
+			&i.ActiveFromMin,
+			&i.ActiveToMin,
+			&i.ActiveWeekdays,
 			&i.CreatedByEmail,
 		); err != nil {
 			return nil, err
@@ -357,9 +400,16 @@ SET source_url       = COALESCE($1, source_url),
     auto_publish     = COALESCE($9, auto_publish),
     status           = COALESCE($10, status),
     scan_limit       = COALESCE($11, scan_limit),
-    scan_interval    = COALESCE($12, scan_interval)
-WHERE id = $13
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at
+    scan_interval    = COALESCE($12, scan_interval),
+    llm_api_set_id   = COALESCE($13, llm_api_set_id),
+    timezone         = COALESCE($14, timezone),
+    active_from_min  = CASE WHEN $15::bool THEN NULL
+                            ELSE COALESCE($16, active_from_min) END,
+    active_to_min    = CASE WHEN $15::bool THEN NULL
+                            ELSE COALESCE($17, active_to_min) END,
+    active_weekdays  = COALESCE($18, active_weekdays)
+WHERE id = $19
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, language_default, auto_process, auto_publish, status, created_by, created_at, regex_patterns, scan_limit, scan_interval, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays
 `
 
 type UpdateListBreakingParams struct {
@@ -375,6 +425,12 @@ type UpdateListBreakingParams struct {
 	Status          *string         `json:"status"`
 	ScanLimit       *int32          `json:"scan_limit"`
 	ScanInterval    pgtype.Interval `json:"scan_interval"`
+	LlmApiSetID     *uuid.UUID      `json:"llm_api_set_id"`
+	Timezone        *string         `json:"timezone"`
+	ClearWindow     bool            `json:"clear_window"`
+	ActiveFromMin   *int16          `json:"active_from_min"`
+	ActiveToMin     *int16          `json:"active_to_min"`
+	ActiveWeekdays  []int16         `json:"active_weekdays"`
 	ID              uuid.UUID       `json:"id"`
 }
 
@@ -392,6 +448,12 @@ func (q *Queries) UpdateListBreaking(ctx context.Context, arg UpdateListBreaking
 		arg.Status,
 		arg.ScanLimit,
 		arg.ScanInterval,
+		arg.LlmApiSetID,
+		arg.Timezone,
+		arg.ClearWindow,
+		arg.ActiveFromMin,
+		arg.ActiveToMin,
+		arg.ActiveWeekdays,
 		arg.ID,
 	)
 	var i ListBreaking
@@ -412,6 +474,11 @@ func (q *Queries) UpdateListBreaking(ctx context.Context, arg UpdateListBreaking
 		&i.ScanLimit,
 		&i.ScanInterval,
 		&i.LastScannedAt,
+		&i.LlmApiSetID,
+		&i.Timezone,
+		&i.ActiveFromMin,
+		&i.ActiveToMin,
+		&i.ActiveWeekdays,
 	)
 	return i, err
 }

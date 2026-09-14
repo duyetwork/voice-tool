@@ -13,6 +13,14 @@ import (
 )
 
 type Querier interface {
+	AddLLMAPISetUser(ctx context.Context, arg AddLLMAPISetUserParams) error
+	// Đếm 1 lần bị nền tảng chặn. Gộp theo ngày nên bảng không phình theo từng lỗi,
+	// và vẫn đủ để trả lời câu hỏi duy nhất nó sinh ra để trả lời: nền tảng nào
+	// đang bị chặn nhiều tới mức đáng mua proxy.
+	BumpFetchErrorStat(ctx context.Context, arg BumpFetchErrorStatParams) error
+	// Câu hỏi của WORKER, không phải của UI: bộ này có thật sự dùng được cho người
+	// tạo voice không. Trả về bộ nếu được, không có dòng nào nếu không.
+	CanUseLLMAPISet(ctx context.Context, arg CanUseLLMAPISetParams) (LlmApiSet, error)
 	// Chỉ 1 worker được xử lý 1 bài tại 1 thời điểm (idempotent khi Asynq retry).
 	ClaimSourcePostForProcessing(ctx context.Context, id uuid.UUID) (SourcePost, error)
 	// Nhận Voice về để đọc. Chỉ nhận khi voice đang `processing` hoặc đã `failed`:
@@ -20,11 +28,18 @@ type Querier interface {
 	// không đọc đè lên — muốn đọc lại phải đi qua SetVoiceContent, nơi người dùng
 	// chốt lại lời đọc. Voice đã publish thì không bao giờ đụng vào.
 	ClaimVoiceForProcessing(ctx context.Context, id uuid.UUID) (Voice, error)
+	ClearLLMAPISetUsers(ctx context.Context, setID uuid.UUID) error
 	// Token hết hiệu lực và refresh cũng thất bại -> buộc user đăng nhập lại.
 	ClearUserMultimeToken(ctx context.Context, id uuid.UUID) error
 	CountAdmins(ctx context.Context) (int64, error)
 	// Tổng số bản ghi khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
 	CountAuditLogs(ctx context.Context, arg CountAuditLogsParams) (int64, error)
+	// Câu hỏi lúc KHỞI ĐỘNG: hệ thống có đường nào chạy được mode C không.
+	// Mode C cần LLM thật; trước đây điều đó chỉ đọc từ .env, nhưng giờ đường chính
+	// là Bộ API key trong DB — chỉ nhìn .env thì tắt nhầm mode C của cả hệ thống.
+	CountLLMAPIKeys(ctx context.Context) (int64, error)
+	// Bảng danh sách bộ hiện "số key theo từng nhà" mà không phải tải hết key về.
+	CountLLMAPIKeysBySet(ctx context.Context, setIds []uuid.UUID) ([]CountLLMAPIKeysBySetRow, error)
 	// Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
 	CountListBreakings(ctx context.Context, arg CountListBreakingsParams) (int64, error)
 	// Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
@@ -43,10 +58,18 @@ type Querier interface {
 	// suy ra lúc đọc. Thiếu hashtag là việc người dùng chưa điền xong, khác hẳn
 	// 'failed' (đã gửi lên multime và bị từ chối), nên không gộp chung.
 	CountVoices(ctx context.Context, arg CountVoicesParams) (int64, error)
+	// Mốc đồng bộ cũ nhất trong bảng: chỉ cần 1 bản ghi quá hạn là đồng bộ lại cả
+	// danh mục, vì chúng luôn được ghi cùng một lượt.
+	CountriesSyncedAt(ctx context.Context) (CountriesSyncedAtRow, error)
 	// user_id là CHỦ SỞ HỮU key (worker chạy TTS của người đó bằng key này),
 	// created_by là người bấm nút — khác nhau khi admin khai hộ.
 	CreateAIEngine(ctx context.Context, arg CreateAIEngineParams) (AiEngine, error)
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) (AuditLog, error)
+	// ---------------------------------------------------------------------------
+	// Key trong bộ
+	// ---------------------------------------------------------------------------
+	CreateLLMAPIKey(ctx context.Context, arg CreateLLMAPIKeyParams) (LlmApiKey, error)
+	CreateLLMAPISet(ctx context.Context, arg CreateLLMAPISetParams) (LlmApiSet, error)
 	CreateListBreaking(ctx context.Context, arg CreateListBreakingParams) (ListBreaking, error)
 	CreateListScheduled(ctx context.Context, arg CreateListScheduledParams) (ListScheduled, error)
 	CreatePrompt(ctx context.Context, arg CreatePromptParams) (Prompt, error)
@@ -61,6 +84,8 @@ type Querier interface {
 	// nên giá trị người dùng gõ luôn thắng giá trị lấy từ bài gốc.
 	CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice, error)
 	DeleteAIEngine(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteLLMAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteLLMAPISet(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteListBreaking(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteListScheduled(ctx context.Context, id uuid.UUID) (int64, error)
 	DeletePrompt(ctx context.Context, id uuid.UUID) (int64, error)
@@ -79,6 +104,9 @@ type Querier interface {
 	// Key mà worker dùng khi chạy TTS cho voice của user này: key mới khai nhất
 	// (thay key thì key mới thắng ngay, không phải xoá key cũ trước).
 	GetAIEngineForUser(ctx context.Context, userID uuid.UUID) (AiEngine, error)
+	GetAppSetting(ctx context.Context, key string) (AppSetting, error)
+	GetLLMAPIKey(ctx context.Context, id uuid.UUID) (LlmApiKey, error)
+	GetLLMAPISet(ctx context.Context, id uuid.UUID) (GetLLMAPISetRow, error)
 	GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaking, error)
 	GetListScheduled(ctx context.Context, id uuid.UUID) (ListScheduled, error)
 	GetPrompt(ctx context.Context, id uuid.UUID) (Prompt, error)
@@ -86,18 +114,40 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (AppUser, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (AppUser, error)
 	GetVoice(ctx context.Context, id uuid.UUID) (Voice, error)
+	HashtagsSyncedAt(ctx context.Context) (HashtagsSyncedAtRow, error)
 	// `owner` NULL = xem tất cả (admin). User thường luôn được service ép owner =
 	// chính mình, nên không đọc được key của người khác dù gọi thẳng API.
 	ListAIEngines(ctx context.Context, owner *uuid.UUID) ([]ListAIEnginesRow, error)
 	ListActiveListBreakings(ctx context.Context) ([]ListBreaking, error)
 	ListActiveListScheduleds(ctx context.Context) ([]ListScheduled, error)
+	ListAppSettings(ctx context.Context) ([]AppSetting, error)
 	// Kèm email người thao tác để bảng nhật ký hiện được "ai làm" mà không phải
 	// gọi thêm API. LEFT JOIN cho chắc: bản ghi audit không được mất chỉ vì user
 	// tham chiếu không đọc được.
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]ListAuditLogsRow, error)
+	// Thứ tự nghiệp vụ trước, rồi alphabet cho phần còn lại — xem cột sort_order.
+	ListCountries(ctx context.Context) ([]Country, error)
 	// Chỉ lấy kênh đã quá khoảng nghỉ của chính nó (scan_interval), fallback về
 	// khoảng nghỉ mặc định của hệ thống khi kênh không cấu hình riêng.
 	ListDueListBreakings(ctx context.Context, defaultInterval pgtype.Interval) ([]ListBreaking, error)
+	ListFetchErrorStats(ctx context.Context, days int32) ([]FetchErrorStat, error)
+	// Danh sách cho ô chọn: tag MultiMe tuyển chọn (is_featured, rồi `system`) lên
+	// trước, phần còn lại theo ordering/tên.
+	//
+	// `q` rỗng = lấy phần đầu danh mục. Có `q` thì lọc ngay trong DB: danh mục có
+	// ~94.000 tag nên không thể đẩy hết về trình duyệt để lọc tại chỗ.
+	ListHashtags(ctx context.Context, arg ListHashtagsParams) ([]ListHashtagsRow, error)
+	// Thứ tự ở đây chính là thứ tự router thử key trong cùng 1 nhà: priority nhỏ
+	// trước, hoà thì theo id cho TẤT ĐỊNH — router không được xoay ngẫu nhiên.
+	ListLLMAPIKeys(ctx context.Context, setID uuid.UUID) ([]LlmApiKey, error)
+	// ---------------------------------------------------------------------------
+	// Chia sẻ bộ cho người dùng
+	// ---------------------------------------------------------------------------
+	ListLLMAPISetUsers(ctx context.Context, setIds []uuid.UUID) ([]ListLLMAPISetUsersRow, error)
+	// `viewer` NULL = xem tất cả (admin). Người dùng thường được service truyền
+	// chính id của họ vào, và chỉ thấy bộ mình tạo / được chia sẻ / admin đã bật
+	// hiển thị — chặn ở SQL chứ không chỉ ẩn trên UI.
+	ListLLMAPISets(ctx context.Context, viewer *uuid.UUID) ([]ListLLMAPISetsRow, error)
 	// Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 	ListListBreakings(ctx context.Context, arg ListListBreakingsParams) ([]ListListBreakingsRow, error)
 	// Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
@@ -123,6 +173,17 @@ type Querier interface {
 	// mặc định (mới nhất trước) và cũng là nhánh sort=created_at + dir=desc.
 	ListVoices(ctx context.Context, arg ListVoicesParams) ([]ListVoicesRow, error)
 	ListVoicesBySourcePost(ctx context.Context, sourcePostID *uuid.UUID) ([]Voice, error)
+	// Hết quota / bị rate-limit: key vẫn đúng, chỉ cần CHỜ. Không đụng disabled_at.
+	MarkLLMAPIKeyCooldown(ctx context.Context, arg MarkLLMAPIKeyCooldownParams) error
+	// Key sai / bị thu hồi: chờ bao lâu cũng không tự khỏi, phải có người dán key
+	// mới. Tách khỏi cooldown vì hai tình huống này xử lý khác hẳn nhau.
+	MarkLLMAPIKeyDisabled(ctx context.Context, arg MarkLLMAPIKeyDisabledParams) error
+	// Lỗi tạm thời (5xx, mạng): chỉ đếm và ghi lý do, không tắt cũng không bắt nghỉ.
+	MarkLLMAPIKeyFailure(ctx context.Context, arg MarkLLMAPIKeyFailureParams) error
+	// Gọi sau mỗi lần gọi LLM THÀNH CÔNG: xoá sạch dấu vết hỏng hóc cũ. Không reset
+	// consecutive_failures ở đây thì một key thỉnh thoảng lỗi sẽ tích dần số đếm
+	// qua nhiều ngày rồi bị tắt oan.
+	MarkLLMAPIKeyOK(ctx context.Context, id uuid.UUID) error
 	// Business rule #2: publish thành công -> xoá file S3 và set voice_file_url = NULL,
 	// chỉ giữ multime_post_url làm nguồn tham chiếu duy nhất.
 	// Ảnh bìa tải từ máy cũng bị xoá theo cùng lý do: multime đã giữ bản của nó,
@@ -135,6 +196,9 @@ type Querier interface {
 	// Cập nhật access token sau khi refresh với strongbody.
 	SetUserMultimeToken(ctx context.Context, arg SetUserMultimeTokenParams) error
 	SetUserRole(ctx context.Context, arg SetUserRoleParams) (AppUser, error)
+	// Ghi lại tài khoản đã BỐC lúc đăng. Không dùng UpdateVoice vì đây là worker
+	// chốt kết quả của một lần bốc, không phải người dùng sửa metadata.
+	SetVoiceAuthor(ctx context.Context, arg SetVoiceAuthorParams) error
 	// Chốt lời đọc mới cho 1 Voice rồi đưa lại vào hàng đợi.
 	//
 	// Đặt luôn publish_status='processing' trong cùng câu lệnh: người dùng bấm
@@ -148,11 +212,19 @@ type Querier interface {
 	// Đóng dấu thời điểm key thật sự đọc ra audio. Chỉ gọi sau khi TTS thành công:
 	// cột này để người dùng biết key nào còn sống, key nào khai xong bỏ đó.
 	TouchAIEngineUsed(ctx context.Context, id uuid.UUID) error
+	TouchLLMAPISetUsed(ctx context.Context, id uuid.UUID) error
 	TouchListBreakingScanned(ctx context.Context, id uuid.UUID) error
 	TouchListScheduledScanned(ctx context.Context, id uuid.UUID) error
 	// api_key_encrypted dùng COALESCE: bỏ trống ô API key ở form nghĩa là "giữ key
 	// cũ" — key thật không bao giờ gửi về trình duyệt nên không có gì để gửi lại.
 	UpdateAIEngine(ctx context.Context, arg UpdateAIEngineParams) (AiEngine, error)
+	// api_key_encrypted dùng COALESCE: bỏ trống ô API key ở form nghĩa là "giữ key
+	// cũ" — key thật không bao giờ gửi về trình duyệt nên không có gì để gửi lại.
+	//
+	// Sửa key cũng là RESET SỨC KHOẺ: người dùng vào đây vì key hỏng, dán key mới
+	// mà vẫn còn disabled_at thì router tiếp tục bỏ qua nó và họ không hiểu vì sao.
+	UpdateLLMAPIKey(ctx context.Context, arg UpdateLLMAPIKeyParams) (LlmApiKey, error)
+	UpdateLLMAPISet(ctx context.Context, arg UpdateLLMAPISetParams) (LlmApiSet, error)
 	UpdateListBreaking(ctx context.Context, arg UpdateListBreakingParams) (ListBreaking, error)
 	UpdateListScheduled(ctx context.Context, arg UpdateListScheduledParams) (ListScheduled, error)
 	UpdatePrompt(ctx context.Context, arg UpdatePromptParams) (Prompt, error)
@@ -163,10 +235,16 @@ type Querier interface {
 	// `title` là TOÀN BỘ nội dung bài (trừ hashtag) — hệ thống không còn trường mô
 	// tả riêng. COALESCE để lần fetch không ra thì giữ nguyên phần đã có.
 	UpdateSourcePostMetadata(ctx context.Context, arg UpdateSourcePostMetadataParams) (SourcePost, error)
-	// author_id/author_email/author_gender đi thành một bộ: bốc tác giả là nhận cả
-	// ba, nên không COALESCE riêng lẻ để tránh trạng thái id của người này còn
-	// email/giới tính của người kia.
+	// Chọn giới tính KHÔNG còn kéo theo việc bốc tài khoản — việc đó lùi xuống bước
+	// đăng. Vì thế author_gender giờ sửa được độc lập với author_id.
+	//
+	// `reset_author` là hệ quả bắt buộc của điều đó: đổi giới tính hoặc quốc gia mà
+	// vẫn giữ tài khoản đã bốc trước đó nghĩa là bài lên multime dưới tên một người
+	// không khớp thứ người dùng vừa chọn.
 	UpdateVoiceMetadata(ctx context.Context, arg UpdateVoiceMetadataParams) (Voice, error)
+	UpsertAppSetting(ctx context.Context, arg UpsertAppSettingParams) (AppSetting, error)
+	UpsertCountry(ctx context.Context, arg UpsertCountryParams) error
+	UpsertHashtag(ctx context.Context, arg UpsertHashtagParams) error
 	// Đăng nhập bằng strongbody: tạo user nếu chưa có, cập nhật thông tin + token
 	// nếu đã có. Role của lần tạo đầu do $5 quyết định, các lần sau KHÔNG ghi đè
 	// (admin đã cấp quyền thì giữ nguyên).

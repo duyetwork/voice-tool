@@ -12,6 +12,7 @@ import (
 
 	"github.com/strongbody/voice-tool/backend/internal/config"
 	"github.com/strongbody/voice-tool/backend/internal/domain"
+	"github.com/strongbody/voice-tool/backend/internal/pkg/secret"
 	"github.com/strongbody/voice-tool/backend/internal/repository"
 )
 
@@ -158,8 +159,17 @@ type VoiceSeed struct {
 	AuthorID     *int64
 	AuthorEmail  *string
 	AuthorGender *string
+	// AuthorCountryID: quốc gia đã lọc lúc chọn author. Đi theo voice vì việc
+	// BỐC tài khoản diễn ra ở bước đăng, lúc đó không còn form nào để hỏi lại.
+	AuthorCountryID *int64
 	// PublishWhenReady: tạo xong audio thì đăng luôn, không cần bấm nút nữa.
 	PublishWhenReady bool
+	// LLMAPISetID: Bộ API key dùng để viết lại nội dung (chỉ mode C).
+	//
+	// Đi theo VOICE chứ không đọc lại từ kênh lúc worker chạy: kênh có thể bị
+	// sửa hoặc đổi bộ giữa lúc bài nằm trong hàng đợi, và lúc đó voice phải chạy
+	// bằng đúng bộ đã chọn khi tạo — không thì hoá đơn rơi vào nhầm nhóm.
+	LLMAPISetID *uuid.UUID
 }
 
 func enqueueVoiceProcess(
@@ -192,9 +202,11 @@ func enqueueVoiceProcess(
 		AuthorID:         seed.AuthorID,
 		AuthorEmail:      seed.AuthorEmail,
 		AuthorGender:     seed.AuthorGender,
+		AuthorCountryID:  seed.AuthorCountryID,
 		ImageUploaded:    seed.ImageURL != "" && seed.ImageUploaded,
 		NoImage:          seed.NoImage,
 		PublishWhenReady: seed.PublishWhenReady,
+		LlmApiSetID:      seed.LLMAPISetID,
 	})
 	if err != nil {
 		return repository.Voice{}, fmt.Errorf("tạo voice processing: %w", err)
@@ -208,4 +220,21 @@ func enqueueVoiceProcess(
 		return repository.Voice{}, err
 	}
 	return voice, nil
+}
+
+// maskSecret hiện 4 ký tự cuối của 1 API key đã mã hoá, phần còn lại là dấu
+// chấm — đủ để người dùng đối chiếu xem đã dán đúng key nào.
+//
+// Giải mã hỏng thì coi như CHƯA CÓ key (chuỗi rỗng), không bao giờ để lộ
+// ciphertext: ciphertext ra ngoài thì việc mã hoá chỉ còn là hình thức.
+func maskSecret(box *secret.Box, encrypted string) string {
+	raw, err := box.Decrypt(encrypted)
+	if err != nil || raw == "" {
+		return ""
+	}
+	runes := []rune(raw)
+	if len(runes) <= 4 {
+		return strings.Repeat("•", len(runes))
+	}
+	return "••••" + string(runes[len(runes)-4:])
 }

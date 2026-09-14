@@ -17,6 +17,7 @@ import {
   useCollectModes,
   useCreateSourcePost,
   useCreateTextVoice,
+  useLLMAPISets,
   usePlatforms,
   usePrompts,
   useSourcePosts,
@@ -56,6 +57,8 @@ export default function OnDemandPage() {
   const [text, setText] = React.useState("");
   const [collectMode, setCollectMode] = React.useState<CollectMode>("A");
   const [promptId, setPromptId] = React.useState("");
+  // Bộ API key dùng để viết lại nội dung — chỉ hình thức C mới cần.
+  const [llmSetId, setLlmSetId] = React.useState("");
   // Mặc định để hệ thống tự nhận diện ngôn ngữ.
   const [language, setLanguage] = React.useState("auto");
   const [platform, setPlatform] = React.useState("");
@@ -65,6 +68,7 @@ export default function OnDemandPage() {
 
   const router = useRouter();
   const prompts = usePrompts();
+  const llmSets = useLLMAPISets();
   const platforms = usePlatforms();
   const modes = useCollectModes();
   const create = useCreateSourcePost();
@@ -107,6 +111,7 @@ export default function OnDemandPage() {
         text: text.trim(),
         collect_mode: collectMode === "C" ? "C" : "B",
         prompt_id: needsPrompt && promptId ? promptId : null,
+        llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
         language,
       });
       setText("");
@@ -121,6 +126,9 @@ export default function OnDemandPage() {
         prompt_id: needsPrompt && promptId ? promptId : null,
         language,
         auto_process: autoProcess,
+        // Bộ API đi theo VOICE chứ không đọc lại lúc worker chạy: bộ có thể bị
+        // gỡ chia sẻ trong lúc bài còn nằm trong hàng đợi.
+        voice: needsPrompt && llmSetId ? { llm_api_set_id: llmSetId } : undefined,
         platform: platform || undefined,
         allow_duplicate: allowDuplicate || undefined,
       });
@@ -235,16 +243,38 @@ export default function OnDemandPage() {
                 </Field>
 
                 {needsPrompt ? (
-                  <Field label="Prompt mẫu" required>
-                    <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
-                      <option value="">— Chọn prompt —</option>
-                      {prompts.data?.items.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </Select>
-                  </Field>
+                  <>
+                    <Field label="Prompt mẫu" required>
+                      <Select
+                        value={promptId}
+                        onChange={(e) => setPromptId(e.target.value)}
+                        required
+                      >
+                        <option value="">— Chọn prompt —</option>
+                        {prompts.data?.items.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+
+                    {/* Chỉ hiện với hình thức C: B đọc nguyên văn, không gọi LLM
+                        nên không có gì để chọn bộ API cho. */}
+                    <Field
+                      label="Bộ API"
+                      hint="Túi key LLM dùng để viết lại nội dung. Để trống thì chạy bằng cấu hình chung của máy chủ — thường chỉ có khi dev."
+                    >
+                      <Select value={llmSetId} onChange={(e) => setLlmSetId(e.target.value)}>
+                        <option value="">— Không chọn —</option>
+                        {llmSets.data?.items.map((set) => (
+                          <option key={set.id} value={set.id}>
+                            {set.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  </>
                 ) : null}
 
                 <Field label="Ngôn ngữ">

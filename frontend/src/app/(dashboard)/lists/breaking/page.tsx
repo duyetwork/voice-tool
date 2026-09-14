@@ -4,6 +4,12 @@ import * as React from "react";
 
 import { BulkBar, SelectAllBox, useSelection } from "@/components/bulk";
 import { ErrorNote, PageHeader } from "@/components/page-header";
+import {
+  ScheduleFields,
+  describeSchedule,
+  emptySchedule,
+  toChannelSchedule,
+} from "@/components/schedule-fields";
 import { Can } from "@/components/permission";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,19 +17,12 @@ import { Card, CardBody } from "@/components/ui/card";
 import { Checkbox, Field, Input, Select } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { Pagination, usePaging } from "@/components/ui/pagination";
-import {
-  EmptyRow,
-  RowActions,
-  SortableTh,
-  Table,
-  Td,
-  Th,
-  useSorting,
-} from "@/components/ui/table";
+import { EmptyRow, RowActions, SortableTh, Table, Td, Th, useSorting } from "@/components/ui/table";
 import {
   useBreakingLists,
   useCollectModes,
   useCreateBreakingList,
+  useLLMAPISets,
   useDeleteBreakingList,
   usePlatforms,
   usePrompts,
@@ -280,6 +279,7 @@ export default function BreakingListsPage() {
                           ? formatInterval(list.scan_interval)
                           : "nghỉ theo hệ thống"}
                       </div>
+                      <div className="text-slate-400">lịch: {describeSchedule(list)}</div>
                       <div className="text-slate-400">
                         quét: {formatDateTime(list.last_scanned_at)}
                       </div>
@@ -363,7 +363,12 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
   const [showTuning, setShowTuning] = React.useState(false);
   const [scanLimit, setScanLimit] = React.useState("");
   const [scanInterval, setScanInterval] = React.useState("");
+  // Bộ API key cho hình thức C. Quét tự động không có ai bấm nút để chọn bộ,
+  // nên bộ phải nằm sẵn trên kênh.
+  const [llmSetId, setLlmSetId] = React.useState("");
+  const [schedule, setSchedule] = React.useState(emptySchedule);
 
+  const llmSets = useLLMAPISets();
   const needsPrompt = collectMode === "C";
   const modeMeta = modes.data?.collect_modes ?? [];
   const isEnabled = (mode: string) =>
@@ -388,6 +393,8 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
       auto_publish: autoPublish,
       scan_limit: scanLimit ? Number(scanLimit) : undefined,
       scan_interval: scanInterval || undefined,
+      llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
+      schedule: toChannelSchedule(schedule),
     });
     onClose();
   }
@@ -483,17 +490,34 @@ function CreateBreakingDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         {needsPrompt ? (
-          <Field label="Prompt mẫu" required>
-            <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
-              <option value="">— Chọn prompt —</option>
-              {prompts.data?.items.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Prompt mẫu" required>
+              <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
+                <option value="">— Chọn prompt —</option>
+                {prompts.data?.items.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field
+              label="Bộ API"
+              hint="Quét tự động không có ai bấm nút để chọn bộ — không gán thì hình thức C của kênh này không chạy."
+            >
+              <Select value={llmSetId} onChange={(e) => setLlmSetId(e.target.value)}>
+                <option value="">— Không chọn —</option>
+                {llmSets.data?.items.map((set) => (
+                  <option key={set.id} value={set.id}>
+                    {set.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
         ) : null}
+
+        <ScheduleFields value={schedule} onChange={setSchedule} />
 
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <Checkbox checked={autoProcess} onChange={(e) => setAutoProcess(e.target.checked)} />

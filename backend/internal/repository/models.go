@@ -22,6 +22,13 @@ type AiEngine struct {
 	LastUsedAt      *time.Time `json:"last_used_at"`
 }
 
+type AppSetting struct {
+	Key       string     `json:"key"`
+	Value     []byte     `json:"value"`
+	UpdatedBy *uuid.UUID `json:"updated_by"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
 type AppUser struct {
 	ID                  uuid.UUID  `json:"id"`
 	Email               string     `json:"email"`
@@ -48,6 +55,33 @@ type AuditLog struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+type Country struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Code      *string   `json:"code"`
+	SortOrder int32     `json:"sort_order"`
+	SyncedAt  time.Time `json:"synced_at"`
+}
+
+type FetchErrorStat struct {
+	Day      pgtype.Date `json:"day"`
+	Platform string      `json:"platform"`
+	Kind     string      `json:"kind"`
+	Count    int64       `json:"count"`
+	LastAt   time.Time   `json:"last_at"`
+}
+
+type Hashtag struct {
+	ID             int64     `json:"id"`
+	Name           string    `json:"name"`
+	NormalizedName string    `json:"normalized_name"`
+	Slug           string    `json:"slug"`
+	VoiceTagKind   string    `json:"voice_tag_kind"`
+	IsFeatured     bool      `json:"is_featured"`
+	Ordering       int64     `json:"ordering"`
+	SyncedAt       time.Time `json:"synced_at"`
+}
+
 type ListBreaking struct {
 	ID              uuid.UUID       `json:"id"`
 	SourceUrl       string          `json:"source_url"`
@@ -65,6 +99,11 @@ type ListBreaking struct {
 	ScanLimit       int32           `json:"scan_limit"`
 	ScanInterval    pgtype.Interval `json:"scan_interval"`
 	LastScannedAt   *time.Time      `json:"last_scanned_at"`
+	LlmApiSetID     *uuid.UUID      `json:"llm_api_set_id"`
+	Timezone        string          `json:"timezone"`
+	ActiveFromMin   *int16          `json:"active_from_min"`
+	ActiveToMin     *int16          `json:"active_to_min"`
+	ActiveWeekdays  []int16         `json:"active_weekdays"`
 }
 
 type ListScheduled struct {
@@ -85,6 +124,42 @@ type ListScheduled struct {
 	ScanLimit        int32           `json:"scan_limit"`
 	MaxPostsPerRun   *int32          `json:"max_posts_per_run"`
 	LastScannedAt    *time.Time      `json:"last_scanned_at"`
+	LlmApiSetID      *uuid.UUID      `json:"llm_api_set_id"`
+	Timezone         string          `json:"timezone"`
+	ActiveFromMin    *int16          `json:"active_from_min"`
+	ActiveToMin      *int16          `json:"active_to_min"`
+	ActiveWeekdays   []int16         `json:"active_weekdays"`
+	FixedTimesMin    []int16         `json:"fixed_times_min"`
+}
+
+type LlmApiKey struct {
+	ID                  uuid.UUID  `json:"id"`
+	SetID               uuid.UUID  `json:"set_id"`
+	Provider            string     `json:"provider"`
+	ApiKeyEncrypted     string     `json:"api_key_encrypted"`
+	Label               *string    `json:"label"`
+	Priority            int32      `json:"priority"`
+	DisabledAt          *time.Time `json:"disabled_at"`
+	CooldownUntil       *time.Time `json:"cooldown_until"`
+	ConsecutiveFailures int32      `json:"consecutive_failures"`
+	LastUsedAt          *time.Time `json:"last_used_at"`
+	LastError           *string    `json:"last_error"`
+	CreatedAt           time.Time  `json:"created_at"`
+}
+
+type LlmApiSet struct {
+	ID             uuid.UUID  `json:"id"`
+	Name           string     `json:"name"`
+	Note           *string    `json:"note"`
+	VisibleToUsers bool       `json:"visible_to_users"`
+	CreatedBy      uuid.UUID  `json:"created_by"`
+	CreatedAt      time.Time  `json:"created_at"`
+	LastUsedAt     *time.Time `json:"last_used_at"`
+}
+
+type LlmApiSetUser struct {
+	SetID  uuid.UUID `json:"set_id"`
+	UserID uuid.UUID `json:"user_id"`
 }
 
 type Prompt struct {
@@ -155,4 +230,7 @@ type Voice struct {
 	AuthorGender     *string    `json:"author_gender"`
 	PublishWhenReady bool       `json:"publish_when_ready"`
 	NoImage          bool       `json:"no_image"`
+	LlmApiSetID      *uuid.UUID `json:"llm_api_set_id"`
+	LlmModelUsed     *string    `json:"llm_model_used"`
+	AuthorCountryID  *int64     `json:"author_country_id"`
 }

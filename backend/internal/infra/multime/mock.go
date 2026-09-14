@@ -101,6 +101,29 @@ func (m *Mock) Countries(_ context.Context, token string) ([]domain.MultimeCount
 	}, nil
 }
 
+// VoiceHashtags trả vài tag mẫu để dev thấy ô chọn hoạt động mà không cần token
+// thật. Đủ 3 `voice_tag_kind` để phần sắp xếp của UI có cái mà thể hiện.
+func (m *Mock) VoiceHashtags(
+	_ context.Context,
+	token string,
+	page, _ int,
+) ([]domain.MultimeHashtag, int, error) {
+	if token == "" {
+		return nil, 0, domain.ErrReloginRequired
+	}
+	if page > 1 {
+		return nil, 3, nil
+	}
+	return []domain.MultimeHashtag{
+		{ID: 1, Name: "News", NormalizedName: "news", Slug: "news",
+			VoiceTagKind: "system", IsFeatured: true, Ordering: 1},
+		{ID: 2, Name: "Daily Life", NormalizedName: "dailylife", Slug: "daily-life",
+			VoiceTagKind: "system", IsFeatured: true, Ordering: 2},
+		{ID: 3, Name: "MyOwnTag", NormalizedName: "myowntag", Slug: "myowntag",
+			VoiceTagKind: "user", Ordering: 0},
+	}, 3, nil
+}
+
 // mockUserID sinh id ổn định theo email để dev đăng lại vẫn ra cùng tác giả.
 func mockUserID(email string) int64 {
 	sum := sha256.Sum256([]byte(email))

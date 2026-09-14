@@ -2,41 +2,106 @@
 
 import * as React from "react";
 
+import { LLMApiSetsTab } from "@/components/llm-api-sets";
 import { ErrorNote, PageHeader } from "@/components/page-header";
 import { Can } from "@/components/permission";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
-import { Checkbox, Field, Input } from "@/components/ui/field";
+import { Field, Input } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { Pagination, usePaging } from "@/components/ui/pagination";
 import { DateCell, EmptyRow, RowActions, Table, Td, Th } from "@/components/ui/table";
+import { UserPicker } from "@/components/user-picker";
 import {
   useAIEngines,
   useCreateAIEngine,
   useDeleteAIEngine,
   useMe,
   useUpdateAIEngine,
-  useUsers,
 } from "@/hooks/use-api";
 import type { AIEngine } from "@/types/api";
 
 /**
- * A2 — API key TTS.
+ * AI Engine — hai tab cho hai loại credential hoàn toàn khác nhau.
  *
- * Chỉ còn 1 nhà cung cấp (3voices) nên màn này không dùng để CHỌN engine nữa,
- * mà là sổ API key: mỗi người khai key của chính mình, worker chạy TTS bằng
- * key của người tạo voice — quota và chi phí về đúng người đó.
+ *   TTS Model — sổ API key 3voices: 1 key = 1 người. Chỉ còn 1 nhà cung cấp
+ *               nên không có gì để "chọn", chỉ có "key của ai".
+ *   LLM Model — BỘ API key: 1 bản ghi = túi key của nhiều nhà, dùng chung cho
+ *               nhiều người, vì chuỗi dự phòng chỉ có ý nghĩa khi trong tay có
+ *               key của nhiều nhà cùng lúc.
  *
- * Bảng vì thế chỉ còn 4 cột thật sự trả lời được câu hỏi nào đó: key nào,
- * ai khai, khai lúc nào, còn dùng không.
+ * Hai thứ này ở chung một màn vì đều là "khai credential cho AI", nhưng KHÔNG
+ * chung một bảng: gộp lại là làm sống lại đúng những cột mà migration 000010 vừa
+ * bỏ đi khỏi ai_engine.
+ */
+type Tab = "tts" | "llm";
+
+export default function AIEnginesPage() {
+  const me = useMe();
+  const [tab, setTab] = React.useState<Tab>("tts");
+  const isAdmin = me.data?.role === "admin";
+
+  return (
+    <>
+      <PageHeader
+        title="AI Engine"
+        description="API key cho hai bước của pipeline: LLM viết lại nội dung (hình thức C), rồi TTS đọc thành audio."
+      />
+
+      <div className="mb-4 flex gap-1 border-b border-slate-200">
+        <TabButton active={tab === "tts"} onClick={() => setTab("tts")}>
+          TTS Model
+        </TabButton>
+        <TabButton active={tab === "llm"} onClick={() => setTab("llm")}>
+          LLM Model
+        </TabButton>
+      </div>
+
+      <Card>
+        <CardBody className={tab === "tts" ? "p-0" : undefined}>
+          {tab === "tts" ? <TTSTab /> : <LLMApiSetsTab isAdmin={isAdmin} />}
+        </CardBody>
+      </Card>
+    </>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        "-mb-px border-b-2 px-4 py-2 text-sm font-medium " +
+        (active
+          ? "border-indigo-700 text-indigo-800"
+          : "border-transparent text-slate-600 hover:text-slate-900")
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * TTSTab — sổ API key 3voices.
  *
- * Admin thấy key của tất cả mọi người (có thêm cột Người dùng) và gán được key
- * cho người khác; các vai trò khác chỉ thấy key của mình — backend ép chứ
- * không chỉ ẩn ở UI.
+ * Mỗi người khai key của chính mình, worker chạy TTS bằng key của người tạo
+ * voice — quota và chi phí về đúng người đó. Admin thấy key của tất cả mọi
+ * người (có thêm cột Người dùng) và gán được key cho người khác; các vai trò
+ * khác chỉ thấy key của mình — backend ép chứ không chỉ ẩn ở UI.
  */
 const PROVIDER = "3voices";
 
-export default function AIEnginesPage() {
+function TTSTab() {
   const me = useMe();
   const engines = useAIEngines();
   const remove = useDeleteAIEngine();
@@ -59,96 +124,90 @@ export default function AIEnginesPage() {
 
   return (
     <>
-      <PageHeader
-        title="AI Engine (TTS)"
-        description={`Mỗi người khai API key ${PROVIDER} của chính mình — voice bạn tạo được đọc bằng key của bạn. Key đã lưu không hiển thị lại, chỉ còn 4 ký tự cuối để đối chiếu.`}
-      >
+      <div className="flex items-start justify-between gap-4 p-4">
+        <p className="max-w-3xl text-sm text-slate-600">
+          Mỗi người khai API key {PROVIDER} của chính mình — voice bạn tạo được đọc bằng key của
+          bạn, nên hạn mức và hoá đơn rơi đúng vào người dùng nó. Key đã lưu không hiển thị lại, chỉ
+          còn 4 ký tự cuối để đối chiếu.
+        </p>
         <Can permission="can_write">
           <Button onClick={() => setAdding(true)}>Thêm API key</Button>
         </Can>
-      </PageHeader>
+      </div>
 
-      <Card>
-        <CardBody className="p-0">
-          <ErrorNote error={engines.error ?? update.error ?? remove.error} />
-          <Table>
-            <thead>
-              <tr>
-                <Th>API key</Th>
-                {isAdmin ? <Th>Người dùng</Th> : null}
-                <Th>Người tạo</Th>
-                <Th>Thời gian tạo</Th>
-                <Th>Dùng gần đây</Th>
+      <ErrorNote error={engines.error ?? update.error ?? remove.error} />
+      <Table>
+        <thead>
+          <tr>
+            <Th>API key</Th>
+            {isAdmin ? <Th>Người dùng</Th> : null}
+            <Th>Người tạo</Th>
+            <Th>Thời gian tạo</Th>
+            <Th>Dùng gần đây</Th>
+            <Can permission="can_write">
+              <Th className="text-right">Hành động</Th>
+            </Can>
+          </tr>
+        </thead>
+        <tbody>
+          {engines.isLoading ? (
+            <EmptyRow colSpan={columns}>Đang tải…</EmptyRow>
+          ) : shown.length ? (
+            shown.map((engine) => (
+              <tr key={engine.id}>
+                <Td>
+                  <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">
+                    {engine.api_key_masked || "(không đọc được)"}
+                  </code>
+                </Td>
+                {isAdmin ? <Td className="text-xs">{engine.user_email}</Td> : null}
+                <Td className="text-xs">{engine.created_by_email}</Td>
+                <Td>
+                  <DateCell value={engine.created_at} />
+                </Td>
+                <Td>
+                  {engine.last_used_at ? (
+                    <DateCell value={engine.last_used_at} />
+                  ) : (
+                    <span className="text-xs text-slate-400">chưa dùng lần nào</span>
+                  )}
+                </Td>
                 <Can permission="can_write">
-                  <Th className="text-right">Hành động</Th>
+                  <Td className="whitespace-nowrap text-right">
+                    <RowActions>
+                      <Button size="sm" variant="secondary" onClick={() => setEditing(engine)}>
+                        Sửa
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={() => {
+                          const owner = isAdmin ? ` của ${engine.user_email}` : "";
+                          if (confirm(`Xoá API key ${engine.api_key_masked}${owner}?`)) {
+                            remove.mutate(engine.id);
+                          }
+                        }}
+                      >
+                        Xoá
+                      </Button>
+                    </RowActions>
+                  </Td>
                 </Can>
               </tr>
-            </thead>
-            <tbody>
-              {engines.isLoading ? (
-                <EmptyRow colSpan={columns}>Đang tải…</EmptyRow>
-              ) : shown.length ? (
-                shown.map((engine) => (
-                  <tr key={engine.id}>
-                    <Td>
-                      <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">
-                        {engine.api_key_masked || "(không đọc được)"}
-                      </code>
-                    </Td>
-                    {isAdmin ? <Td className="text-xs">{engine.user_email}</Td> : null}
-                    <Td className="text-xs">{engine.created_by_email}</Td>
-                    <Td>
-                      <DateCell value={engine.created_at} />
-                    </Td>
-                    <Td>
-                      {engine.last_used_at ? (
-                        <DateCell value={engine.last_used_at} />
-                      ) : (
-                        <span className="text-xs text-slate-400">chưa dùng lần nào</span>
-                      )}
-                    </Td>
-                    <Can permission="can_write">
-                      <Td className="whitespace-nowrap text-right">
-                        <RowActions>
-                          <Button size="sm" variant="secondary" onClick={() => setEditing(engine)}>
-                            Sửa
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            onClick={() => {
-                              const owner = isAdmin ? ` của ${engine.user_email}` : "";
-                              if (confirm(`Xoá API key ${engine.api_key_masked}${owner}?`)) {
-                                remove.mutate(engine.id);
-                              }
-                            }}
-                          >
-                            Xoá
-                          </Button>
-                        </RowActions>
-                      </Td>
-                    </Can>
-                  </tr>
-                ))
-              ) : (
-                <EmptyRow colSpan={columns}>
-                  Chưa có API key nào — thêm key {PROVIDER} để chạy được hình thức B/C.
-                </EmptyRow>
-              )}
-            </tbody>
-          </Table>
+            ))
+          ) : (
+            <EmptyRow colSpan={columns}>
+              Chưa có API key nào — thêm key {PROVIDER} để chạy được hình thức B/C.
+            </EmptyRow>
+          )}
+        </tbody>
+      </Table>
 
-          <Pagination total={engines.data ? all.length : undefined} paging={paging} unit="key" />
-        </CardBody>
-      </Card>
+      <Pagination total={engines.data ? all.length : undefined} paging={paging} unit="key" />
 
       {adding ? <AddKeyDialog isAdmin={isAdmin} onClose={() => setAdding(false)} /> : null}
       {editing ? (
-        <EditKeyDialog
-          engine={editing}
-          isAdmin={isAdmin}
-          onClose={() => setEditing(null)}
-        />
+        <EditKeyDialog engine={editing} isAdmin={isAdmin} onClose={() => setEditing(null)} />
       ) : null}
     </>
   );
@@ -272,11 +331,7 @@ function EditKeyDialog({
 
         {isAdmin ? (
           <Field label="Người dùng" hint="Đổi người ở đây là chuyển key sang cho họ.">
-            <UserPicker
-              selected={userIds}
-              onChange={(next) => setUserIds(next.slice(-1))}
-              single
-            />
+            <UserPicker selected={userIds} onChange={(next) => setUserIds(next.slice(-1))} single />
           </Field>
         ) : null}
 
@@ -292,110 +347,5 @@ function EditKeyDialog({
         </div>
       </form>
     </Modal>
-  );
-}
-
-/**
- * UserPicker — dropdown tick chọn người dùng (chỉ admin thấy).
- *
- * Không dùng `<select multiple>`: nó cao bằng cả danh sách, và trên mọi trình
- * duyệt đều phải giữ Ctrl để chọn nhiều — người dùng không đoán ra được. Ở đây
- * là 1 ô bấm ra danh sách có checkbox, đọc là hiểu.
- *
- * `single` biến nó thành chọn-một cho lúc chuyển key sang người khác.
- */
-function UserPicker({
-  selected,
-  onChange,
-  single,
-}: {
-  selected: string[];
-  onChange: (next: string[]) => void;
-  single?: boolean;
-}) {
-  const [open, setOpen] = React.useState(false);
-  const [keyword, setKeyword] = React.useState("");
-  const box = React.useRef<HTMLDivElement>(null);
-  // Danh sách tài khoản của cả hệ thống thường vài chục dòng — lấy 1 lần rồi
-  // lọc tại chỗ, không phải gọi lại API theo từng ký tự gõ.
-  const users = useUsers({ limit: 200 });
-
-  // Bấm ra ngoài thì đóng — dropdown không có backdrop riêng.
-  React.useEffect(() => {
-    if (!open) return;
-    function onClick(e: MouseEvent) {
-      if (!box.current?.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, [open]);
-
-  const items = users.data?.items ?? [];
-  const shown = keyword
-    ? items.filter((u) => u.email.toLowerCase().includes(keyword.trim().toLowerCase()))
-    : items;
-
-  const label = selected.length
-    ? items
-        .filter((u) => selected.includes(u.id))
-        .map((u) => u.email)
-        .join(", ") || `${selected.length} người đã chọn`
-    : single
-      ? "— Chọn người dùng —"
-      : "Chính tôi";
-
-  function toggle(id: string) {
-    if (single) {
-      onChange([id]);
-      setOpen(false);
-      return;
-    }
-    onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
-  }
-
-  return (
-    <div className="relative" ref={box}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex h-10 w-full items-center justify-between gap-2 rounded-md border border-slate-300 bg-white px-3 text-left text-sm text-slate-900 focus:border-indigo-600 focus:outline-2 focus:outline-indigo-600"
-      >
-        <span className="truncate">{label}</span>
-        <span className="text-slate-400">▾</span>
-      </button>
-
-      {open ? (
-        <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
-          <div className="border-b border-slate-100 p-2">
-            <Input
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder="Tìm theo email…"
-              className="h-8"
-            />
-          </div>
-          <div className="max-h-56 overflow-y-auto py-1">
-            {users.isLoading ? (
-              <p className="px-3 py-2 text-sm text-slate-500">Đang tải…</p>
-            ) : shown.length ? (
-              shown.map((user) => (
-                <label
-                  key={user.id}
-                  className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  <Checkbox
-                    checked={selected.includes(user.id)}
-                    onChange={() => toggle(user.id)}
-                  />
-                  <span className="truncate">{user.email}</span>
-                </label>
-              ))
-            ) : (
-              <p className="px-3 py-2 text-sm text-slate-500">Không có tài khoản nào khớp.</p>
-            )}
-          </div>
-        </div>
-      ) : null}
-    </div>
   );
 }
