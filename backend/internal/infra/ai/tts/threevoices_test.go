@@ -29,7 +29,7 @@ func TestSynthesizeGuiVoiceAttributesChoDesign(t *testing.T) {
 	defer srv.Close()
 
 	audio, err := NewThreeVoices("sk-ov-test", srv.URL, "").
-		Synthesize(context.Background(), "Bản tin sáng nay", "vi")
+		Synthesize(context.Background(), domain.SpeechRequest{Text: "Bản tin sáng nay", Language: "vi"})
 	if err != nil {
 		t.Fatalf("Synthesize lỗi: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestSynthesizeDungGiongDaLuu(t *testing.T) {
 	defer srv.Close()
 
 	if _, err := NewThreeVoices("sk-ov-test", srv.URL, "42").
-		Synthesize(context.Background(), "xin chào", "vi"); err != nil {
+		Synthesize(context.Background(), domain.SpeechRequest{Text: "xin chào", Language: "vi"}); err != nil {
 		t.Fatalf("Synthesize lỗi: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestSynthesizeDichLoiNhaCungCap(t *testing.T) {
 			defer srv.Close()
 
 			_, err := NewThreeVoices("sk-ov-test", srv.URL, "").
-				Synthesize(context.Background(), "xin chào", "vi")
+				Synthesize(context.Background(), domain.SpeechRequest{Text: "xin chào", Language: "vi"})
 			if err == nil {
 				t.Fatal("muốn lỗi, được nil")
 			}
@@ -137,7 +137,7 @@ func TestSynthesizeDichLoiNhaCungCap(t *testing.T) {
 // rate limit vô ích.
 func TestSynthesizeChanTextRong(t *testing.T) {
 	_, err := NewThreeVoices("sk-ov-test", "http://khong-goi-toi", "").
-		Synthesize(context.Background(), "   ", "vi")
+		Synthesize(context.Background(), domain.SpeechRequest{Text: "   ", Language: "vi"})
 	if err == nil {
 		t.Fatal("muốn lỗi, được nil")
 	}
@@ -162,4 +162,90 @@ func formFields(t *testing.T, r *http.Request) map[string]string {
 		}
 	}
 	return out
+}
+
+// Người dùng chỉnh "Cấu hình giọng đọc" thì cấu hình đó THẮNG voice_id.
+//
+// Lý do phải có test: /tts/saved bỏ qua gender/age/pitch/accent, nên nếu vẫn đi
+// đường saved thì họ chỉnh xong nghe lại thấy y hệt cũ và không có gì giải
+// thích vì sao.
+func TestSynthesizeCauHinhThangGiongDaLuu(t *testing.T) {
+	var (
+		gotPath string
+		gotForm map[string]string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotForm = formFields(t, r)
+		_, _ = w.Write([]byte("RIFFfake-audio"))
+	}))
+	defer srv.Close()
+
+	speed := 1.25
+	if _, err := NewThreeVoices("sk-ov-test", srv.URL, "42").
+		Synthesize(context.Background(), domain.SpeechRequest{
+			Text:     "xin chào",
+			Language: "vi",
+			Style: domain.VoiceStyle{
+				Gender: "male",
+				Age:    "elderly",
+				Pitch:  "low pitch",
+				Accent: "british accent",
+				Speed:  &speed,
+			},
+		}); err != nil {
+		t.Fatalf("Synthesize lỗi: %v", err)
+	}
+
+	if gotPath != "/api/v1/tts/design" {
+		t.Errorf("path = %q, muốn /api/v1/tts/design — có cấu hình thì không dùng giọng đã lưu", gotPath)
+	}
+	if _, ok := gotForm["voice_id"]; ok {
+		t.Error("đã chuyển sang design thì không gửi voice_id nữa")
+	}
+	for field, want := range map[string]string{
+		"gender": "male",
+		"age":    "elderly",
+		"pitch":  "low pitch",
+		"accent": "british accent",
+		"speed":  "1.25",
+	} {
+		if gotForm[field] != want {
+			t.Errorf("field %s = %q, muốn %q", field, gotForm[field], want)
+		}
+	}
+}
+
+// Trường bỏ trống rơi về mặc định, và accent KHÔNG có mặc định — không ép chất
+// giọng vùng miền nào vào bản tin khi người dùng không chọn.
+func TestSynthesizeCauHinhMotPhanRoiVeMacDinh(t *testing.T) {
+	var gotForm map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotForm = formFields(t, r)
+		_, _ = w.Write([]byte("RIFFfake-audio"))
+	}))
+	defer srv.Close()
+
+	if _, err := NewThreeVoices("sk-ov-test", srv.URL, "").
+		Synthesize(context.Background(), domain.SpeechRequest{
+			Text:     "xin chào",
+			Language: "vi",
+			Style:    domain.VoiceStyle{Pitch: "whisper"},
+		}); err != nil {
+		t.Fatalf("Synthesize lỗi: %v", err)
+	}
+
+	if gotForm["pitch"] != "whisper" {
+		t.Errorf("pitch = %q, muốn whisper", gotForm["pitch"])
+	}
+	if gotForm["gender"] != defaultVoiceGender || gotForm["age"] != defaultVoiceAge {
+		t.Errorf("gender/age = %q/%q, muốn mặc định %q/%q",
+			gotForm["gender"], gotForm["age"], defaultVoiceGender, defaultVoiceAge)
+	}
+	if gotForm["accent"] != "" {
+		t.Errorf("accent = %q, muốn không gửi khi người dùng không chọn", gotForm["accent"])
+	}
+	if gotForm["speed"] != "1.00" {
+		t.Errorf("speed = %q, muốn 1.00", gotForm["speed"])
+	}
 }

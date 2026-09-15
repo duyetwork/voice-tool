@@ -61,19 +61,35 @@ type geminiResponse struct {
 	PromptFeedback struct {
 		BlockReason string `json:"blockReason"`
 	} `json:"promptFeedback"`
+	UsageMetadata struct {
+		PromptTokenCount     int64 `json:"promptTokenCount"`
+		CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+	} `json:"usageMetadata"`
+}
+
+func (r geminiResponse) usage() domain.LLMUsage {
+	return domain.LLMUsage{
+		InputTokens:  r.UsageMetadata.PromptTokenCount,
+		OutputTokens: r.UsageMetadata.CandidatesTokenCount,
+	}
 }
 
 // ---- gọi -----------------------------------------------------------------
 
-func (g *Gemini) Generate(ctx context.Context, promptContent, sourceText string) (string, error) {
+func (g *Gemini) Generate(ctx context.Context, promptContent, sourceText string) (
+	string, domain.LLMUsage, error,
+) {
 	resp, err := g.call(ctx, userMessage(promptContent, sourceText), systemPrompt, nil)
 	if err != nil {
-		return "", err
+		return "", domain.LLMUsage{}, err
 	}
-	return g.textOf(resp)
+	text, err := g.textOf(resp)
+	return text, resp.usage(), err
 }
 
-func (g *Gemini) GenerateBatch(ctx context.Context, promptContent string, items []string) ([]string, error) {
+func (g *Gemini) GenerateBatch(ctx context.Context, promptContent string, items []string) (
+	[]string, domain.LLMUsage, error,
+) {
 	resp, err := g.call(ctx,
 		batchUserMessage(promptContent, items),
 		batchSystemPrompt,
@@ -85,17 +101,19 @@ func (g *Gemini) GenerateBatch(ctx context.Context, promptContent string, items 
 			ResponseSchema:   batchSchema(false),
 		})
 	if err != nil {
-		return nil, err
+		return nil, domain.LLMUsage{}, err
 	}
+	usage := resp.usage()
 	raw, err := g.textOf(resp)
 	if err != nil {
-		return nil, err
+		return nil, usage, err
 	}
 	out, err := parseBatch(raw, len(items))
 	if err != nil {
-		return nil, domain.LLMFail(domain.LLMFailTransient, fmt.Errorf("gemini batch: %w", err))
+		return nil, usage, domain.LLMFail(domain.LLMFailTransient,
+			fmt.Errorf("gemini batch: %w", err))
 	}
-	return out, nil
+	return out, usage, nil
 }
 
 func (g *Gemini) call(

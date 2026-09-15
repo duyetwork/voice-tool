@@ -8,13 +8,13 @@ INSERT INTO voice (
   sample_rate, created_by,
   author_id, author_email, author_gender,
   image_uploaded, no_image, publish_when_ready, llm_api_set_id, author_country_id,
-  spoken_text
+  spoken_text, tts_config
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   sqlc.narg('author_id'), sqlc.narg('author_email'), sqlc.narg('author_gender'),
   sqlc.arg('image_uploaded'), sqlc.arg('no_image'), sqlc.arg('publish_when_ready'),
   sqlc.narg('llm_api_set_id'), sqlc.narg('author_country_id'),
-  sqlc.narg('spoken_text')
+  sqlc.narg('spoken_text'), sqlc.narg('tts_config')
 )
 RETURNING *;
 
@@ -29,14 +29,14 @@ INSERT INTO voice (
   -- MỘT form cho cả ba hình thức, nên hai đường không được nhận hai bộ trường
   -- khác nhau — lệch một trường là một thứ người dùng điền rồi mà biến mất.
   hashtag, image_url, image_uploaded, no_image,
-  author_gender, author_country_id, publish_when_ready
+  author_gender, author_country_id, publish_when_ready, tts_config
 ) VALUES (
   sqlc.arg('input_text'), sqlc.arg('collect_mode'), sqlc.narg('prompt_id'),
   sqlc.arg('language'), 'processing', sqlc.narg('title'), sqlc.arg('created_by'),
   sqlc.narg('llm_api_set_id'),
   sqlc.narg('hashtag'), sqlc.narg('image_url'), sqlc.arg('image_uploaded'),
   sqlc.arg('no_image'), sqlc.narg('author_gender'), sqlc.narg('author_country_id'),
-  sqlc.arg('publish_when_ready')
+  sqlc.arg('publish_when_ready'), sqlc.narg('tts_config')
 )
 RETURNING *;
 
@@ -56,6 +56,13 @@ SET input_text     = sqlc.arg('input_text'),
     -- thẳng vào ô lời đọc; NULL = để LLM (hoặc chính input_text) quyết định như
     -- thường, nên COALESCE giữ nguyên bản cũ cho tới khi FinishVoice ghi đè.
     spoken_text    = COALESCE(sqlc.narg('spoken_text'), spoken_text),
+    -- Cấu hình giọng đọc: cờ set_tts_config phân biệt "không đụng tới" với
+    -- "trả về mặc định". COALESCE không làm được việc đó — gửi NULL để xoá
+    -- cấu hình sẽ bị hiểu thành giữ nguyên, và người dùng bấm tạo lại sau khi
+    -- thu mục cấu hình về mặc định vẫn nghe đúng giọng cũ.
+    tts_config     = CASE WHEN sqlc.arg('set_tts_config')::bool
+                          THEN sqlc.narg('tts_config')
+                          ELSE tts_config END,
     publish_status = 'processing',
     last_error     = NULL
 WHERE id = sqlc.arg('id') AND publish_status <> 'published'

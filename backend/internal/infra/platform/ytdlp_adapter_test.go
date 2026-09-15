@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"slices"
 	"testing"
 
@@ -192,5 +193,53 @@ func TestShareAndShortLinks(t *testing.T) {
 					tc.url, ct, id, tc.contentType, tc.postID)
 			}
 		})
+	}
+}
+
+// argRecorder ghi lại nguyên văn tham số của mọi lệnh yt-dlp được gọi.
+type argRecorder struct{ calls [][]string }
+
+func (r *argRecorder) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, args)
+	// Trả JSON tối thiểu để dumpJSON parse được; latestPosts đọc từng dòng.
+	return []byte(`{"id":"abc","webpage_url":"https://example.com/abc"}`), nil
+}
+
+// Proxy phải đứng TRƯỚC tham số riêng của từng lệnh và có mặt ở CẢ BỐN lệnh —
+// nền tảng chặn IP thì chặn mọi request, không chỉ request lấy metadata.
+func TestWithProxyAppliesToEveryYtDlpCall(t *testing.T) {
+	rec := &argRecorder{}
+	a := NewTikTok(rec, t.TempDir(), WithProxy("socks5://127.0.0.1:1080"))
+
+	ctx := context.Background()
+	ref := domain.PostRef{URL: "https://www.tiktok.com/@u/video/7300000000000000000", PostID: "730"}
+	_, _ = a.FetchMetadata(ctx, ref)
+	_, _ = a.FetchContent(ctx, ref, domain.ModeExtract)
+	_, _ = a.FetchLatestPosts(ctx, "https://www.tiktok.com/@u", 5)
+
+	if len(rec.calls) == 0 {
+		t.Fatal("không có lệnh yt-dlp nào được gọi")
+	}
+	for i, args := range rec.calls {
+		if len(args) < 2 || args[0] != "--proxy" || args[1] != "socks5://127.0.0.1:1080" {
+			t.Errorf("lệnh %d không mở đầu bằng --proxy: %v", i, args)
+		}
+	}
+}
+
+// Không khai proxy thì tham số phải y hệt như trước — bật tính năng này không
+// được đổi hành vi của cấu hình đang chạy.
+func TestWithoutProxyArgsUnchanged(t *testing.T) {
+	rec := &argRecorder{}
+	a := NewTikTok(rec, t.TempDir())
+
+	_, _ = a.FetchMetadata(context.Background(), domain.PostRef{
+		URL: "https://www.tiktok.com/@u/video/7300000000000000000"})
+
+	if len(rec.calls) != 1 {
+		t.Fatalf("muốn đúng 1 lệnh, có %d", len(rec.calls))
+	}
+	if got := rec.calls[0][0]; got != "--dump-json" {
+		t.Errorf("tham số đầu = %q, muốn --dump-json", got)
 	}
 }

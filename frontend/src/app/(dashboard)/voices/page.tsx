@@ -43,6 +43,7 @@ import {
   sortLanguages,
 } from "@/lib/languages";
 import { COLLECT_MODE_LABELS, PUBLISH_STATUS_LABELS, platformLabel } from "@/lib/utils";
+import { VoiceStyleFields, isEmptyVoiceStyle } from "@/components/voice-style-fields";
 import type {
   CollectMode,
   Country,
@@ -51,6 +52,7 @@ import type {
   Hashtag,
   PublishRequirements,
   Voice,
+  VoiceStyle,
 } from "@/types/api";
 
 /**
@@ -167,8 +169,23 @@ const EMPTY_FILTERS = {
   published_to: "",
 };
 
+/**
+ * initialFilters cho phép mở thẳng bảng đã lọc sẵn qua URL —
+ * `/voices?publish_status=failed` là link mà thanh cảnh báo dùng.
+ *
+ * Đọc từ `window.location` chứ không dùng `useSearchParams()`: hook đó bắt cả
+ * trang phải nằm trong Suspense boundary khi build, đổi lấy một thứ chỉ cần
+ * đúng MỘT lần lúc mở trang. Sau đó bộ lọc thuộc về người dùng, URL không còn
+ * vai trò gì.
+ */
+function initialFilters() {
+  if (typeof window === "undefined") return EMPTY_FILTERS;
+  const status = new URLSearchParams(window.location.search).get("publish_status") ?? "";
+  return { ...EMPTY_FILTERS, publish_status: status };
+}
+
 export default function VoicesPage() {
-  const [filters, setFilters] = React.useState(EMPTY_FILTERS);
+  const [filters, setFilters] = React.useState(initialFilters);
   const [editing, setEditing] = React.useState<Voice | null>(null);
   const [creating, setCreating] = React.useState(false);
   const paging = usePaging();
@@ -832,6 +849,9 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
     email: null,
     gender: null,
   });
+  // Cấu hình giọng đọc: rỗng = giọng mặc định của nhà cung cấp, đúng hành vi
+  // của form trước khi có mục này.
+  const [voiceStyle, setVoiceStyle] = React.useState<VoiceStyle>({});
   const [image, setImage] = React.useState<VoiceImage>({ url: "", uploaded: false });
   // Xem trước bằng chính file trên máy: URL server trả về trỏ vào storage nội bộ
   // (bucket riêng tư, host chỉ tồn tại trong mạng Docker) nên thẻ <img> không
@@ -892,7 +912,8 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
     mode: gate.isEnabled(collectMode)
       ? undefined
       : `Hình thức này chưa dùng được${gate.note(collectMode)}.`,
-    prompt: needsPrompt && !promptId ? "Bắt buộc — chọn prompt để LLM viết lại nội dung." : undefined,
+    prompt:
+      needsPrompt && !promptId ? "Bắt buộc — chọn prompt để LLM viết lại nội dung." : undefined,
     sourceUrl: !fromURL
       ? undefined
       : !sourceUrl.trim()
@@ -946,6 +967,9 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
       author_country_id: countryId ? Number(countryId) : null,
       publish_when_ready: true,
       llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
+      // Hình thức A không qua TTS: gửi cấu hình giọng lên cũng chỉ là một cột
+      // dữ liệu không ai đọc, và sẽ gây hiểu nhầm khi mở lại voice đó.
+      tts_config: !fromURL && !isEmptyVoiceStyle(voiceStyle) ? voiceStyle : null,
     };
   }
 
@@ -1130,6 +1154,17 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
         <Field label="Tài khoản đứng tên bài đăng (author)" required error={errorOf("author")}>
           <AuthorPicker value={author} onChange={setAuthor} />
         </Field>
+
+        {/* Chỉ hình thức B và C mới qua TTS. Hình thức A lấy thẳng audio của
+            bài gốc — ở đó không có giọng nào để chỉnh, hiện mục này ra chỉ là
+            một nút bấm vào rồi không thấy tác dụng gì. */}
+        {fromURL ? null : (
+          <VoiceStyleFields
+            value={voiceStyle}
+            onChange={setVoiceStyle}
+            authorGender={author.gender}
+          />
+        )}
 
         <Field label="Ảnh bìa">
           <div className="space-y-2">
@@ -1649,6 +1684,9 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
   const [language, setLanguage] = React.useState(voice.language);
   // Giữ bộ API voice đang dùng; đổi ở đây là đổi cả hạn mức sẽ bị trừ.
   const [llmSetId, setLlmSetId] = React.useState(voice.llm_api_set_id ?? "");
+  // Mở ra là thấy ĐÚNG giọng voice đang dùng, không phải mặc định: bấm Tạo lại
+  // mà giọng tự đổi thì người dùng mất bản họ đã ưng mà không biết vì sao.
+  const [voiceStyle, setVoiceStyle] = React.useState<VoiceStyle>(voice.tts_config ?? {});
 
   const needsPrompt = collectMode === "C";
   const modeMeta = modes.data?.collect_modes ?? [];
@@ -1679,6 +1717,10 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
       prompt_id: needsPrompt && promptId ? promptId : null,
       llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
       language,
+      // Luôn gửi: form này đã hiện đúng giọng đang dùng, nên thứ đang thấy
+      // chính là thứ phải chạy — kể cả khi họ vừa bấm "Về mặc định" (gửi `{}`,
+      // backend hiểu là xoá cấu hình).
+      tts_config: voiceStyle,
     });
     onClose();
   }
@@ -1740,8 +1782,8 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
             </>
           ) : (
             <>
-              chạy Prompt mẫu trên phần <b>Nội dung</b> rồi đọc bản LLM viết ra — phần Nội dung
-              đọc hiện tại sẽ bị thay.
+              chạy Prompt mẫu trên phần <b>Nội dung</b> rồi đọc bản LLM viết ra — phần Nội dung đọc
+              hiện tại sẽ bị thay.
             </>
           )}
         </p>
@@ -1770,6 +1812,12 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
         </Field>
       </div>
 
+      <VoiceStyleFields
+        value={voiceStyle}
+        onChange={setVoiceStyle}
+        authorGender={voice.author_gender}
+      />
+
       {/* Mode bị tắt thì nói rõ thiếu gì, không để người dùng đoán. */}
       {!isEnabled(collectMode) && metaOf(collectMode)?.reason ? (
         <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
@@ -1792,11 +1840,7 @@ function VoiceContentTab({ voice, onClose }: { voice: Voice; onClose: () => void
           <LLMSetField
             value={llmSetId}
             onChange={setLlmSetId}
-            hint={
-              voice.llm_model_used
-                ? `Lần trước chạy bằng ${voice.llm_model_used}.`
-                : undefined
-            }
+            hint={voice.llm_model_used ? `Lần trước chạy bằng ${voice.llm_model_used}.` : undefined}
           />
         </div>
       ) : null}

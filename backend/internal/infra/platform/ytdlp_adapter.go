@@ -149,7 +149,7 @@ func fallbackID(raw string) string {
 // Facebook có nhiều dạng URL nhất, và link share sinh ra từ app mobile
 // (`/share/p/`, `/share/r/`, `/share/v/`) không mang ID thật — yt-dlp tự
 // resolve redirect nên chỉ cần nhận đúng nền tảng + loại nội dung.
-func NewFacebook(runner CommandRunner, tempDir string) *YtDlpAdapter {
+func NewFacebook(runner CommandRunner, tempDir string, opts ...Option) *YtDlpAdapter {
 	return &YtDlpAdapter{
 		name: domain.PlatformFacebook,
 		hostRe: regexp.MustCompile(
@@ -173,7 +173,7 @@ func NewFacebook(runner CommandRunner, tempDir string) *YtDlpAdapter {
 			{domain.ContentPost, regexp.MustCompile(`(?i)/share/p/([\w-]+)`)},
 			{domain.ContentPost, regexp.MustCompile(`(?i)/share/([\w-]+)/?$`)},
 		},
-		core:          newCore(runner, tempDir, false),
+		core:          newCore(runner, tempDir, false).apply(opts),
 		channelSuffix: "/videos",
 		// Đo trực tiếp trên yt-dlp 2026.08.19: /videos, /reels và cả URL page
 		// trần đều trả "Unsupported URL". yt-dlp chỉ có extractor cho VIDEO
@@ -183,7 +183,7 @@ func NewFacebook(runner CommandRunner, tempDir string) *YtDlpAdapter {
 	}
 }
 
-func NewTikTok(runner CommandRunner, tempDir string) *YtDlpAdapter {
+func NewTikTok(runner CommandRunner, tempDir string, opts ...Option) *YtDlpAdapter {
 	return &YtDlpAdapter{
 		name:   domain.PlatformTikTok,
 		hostRe: regexp.MustCompile(`(?i)^(www\.|m\.|vm\.|vt\.)?tiktok\.com$`),
@@ -195,11 +195,11 @@ func NewTikTok(runner CommandRunner, tempDir string) *YtDlpAdapter {
 			{domain.ContentVideo, regexp.MustCompile(`(?i)tiktok\.com/t/([A-Za-z0-9]{6,})`)},
 			{domain.ContentVideo, regexp.MustCompile(`(?i)tiktok\.com/([A-Za-z0-9]{6,})/?$`)},
 		},
-		core: newCore(runner, tempDir, false),
+		core: newCore(runner, tempDir, false).apply(opts),
 	}
 }
 
-func NewInstagram(runner CommandRunner, tempDir string) *YtDlpAdapter {
+func NewInstagram(runner CommandRunner, tempDir string, opts ...Option) *YtDlpAdapter {
 	return &YtDlpAdapter{
 		name:   domain.PlatformInstagram,
 		hostRe: regexp.MustCompile(`(?i)^(www\.|m\.)?(instagram\.com|instagr\.am)$`),
@@ -212,7 +212,7 @@ func NewInstagram(runner CommandRunner, tempDir string) *YtDlpAdapter {
 			{domain.ContentVideo, regexp.MustCompile(`(?i)/tv/([\w-]+)`)},
 			{domain.ContentStory, regexp.MustCompile(`(?i)/stories/[^/]+/(\d+)`)},
 		},
-		core:          newCore(runner, tempDir, false),
+		core:          newCore(runner, tempDir, false).apply(opts),
 		channelSuffix: "/reels",
 		// yt-dlp tự đánh dấu instagram:user là CURRENTLY BROKEN; thực tế
 		// /reels bị Instagram đá về trang đăng nhập.
@@ -221,7 +221,7 @@ func NewInstagram(runner CommandRunner, tempDir string) *YtDlpAdapter {
 	}
 }
 
-func NewX(runner CommandRunner, tempDir string) *YtDlpAdapter {
+func NewX(runner CommandRunner, tempDir string, opts ...Option) *YtDlpAdapter {
 	return &YtDlpAdapter{
 		name: domain.PlatformX,
 		// t.co là link rút gọn của chính X; yt-dlp resolve được redirect.
@@ -231,7 +231,7 @@ func NewX(runner CommandRunner, tempDir string) *YtDlpAdapter {
 			{domain.ContentTweet, regexp.MustCompile(`(?i)/i/web/status/(\d+)`)},
 			{domain.ContentTweet, regexp.MustCompile(`(?i)t\.co/([A-Za-z0-9]+)`)},
 		},
-		core: newCore(runner, tempDir, false),
+		core: newCore(runner, tempDir, false).apply(opts),
 		// yt-dlp có twitter, twitter:card, twitter:spaces, twitter:broadcast —
 		// không có cái nào cho dòng thời gian của một tài khoản. /media cũng
 		// vậy. Đây là giới hạn của yt-dlp, không phải cấu hình sai.

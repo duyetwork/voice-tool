@@ -99,14 +99,14 @@ export default function HuongDanPage() {
           {/* ------------------------------------------------------------ */}
           <Section id="tong-quan" title="1. Hiểu mô hình 3 tầng">
             <p>
-              Mọi thứ trong tool chạy theo đúng một chuỗi. Nắm chuỗi này thì mọi màn hình còn lại
-              tự sáng:
+              Mọi thứ trong tool chạy theo đúng một chuỗi. Nắm chuỗi này thì mọi màn hình còn lại tự
+              sáng:
             </p>
             <Flow />
             <ul className="ml-4 list-disc space-y-1">
               <li>
-                <b>Danh sách kênh</b> — nơi khai kênh nguồn. Hệ thống tự quét theo lịch và đẻ ra
-                Bài Post. Không bắt buộc: tạo voice tay thì bỏ qua tầng này.
+                <b>Danh sách kênh</b> — nơi khai kênh nguồn. Hệ thống tự quét theo lịch và đẻ ra Bài
+                Post. Không bắt buộc: tạo voice tay thì bỏ qua tầng này.
               </li>
               <li>
                 <b>Bài Post</b> — một bài đăng đã lấy về, kèm nội dung và metadata gốc. Đây là nơi
@@ -147,16 +147,23 @@ export default function HuongDanPage() {
                 . Nền tảng được nhận ra từ chính URL, không có ô chọn riêng.
               </Step>
               <Step n={3} title="Chọn hình thức tạo">
-                Xem <a className="text-indigo-700 hover:underline" href="#tv-hinhthuc">mục 4.1</a>.
-                Hình thức C bắt buộc chọn thêm <b>Prompt mẫu</b> và <b>Bộ API</b> — quét tự động
+                Xem{" "}
+                <a className="text-indigo-700 hover:underline" href="#tv-hinhthuc">
+                  mục 4.1
+                </a>
+                . Hình thức C bắt buộc chọn thêm <b>Prompt mẫu</b> và <b>Bộ API</b> — quét tự động
                 không có ai bấm nút để chọn, nên hai thứ đó phải nằm sẵn trên kênh.
               </Step>
               <Step n={4} title="Chọn tần suất quét và ngôn ngữ">
-                Tần suất tối thiểu 5 phút. Ngôn ngữ để <i>Tự nhận diện</i> nếu kênh đa ngữ; chọn
-                cụ thể thì mọi Bài Post và Voice của kênh nhận ngôn ngữ đó.
+                Tần suất tối thiểu 5 phút. Ngôn ngữ để <i>Tự nhận diện</i> nếu kênh đa ngữ; chọn cụ
+                thể thì mọi Bài Post và Voice của kênh nhận ngôn ngữ đó.
               </Step>
               <Step n={5} title="Chọn hai ô tự động (nếu muốn)">
-                Xem <a className="text-indigo-700 hover:underline" href="#dk-tudong">ngay bên dưới</a>.
+                Xem{" "}
+                <a className="text-indigo-700 hover:underline" href="#dk-tudong">
+                  ngay bên dưới
+                </a>
+                .
               </Step>
               <Step n={6} title="Bấm Thêm kênh">
                 Kênh chạy vòng quét đầu tiên gần như ngay sau đó.
@@ -325,8 +332,8 @@ export default function HuongDanPage() {
                   <tr>
                     <Td className="font-medium text-slate-900">Kết quả</Td>
                     <Td>
-                      Số Bài Post và số Voice kênh này đã đẻ ra. Đã quét mà vẫn 0 nghĩa là kênh
-                      chạy nhưng không bắt được gì.
+                      Số Bài Post và số Voice kênh này đã đẻ ra. Đã quét mà vẫn 0 nghĩa là kênh chạy
+                      nhưng không bắt được gì.
                     </Td>
                   </tr>
                   <tr>
@@ -374,7 +381,10 @@ export default function HuongDanPage() {
               </p>
               <ul className="ml-4 list-disc space-y-1">
                 <li>
-                  <b>Chỉ lấy bài khớp điều kiện</b> — bài không khớp bị bỏ qua hoàn toàn.
+                  <b>Chỉ lấy bài khớp điều kiện</b> — bài không khớp bị bỏ qua hoàn toàn. Mở kênh
+                  ra, tab <b>Bài bị bỏ qua</b> cho xem đúng những bài đó kèm đoạn text đã đem so với
+                  điều kiện. Kênh đang bật mà không ra bài nào thì đây là chỗ nhìn đầu tiên: nếu bài
+                  nào cũng trông đáng lấy thì điều kiện đang quá chặt. Log giữ 7 ngày.
                 </li>
                 <li>
                   <b>Không có mốc đồng bộ</b> — mỗi vòng xét lại cùng một cửa sổ bài mới nhất, và
@@ -644,9 +654,7 @@ export default function HuongDanPage() {
                 <b>Chạy tạo Voice</b> — bấm để tạo voice cho bài đó. Bài lỗi thì nút thành{" "}
                 <i>Chạy lại Voice</i>.
               </li>
-              <li>
-                Chọn nhiều dòng để đổi hình thức / ngôn ngữ / chạy voice hàng loạt.
-              </li>
+              <li>Chọn nhiều dòng để đổi hình thức / ngôn ngữ / chạy voice hàng loạt.</li>
             </ul>
             <Note>
               Metadata gốc (ảnh bìa, tác giả, ngày đăng, hashtag) được lấy tự động ngay khi bài vào
@@ -685,9 +693,26 @@ export default function HuongDanPage() {
                 <NavLink href="/ai-engines">AI Engine</NavLink> → tab <b>TTS</b>. Mỗi người tự khai
                 key 3voices của mình; hạn mức và hoá đơn rơi đúng vào người dùng nó.
               </p>
+              <ul className="ml-4 list-disc space-y-1">
+                <li>
+                  Cột <b>Đang dùng</b> là công tắc: khai bao nhiêu key cũng được, nhưng mỗi người
+                  chỉ <b>một key đang bật</b> — đó là key thật sự đọc voice của bạn. Bật key này thì
+                  các key còn lại của bạn tự tắt.
+                </li>
+                <li>
+                  Key đầu tiên bạn khai tự bật sẵn. Key thêm sau nằm im cho tới khi bạn bật — thêm
+                  key dự phòng không làm đổi key đang chạy.
+                </li>
+                <li>
+                  Cột <b>Trạng thái</b> là kết quả của <i>lần đọc gần nhất</i> bằng key đó:{" "}
+                  <i>Hết credit</i> → nạp thêm bên 3voices; <i>Key hỏng</i> → dán key mới;{" "}
+                  <i>Vượt giới hạn</i> → chờ ít phút, không cần đổi gì. Hệ thống không tự đi hỏi
+                  3voices (mỗi lần hỏi là một request tính tiền), nên luôn xem kèm ngày ghi nhận.
+                </li>
+              </ul>
               <Note tone="warn">
-                Bắt buộc với hình thức B và C. Chưa khai key thì voice chạy tới bước đọc rồi báo
-                lỗi kèm câu hướng dẫn.
+                Bắt buộc với hình thức B và C. Chưa khai key — hoặc đã khai nhưng tắt hết — thì
+                voice chạy tới bước đọc rồi báo lỗi kèm câu hướng dẫn.
               </Note>
             </SubSection>
 
@@ -858,7 +883,10 @@ function SubSection({
   children: React.ReactNode;
 }) {
   return (
-    <section id={id} className="scroll-mt-6 space-y-3 border-t border-slate-100 pt-4 first:border-0 first:pt-0">
+    <section
+      id={id}
+      className="scroll-mt-6 space-y-3 border-t border-slate-100 pt-4 first:border-0 first:pt-0"
+    >
       <h3 className="font-semibold text-slate-900">{title}</h3>
       {children}
     </section>

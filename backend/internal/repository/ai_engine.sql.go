@@ -12,22 +12,71 @@ import (
 	"github.com/google/uuid"
 )
 
+const activateLatestAIEngine = `-- name: ActivateLatestAIEngine :exec
+UPDATE ai_engine ae
+SET is_active = TRUE
+WHERE ae.id = (
+  SELECT newest.id FROM ai_engine newest
+  WHERE newest.user_id = $1
+  ORDER BY newest.created_at DESC
+  LIMIT 1
+)
+AND NOT EXISTS (
+  SELECT 1 FROM ai_engine running
+  WHERE running.user_id = $1 AND running.is_active
+)
+`
+
+// Bật key mới nhất cho người này, CHỈ KHI họ không còn key nào đang bật.
+//
+// Gọi sau khi xoá hoặc chuyển đi key đang bật: trước khi có công tắc, xoá key
+// đang dùng thì key còn lại tự động thế chỗ (luật "key mới nhất thắng"). Không
+// làm vậy nữa thì một thao tác xoá lại lặng lẽ làm chết mọi voice tiếp theo.
+func (q *Queries) ActivateLatestAIEngine(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, activateLatestAIEngine, userID)
+	return err
+}
+
+const countActiveAIEngines = `-- name: CountActiveAIEngines :one
+SELECT count(*) FROM ai_engine WHERE user_id = $1 AND is_active
+`
+
+// Người này có đang bật key nào không — dùng lúc thêm key mới để quyết định
+// key đó vào ở trạng thái bật hay tắt.
+func (q *Queries) CountActiveAIEngines(ctx context.Context, userID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveAIEngines, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAIEngine = `-- name: CreateAIEngine :one
-INSERT INTO ai_engine (user_id, api_key_encrypted, created_by)
-VALUES ($1, $2, $3)
-RETURNING id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at
+INSERT INTO ai_engine (user_id, api_key_encrypted, created_by, is_active)
+VALUES ($1, $2, $3, $4)
+RETURNING id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at, is_active, key_status, key_status_detail, key_status_at
 `
 
 type CreateAIEngineParams struct {
 	UserID          uuid.UUID `json:"user_id"`
 	ApiKeyEncrypted string    `json:"api_key_encrypted"`
 	CreatedBy       uuid.UUID `json:"created_by"`
+	IsActive        bool      `json:"is_active"`
 }
 
 // user_id là CHỦ SỞ HỮU key (worker chạy TTS của người đó bằng key này),
 // created_by là người bấm nút — khác nhau khi admin khai hộ.
+//
+// is_active do service quyết định: key ĐẦU TIÊN của một người thì bật luôn
+// (không thì họ khai key xong voice vẫn báo "chưa bật key nào"), còn người đã
+// có key đang chạy thì key mới vào ở trạng thái tắt — thêm một key dự phòng
+// không được âm thầm đổi giọng đọc của họ.
 func (q *Queries) CreateAIEngine(ctx context.Context, arg CreateAIEngineParams) (AiEngine, error) {
-	row := q.db.QueryRow(ctx, createAIEngine, arg.UserID, arg.ApiKeyEncrypted, arg.CreatedBy)
+	row := q.db.QueryRow(ctx, createAIEngine,
+		arg.UserID,
+		arg.ApiKeyEncrypted,
+		arg.CreatedBy,
+		arg.IsActive,
+	)
 	var i AiEngine
 	err := row.Scan(
 		&i.ID,
@@ -38,8 +87,31 @@ func (q *Queries) CreateAIEngine(ctx context.Context, arg CreateAIEngineParams) 
 		&i.CreatedBy,
 		&i.UserID,
 		&i.LastUsedAt,
+		&i.IsActive,
+		&i.KeyStatus,
+		&i.KeyStatusDetail,
+		&i.KeyStatusAt,
 	)
 	return i, err
+}
+
+const deactivateOtherAIEngines = `-- name: DeactivateOtherAIEngines :exec
+UPDATE ai_engine
+SET is_active = FALSE
+WHERE user_id = $1 AND id <> $2 AND is_active
+`
+
+type DeactivateOtherAIEnginesParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	ID     uuid.UUID `json:"id"`
+}
+
+// Tắt mọi key khác của cùng một người. Tách thành câu riêng chạy TRƯỚC câu bật
+// vì unique index kiểm tra ngay trên từng dòng: gộp thành một UPDATE
+// `is_active = (id = $1)` có thể chạm đúng lúc hai dòng cùng bật và văng lỗi.
+func (q *Queries) DeactivateOtherAIEngines(ctx context.Context, arg DeactivateOtherAIEnginesParams) error {
+	_, err := q.db.Exec(ctx, deactivateOtherAIEngines, arg.UserID, arg.ID)
+	return err
 }
 
 const deleteAIEngine = `-- name: DeleteAIEngine :execrows
@@ -55,7 +127,7 @@ func (q *Queries) DeleteAIEngine(ctx context.Context, id uuid.UUID) (int64, erro
 }
 
 const getAIEngine = `-- name: GetAIEngine :one
-SELECT ae.id, ae.provider, ae.created_at, ae.api_key_encrypted, ae.voice_id, ae.created_by, ae.user_id, ae.last_used_at, owner.email AS user_email, author.email AS created_by_email
+SELECT ae.id, ae.provider, ae.created_at, ae.api_key_encrypted, ae.voice_id, ae.created_by, ae.user_id, ae.last_used_at, ae.is_active, ae.key_status, ae.key_status_detail, ae.key_status_at, owner.email AS user_email, author.email AS created_by_email
 FROM ai_engine ae
 JOIN app_user owner  ON owner.id  = ae.user_id
 JOIN app_user author ON author.id = ae.created_by
@@ -71,6 +143,10 @@ type GetAIEngineRow struct {
 	CreatedBy       uuid.UUID  `json:"created_by"`
 	UserID          uuid.UUID  `json:"user_id"`
 	LastUsedAt      *time.Time `json:"last_used_at"`
+	IsActive        bool       `json:"is_active"`
+	KeyStatus       string     `json:"key_status"`
+	KeyStatusDetail *string    `json:"key_status_detail"`
+	KeyStatusAt     *time.Time `json:"key_status_at"`
 	UserEmail       string     `json:"user_email"`
 	CreatedByEmail  string     `json:"created_by_email"`
 }
@@ -87,6 +163,10 @@ func (q *Queries) GetAIEngine(ctx context.Context, id uuid.UUID) (GetAIEngineRow
 		&i.CreatedBy,
 		&i.UserID,
 		&i.LastUsedAt,
+		&i.IsActive,
+		&i.KeyStatus,
+		&i.KeyStatusDetail,
+		&i.KeyStatusAt,
 		&i.UserEmail,
 		&i.CreatedByEmail,
 	)
@@ -94,14 +174,18 @@ func (q *Queries) GetAIEngine(ctx context.Context, id uuid.UUID) (GetAIEngineRow
 }
 
 const getAIEngineForUser = `-- name: GetAIEngineForUser :one
-SELECT id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at FROM ai_engine
-WHERE user_id = $1
+SELECT id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at, is_active, key_status, key_status_detail, key_status_at FROM ai_engine
+WHERE user_id = $1 AND is_active
 ORDER BY created_at DESC
 LIMIT 1
 `
 
-// Key mà worker dùng khi chạy TTS cho voice của user này: key mới khai nhất
-// (thay key thì key mới thắng ngay, không phải xoá key cũ trước).
+// Key mà worker dùng khi chạy TTS cho voice của user này: key ĐANG BẬT.
+//
+// Chỉ số ít (uq_ai_engine_active_per_user bảo đảm mỗi người nhiều nhất 1 key
+// bật), nhưng vẫn LIMIT 1 để query không phụ thuộc vào index đó còn tồn tại.
+// Không có dòng nào = người này chưa khai key, hoặc đã tắt hết — cả hai đều
+// không chạy TTS được, và ttsFor nói ra đúng câu đó.
 func (q *Queries) GetAIEngineForUser(ctx context.Context, userID uuid.UUID) (AiEngine, error) {
 	row := q.db.QueryRow(ctx, getAIEngineForUser, userID)
 	var i AiEngine
@@ -114,17 +198,21 @@ func (q *Queries) GetAIEngineForUser(ctx context.Context, userID uuid.UUID) (AiE
 		&i.CreatedBy,
 		&i.UserID,
 		&i.LastUsedAt,
+		&i.IsActive,
+		&i.KeyStatus,
+		&i.KeyStatusDetail,
+		&i.KeyStatusAt,
 	)
 	return i, err
 }
 
 const listAIEngines = `-- name: ListAIEngines :many
-SELECT ae.id, ae.provider, ae.created_at, ae.api_key_encrypted, ae.voice_id, ae.created_by, ae.user_id, ae.last_used_at, owner.email AS user_email, author.email AS created_by_email
+SELECT ae.id, ae.provider, ae.created_at, ae.api_key_encrypted, ae.voice_id, ae.created_by, ae.user_id, ae.last_used_at, ae.is_active, ae.key_status, ae.key_status_detail, ae.key_status_at, owner.email AS user_email, author.email AS created_by_email
 FROM ai_engine ae
 JOIN app_user owner  ON owner.id  = ae.user_id
 JOIN app_user author ON author.id = ae.created_by
 WHERE ($1::uuid IS NULL OR ae.user_id = $1)
-ORDER BY owner.email, ae.created_at DESC
+ORDER BY ae.created_at DESC
 `
 
 type ListAIEnginesRow struct {
@@ -136,12 +224,21 @@ type ListAIEnginesRow struct {
 	CreatedBy       uuid.UUID  `json:"created_by"`
 	UserID          uuid.UUID  `json:"user_id"`
 	LastUsedAt      *time.Time `json:"last_used_at"`
+	IsActive        bool       `json:"is_active"`
+	KeyStatus       string     `json:"key_status"`
+	KeyStatusDetail *string    `json:"key_status_detail"`
+	KeyStatusAt     *time.Time `json:"key_status_at"`
 	UserEmail       string     `json:"user_email"`
 	CreatedByEmail  string     `json:"created_by_email"`
 }
 
 // `owner` NULL = xem tất cả (admin). User thường luôn được service ép owner =
 // chính mình, nên không đọc được key của người khác dù gọi thẳng API.
+//
+// Xếp theo THỜI GIAN TẠO, mới nhất trước — giống mọi bảng khác trong hệ thống.
+// Trước đây admin thấy danh sách gom theo email: key vừa thêm rơi vào giữa
+// bảng theo thứ tự chữ cái, nên thao tác thường gặp nhất (khai key xong xem nó
+// đã vào chưa) lại là thao tác khó nhất.
 func (q *Queries) ListAIEngines(ctx context.Context, owner *uuid.UUID) ([]ListAIEnginesRow, error) {
 	rows, err := q.db.Query(ctx, listAIEngines, owner)
 	if err != nil {
@@ -160,6 +257,10 @@ func (q *Queries) ListAIEngines(ctx context.Context, owner *uuid.UUID) ([]ListAI
 			&i.CreatedBy,
 			&i.UserID,
 			&i.LastUsedAt,
+			&i.IsActive,
+			&i.KeyStatus,
+			&i.KeyStatusDetail,
+			&i.KeyStatusAt,
 			&i.UserEmail,
 			&i.CreatedByEmail,
 		); err != nil {
@@ -171,6 +272,66 @@ func (q *Queries) ListAIEngines(ctx context.Context, owner *uuid.UUID) ([]ListAI
 		return nil, err
 	}
 	return items, nil
+}
+
+const setAIEngineActive = `-- name: SetAIEngineActive :one
+UPDATE ai_engine
+SET is_active = $1
+WHERE id = $2
+RETURNING id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at, is_active, key_status, key_status_detail, key_status_at
+`
+
+type SetAIEngineActiveParams struct {
+	IsActive bool      `json:"is_active"`
+	ID       uuid.UUID `json:"id"`
+}
+
+// Bật/tắt MỘT key. Người gọi chịu trách nhiệm tắt các key khác TRƯỚC khi bật
+// key này (xem DeactivateOtherAIEngines) — làm ngược lại là đụng
+// uq_ai_engine_active_per_user.
+func (q *Queries) SetAIEngineActive(ctx context.Context, arg SetAIEngineActiveParams) (AiEngine, error) {
+	row := q.db.QueryRow(ctx, setAIEngineActive, arg.IsActive, arg.ID)
+	var i AiEngine
+	err := row.Scan(
+		&i.ID,
+		&i.Provider,
+		&i.CreatedAt,
+		&i.ApiKeyEncrypted,
+		&i.VoiceID,
+		&i.CreatedBy,
+		&i.UserID,
+		&i.LastUsedAt,
+		&i.IsActive,
+		&i.KeyStatus,
+		&i.KeyStatusDetail,
+		&i.KeyStatusAt,
+	)
+	return i, err
+}
+
+const setAIEngineStatus = `-- name: SetAIEngineStatus :exec
+UPDATE ai_engine
+SET key_status        = $1,
+    key_status_detail = $2,
+    key_status_at     = now()
+WHERE id = $3
+`
+
+type SetAIEngineStatusParams struct {
+	KeyStatus       string    `json:"key_status"`
+	KeyStatusDetail *string   `json:"key_status_detail"`
+	ID              uuid.UUID `json:"id"`
+}
+
+// Ghi lại điều vừa học được về key sau một lần gọi TTS.
+//
+// Chỉ gọi khi lần gọi đó THẬT SỰ nói lên điều gì về key (đọc được audio, hoặc
+// nhà cung cấp từ chối vì key/credit/rate limit). Lỗi mạng và lỗi 5xx của họ
+// không gọi vào đây: ghi 'unknown' đè lên một lần 402 là xoá mất đúng thông
+// tin người dùng cần.
+func (q *Queries) SetAIEngineStatus(ctx context.Context, arg SetAIEngineStatusParams) error {
+	_, err := q.db.Exec(ctx, setAIEngineStatus, arg.KeyStatus, arg.KeyStatusDetail, arg.ID)
+	return err
 }
 
 const touchAIEngineUsed = `-- name: TouchAIEngineUsed :exec
@@ -189,7 +350,7 @@ UPDATE ai_engine
 SET api_key_encrypted = COALESCE($1, api_key_encrypted),
     user_id           = COALESCE($2, user_id)
 WHERE id = $3
-RETURNING id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at
+RETURNING id, provider, created_at, api_key_encrypted, voice_id, created_by, user_id, last_used_at, is_active, key_status, key_status_detail, key_status_at
 `
 
 type UpdateAIEngineParams struct {
@@ -212,6 +373,10 @@ func (q *Queries) UpdateAIEngine(ctx context.Context, arg UpdateAIEngineParams) 
 		&i.CreatedBy,
 		&i.UserID,
 		&i.LastUsedAt,
+		&i.IsActive,
+		&i.KeyStatus,
+		&i.KeyStatusDetail,
+		&i.KeyStatusAt,
 	)
 	return i, err
 }

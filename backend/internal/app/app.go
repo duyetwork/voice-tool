@@ -62,6 +62,11 @@ type App struct {
 	// FetchStats đếm số lần từng nền tảng chặn ta — dữ liệu để quyết định có
 	// cần proxy hay không (bậc 6 của thang xử lý rủi ro).
 	FetchStats *service.FetchStats
+	// AIUsage đếm token/ký tự đã tiêu — dữ liệu để trả lời "đổi model có rẻ
+	// hơn không", thứ mà màn Cài đặt cho đổi nhưng không cho đo.
+	AIUsage *service.AIUsage
+	// Health đếm những thứ đang hỏng âm thầm (voice lỗi, token chủ kênh chết).
+	Health *service.Health
 	// Settings đọc/ghi app_setting (chuỗi dự phòng LLM, batch).
 	Settings *service.Settings
 	// LLMSets quản lý Bộ API key LLM; LLMRouter là thứ worker gọi khi chạy mode C.
@@ -119,12 +124,17 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		"ffprobe": cfg.FFprobePath,
 	})
 	// Tất cả nền tảng đều tải qua yt-dlp; adapter chỉ khác cách nhận diện URL.
+	// Proxy khai theo từng nền tảng (YTDLP_PROXY_<NỀN TẢNG>), rỗng thì gọi
+	// thẳng — xem config.YtDlpProxyFor.
+	proxyFor := func(p domain.Platform) platformadapter.Option {
+		return platformadapter.WithProxy(cfg.YtDlpProxyFor(p))
+	}
 	platforms := platformadapter.NewRegistry(
-		platformadapter.NewYouTube(runner, ""),
-		platformadapter.NewFacebook(runner, ""),
-		platformadapter.NewTikTok(runner, ""),
-		platformadapter.NewInstagram(runner, ""),
-		platformadapter.NewX(runner, ""),
+		platformadapter.NewYouTube(runner, "", proxyFor(domain.PlatformYouTube)),
+		platformadapter.NewFacebook(runner, "", proxyFor(domain.PlatformFacebook)),
+		platformadapter.NewTikTok(runner, "", proxyFor(domain.PlatformTikTok)),
+		platformadapter.NewInstagram(runner, "", proxyFor(domain.PlatformInstagram)),
+		platformadapter.NewX(runner, "", proxyFor(domain.PlatformX)),
 	)
 	prober := audio.NewProber(runner, "")
 
@@ -170,6 +180,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 	tokens := jwt.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
 	settings := service.NewSettings(queries, log)
+	aiUsage := service.NewAIUsage(queries, settings, log)
 	// Router đứng TRÊN các adapter LLM: chọn key + model theo Bộ API gắn trên
 	// voice, tự chuyển dự phòng khi hết hạn mức. `llmProvider` từ .env chỉ còn
 	// là đường dự phòng cho voice không gắn bộ nào (thực tế là dev).
@@ -179,6 +190,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Factory:  llm.NewFactory(),
 		Settings: settings,
 		Fallback: llmProvider,
+		Usage:    aiUsage,
 		Logger:   log,
 	})
 	enqueuer := worker.NewEnqueuer(asynqClient)
@@ -187,6 +199,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// cho cả quét kênh lẫn tải bài: nền tảng chỉ thấy tổng số request, không
 	// quan tâm request đó đến từ luồng nào của ta.
 	platformGate := service.NewPlatformGate(cfg.PlatformMinGap)
+	// Gate riêng cho TTS: khoá là API key chứ không phải nền tảng, và 3voices
+	// cho 2 job đồng thời trên mỗi key chứ không phải 1.
+	ttsGate := service.NewTTSGate(cfg.TTSMinGap, cfg.TTSMaxConcurrent)
 	fetchStats := service.NewFetchStats(queries, log)
 	multimeCreds := service.NewMultimeCreds(queries, multimeAuth, box, log)
 	multimeUsers := service.NewMultimeUsers(multimeDir, multimeCreds)
@@ -259,6 +274,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			Logger:     log,
 			Gate:       platformGate,
 			FetchStats: fetchStats,
+			TTSGate:    ttsGate,
+			Usage:      aiUsage,
 			Authors:    multimeUsers,
 		}),
 		Scan: service.NewScan(service.ScanDeps{
@@ -269,8 +286,11 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			Gate:       platformGate,
 			FetchStats: fetchStats,
 		}),
-		FetchStats:   fetchStats,
-		Maintenance:  service.NewMaintenance(queries, log, cfg.SkippedLogRetention),
+		FetchStats: fetchStats,
+		AIUsage:    aiUsage,
+		Health:     service.NewHealth(queries, log),
+		Maintenance: service.NewMaintenance(
+			queries, log, cfg.SkippedLogRetention, cfg.AIUsageRetention),
 		MultimeCreds: multimeCreds,
 		MultimeUsers: multimeUsers,
 		CatalogCache: service.NewCatalogCache(queries, multimeUsers, log),

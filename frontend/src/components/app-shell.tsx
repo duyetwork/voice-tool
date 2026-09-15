@@ -6,6 +6,7 @@ import * as React from "react";
 
 import { usePermissions } from "@/components/permission";
 import { Button } from "@/components/ui/button";
+import { useHealth } from "@/hooks/use-api";
 import { tokenStore } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { User } from "@/types/api";
@@ -184,7 +185,61 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Button>
         </header>
 
-        <main className="min-w-0 flex-1 overflow-y-auto p-6">{children}</main>
+        <main className="min-w-0 flex-1 overflow-y-auto p-6">
+          <HealthBanner />
+          {children}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * HealthBanner — ba thứ hỏng mà không có gì hiện ra trên màn hình.
+ *
+ * Nặng nhất là token multime của người tạo kênh hết hạn: khi đó MỌI auto-publish
+ * của các kênh họ tạo đều fail, Voice nằm lại ở trạng thái lỗi, mà bảng kênh vẫn
+ * hiện "Đang bật" như bình thường. Không ai đi tìm sự cố mình không biết là có,
+ * nên nó phải tự hiện ra ở mọi trang.
+ *
+ * Cố ý KHÔNG có nút tắt: tắt được thì thứ đầu tiên người ta làm là tắt nó đi.
+ * Muốn hết banner thì phải xử lý hết voice lỗi — đó chính là việc cần làm.
+ */
+function HealthBanner() {
+  const health = useHealth();
+  const data = health.data;
+
+  // Đọc hỏng thì im lặng: không biến một lỗi phụ thành cảnh báo đỏ giả.
+  if (!data || data.ok) return null;
+
+  const parts: string[] = [];
+  if (data.users_need_relogin > 0) {
+    parts.push(
+      `${data.users_need_relogin} người tạo kênh đã hết hạn đăng nhập multime — ` +
+        "kênh của họ không tự đăng được, chính họ phải đăng nhập lại",
+    );
+  }
+  if (data.channels_with_error > 0) {
+    parts.push(`${data.channels_with_error} kênh đang bật nhưng vòng quét gần nhất lỗi`);
+  }
+  if (data.failed_voices > 0) {
+    parts.push(`${data.failed_voices} voice đang ở trạng thái lỗi`);
+  }
+
+  return (
+    <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      <ul className="list-inside list-disc space-y-0.5">
+        {parts.map((text) => (
+          <li key={text}>{text}</li>
+        ))}
+      </ul>
+      <div className="mt-2 flex gap-3 text-xs">
+        <Link href="/voices?publish_status=failed" className="font-medium underline">
+          Xem voice lỗi
+        </Link>
+        <Link href="/lists/breaking" className="font-medium underline">
+          Xem kênh
+        </Link>
       </div>
     </div>
   );

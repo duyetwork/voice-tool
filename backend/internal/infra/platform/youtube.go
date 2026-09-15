@@ -17,8 +17,8 @@ type YouTube struct {
 
 var _ domain.PlatformAdapter = (*YouTube)(nil)
 
-func NewYouTube(runner CommandRunner, tempDir string) *YouTube {
-	return &YouTube{core: newCore(runner, tempDir, true)}
+func NewYouTube(runner CommandRunner, tempDir string, opts ...Option) *YouTube {
+	return &YouTube{core: newCore(runner, tempDir, true).apply(opts)}
 }
 
 func (y *YouTube) Name() domain.Platform { return domain.PlatformYouTube }

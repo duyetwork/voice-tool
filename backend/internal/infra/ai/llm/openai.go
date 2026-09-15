@@ -62,19 +62,35 @@ type openAIResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+	} `json:"usage"`
+}
+
+func (r openAIResponse) usage() domain.LLMUsage {
+	return domain.LLMUsage{
+		InputTokens:  r.Usage.PromptTokens,
+		OutputTokens: r.Usage.CompletionTokens,
+	}
 }
 
 // ---- gọi -----------------------------------------------------------------
 
-func (o *OpenAI) Generate(ctx context.Context, promptContent, sourceText string) (string, error) {
+func (o *OpenAI) Generate(ctx context.Context, promptContent, sourceText string) (
+	string, domain.LLMUsage, error,
+) {
 	resp, err := o.call(ctx, systemPrompt, userMessage(promptContent, sourceText), nil)
 	if err != nil {
-		return "", err
+		return "", domain.LLMUsage{}, err
 	}
-	return o.textOf(resp)
+	text, err := o.textOf(resp)
+	return text, resp.usage(), err
 }
 
-func (o *OpenAI) GenerateBatch(ctx context.Context, promptContent string, items []string) ([]string, error) {
+func (o *OpenAI) GenerateBatch(ctx context.Context, promptContent string, items []string) (
+	[]string, domain.LLMUsage, error,
+) {
 	resp, err := o.call(ctx, batchSystemPrompt, batchUserMessage(promptContent, items),
 		&openAIResponseFormat{
 			Type: "json_schema",
@@ -88,17 +104,19 @@ func (o *OpenAI) GenerateBatch(ctx context.Context, promptContent string, items 
 			},
 		})
 	if err != nil {
-		return nil, err
+		return nil, domain.LLMUsage{}, err
 	}
+	usage := resp.usage()
 	raw, err := o.textOf(resp)
 	if err != nil {
-		return nil, err
+		return nil, usage, err
 	}
 	out, err := parseBatch(raw, len(items))
 	if err != nil {
-		return nil, domain.LLMFail(domain.LLMFailTransient, fmt.Errorf("openai batch: %w", err))
+		return nil, usage, domain.LLMFail(domain.LLMFailTransient,
+			fmt.Errorf("openai batch: %w", err))
 	}
-	return out, nil
+	return out, usage, nil
 }
 
 func (o *OpenAI) call(

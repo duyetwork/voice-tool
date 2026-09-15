@@ -12,6 +12,17 @@ import (
 	"github.com/google/uuid"
 )
 
+const countSkippedLogs = `-- name: CountSkippedLogs :one
+SELECT COUNT(*) FROM skipped_log WHERE list_breaking_id = $1
+`
+
+func (q *Queries) CountSkippedLogs(ctx context.Context, listBreakingID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSkippedLogs, listBreakingID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countSkippedLogsSince = `-- name: CountSkippedLogsSince :one
 SELECT COUNT(*) FROM skipped_log
 WHERE list_breaking_id = $1 AND checked_at >= $2
@@ -31,18 +42,26 @@ func (q *Queries) CountSkippedLogsSince(ctx context.Context, arg CountSkippedLog
 }
 
 const createSkippedLog = `-- name: CreateSkippedLog :exec
-INSERT INTO skipped_log (list_breaking_id, post_id_external, reason)
-VALUES ($1, $2, $3)
+INSERT INTO skipped_log (list_breaking_id, post_id_external, reason, post_url, text_excerpt)
+VALUES ($1, $2, $3, $4, $5)
 `
 
 type CreateSkippedLogParams struct {
 	ListBreakingID uuid.UUID `json:"list_breaking_id"`
 	PostIDExternal string    `json:"post_id_external"`
 	Reason         string    `json:"reason"`
+	PostUrl        *string   `json:"post_url"`
+	TextExcerpt    *string   `json:"text_excerpt"`
 }
 
 func (q *Queries) CreateSkippedLog(ctx context.Context, arg CreateSkippedLogParams) error {
-	_, err := q.db.Exec(ctx, createSkippedLog, arg.ListBreakingID, arg.PostIDExternal, arg.Reason)
+	_, err := q.db.Exec(ctx, createSkippedLog,
+		arg.ListBreakingID,
+		arg.PostIDExternal,
+		arg.Reason,
+		arg.PostUrl,
+		arg.TextExcerpt,
+	)
 	return err
 }
 
@@ -59,7 +78,7 @@ func (q *Queries) DeleteSkippedLogsBefore(ctx context.Context, before time.Time)
 }
 
 const listSkippedLogs = `-- name: ListSkippedLogs :many
-SELECT id, list_breaking_id, post_id_external, reason, checked_at FROM skipped_log
+SELECT id, list_breaking_id, post_id_external, reason, checked_at, post_url, text_excerpt FROM skipped_log
 WHERE list_breaking_id = $1
 ORDER BY checked_at DESC
 LIMIT $3 OFFSET $2
@@ -86,6 +105,8 @@ func (q *Queries) ListSkippedLogs(ctx context.Context, arg ListSkippedLogsParams
 			&i.PostIDExternal,
 			&i.Reason,
 			&i.CheckedAt,
+			&i.PostUrl,
+			&i.TextExcerpt,
 		); err != nil {
 			return nil, err
 		}

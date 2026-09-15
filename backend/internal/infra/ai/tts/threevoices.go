@@ -102,55 +102,72 @@ var languageNames = map[string]string{
 // gửi `style=normal` bị từ chối. Đừng thêm lại nếu chưa thấy nó trong danh
 // sách trên.
 //
-// Chọn bộ trung tính (nữ, trẻ, cao độ vừa) vì đây là giọng đọc bản tin. Ai cần
-// giọng cố định giữa các voice thì lưu giọng bên 3voices rồi khai
-// THREEVOICES_VOICE_ID — lúc đó hệ thống gọi /tts/saved và bộ mặc định này
-// không được dùng tới.
+// Chọn bộ trung tính (nữ, trẻ, cao độ vừa) vì đây là giọng đọc bản tin. Đây chỉ
+// là ĐÁY: người dùng chỉnh gì ở mục "Cấu hình giọng đọc" thì giá trị đó thắng,
+// trường nào họ để trống mới rơi về đây.
 const (
 	defaultVoiceGender = "female"
 	defaultVoiceAge    = "young adult"
 	defaultVoicePitch  = "moderate pitch"
+	defaultVoiceSpeed  = 1.0
 )
 
-func (t *ThreeVoices) Synthesize(ctx context.Context, text, language string) ([]byte, error) {
-	if strings.TrimSpace(text) == "" {
+func (t *ThreeVoices) Synthesize(ctx context.Context, req domain.SpeechRequest) ([]byte, error) {
+	if strings.TrimSpace(req.Text) == "" {
 		return nil, domain.Permanent(domain.Explain(
 			"Không có nội dung nào để đọc", fmt.Errorf("3voices: text rỗng")))
 	}
+	style := req.Style.Normalize()
 
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 
-	if err := mw.WriteField("text", text); err != nil {
+	if err := mw.WriteField("text", req.Text); err != nil {
 		return nil, err
 	}
-	if name := languageNames[baseLang(language)]; name != "" {
+	if name := languageNames[baseLang(req.Language)]; name != "" {
 		_ = mw.WriteField("language", name)
 	}
-	_ = mw.WriteField("speed", strconv.FormatFloat(1.0, 'f', 1, 64))
+	speed := defaultVoiceSpeed
+	if style.Speed != nil {
+		speed = *style.Speed
+	}
+	_ = mw.WriteField("speed", strconv.FormatFloat(speed, 'f', 2, 64))
 
+	// Giọng ĐÃ LƯU chỉ dùng khi người dùng KHÔNG mô tả giọng nào khác.
+	//
+	// /tts/saved bỏ qua hoàn toàn gender/age/pitch/accent — gửi kèm cũng không
+	// đổi gì. Nên nếu họ vừa mở "Cấu hình giọng đọc" ra chỉnh mà vẫn đi đường
+	// saved thì kết quả nghe y hệt lúc chưa chỉnh, và không có chỗ nào nói vì
+	// sao. Chỉnh là ý muốn rõ ràng hơn một voice_id khai một lần từ lâu, nên
+	// nó thắng và ta chuyển sang /tts/design.
 	path := "/api/v1/tts/design"
-	if t.voiceID != "" {
+	if t.voiceID != "" && style.IsZero() {
 		path = "/api/v1/tts/saved"
 		_ = mw.WriteField("voice_id", t.voiceID)
 	} else {
-		_ = mw.WriteField("gender", defaultVoiceGender)
-		_ = mw.WriteField("age", defaultVoiceAge)
-		_ = mw.WriteField("pitch", defaultVoicePitch)
+		_ = mw.WriteField("gender", firstNonEmpty(style.Gender, defaultVoiceGender))
+		_ = mw.WriteField("age", firstNonEmpty(style.Age, defaultVoiceAge))
+		_ = mw.WriteField("pitch", firstNonEmpty(style.Pitch, defaultVoicePitch))
+		// Accent KHÔNG có mặc định: không gửi nghĩa là giọng chuẩn, còn ép một
+		// accent nào đó vào mọi bản tin là thêm chất giọng người dùng không xin.
+		if style.Accent != "" {
+			_ = mw.WriteField("accent", style.Accent)
+		}
 	}
 	if err := mw.Close(); err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, &body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, &body)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+t.apiKey)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("Accept", "audio/wav")
+	httpReq.Header.Set("Authorization", "Bearer "+t.apiKey)
+	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
+	httpReq.Header.Set("Accept", "audio/wav")
 
-	resp, err := t.http.Do(req)
+	resp, err := t.http.Do(httpReq)
 	if err != nil {
 		// Lỗi mạng là lỗi TẠM THỜI: không bọc Permanent để Asynq còn retry.
 		// Nói rõ là không gọi được tới 3voices, không phải key sai.
@@ -188,19 +205,23 @@ func (t *ThreeVoices) httpError(status int, path string, raw []byte) error {
 	detail := providerMessage(raw)
 	technical := fmt.Errorf("3voices %s trả về %d: %s", path, status, strings.TrimSpace(string(raw)))
 
+	// domain.FaultyKey gắn thêm TÌNH TRẠNG CỦA KEY vào những mã lỗi thật sự nói
+	// về key. Cột "Trạng thái" ở màn AI Engine đọc đúng thứ này, nên chỉ gắn khi
+	// nhà cung cấp nói về key: 5xx, lỗi mạng hay text quá dài không chứng minh
+	// được điều gì về key và không được phép xoá dấu vết của lần 402 trước đó.
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return domain.Permanent(domain.Explain(
+		return domain.Permanent(domain.FaultyKey(domain.KeyStatusInvalid, detail, domain.Explain(
 			"API key 3voices không hợp lệ hoặc đã bị thu hồi — khai lại key ở mục AI Engine"+
-				suffix(detail), technical))
+				suffix(detail), technical)))
 	case status == http.StatusPaymentRequired:
-		return domain.Permanent(domain.Explain(
-			"Tài khoản 3voices hết credit — nạp thêm rồi chạy lại"+suffix(detail), technical))
+		return domain.Permanent(domain.FaultyKey(domain.KeyStatusNoCredit, detail, domain.Explain(
+			"Tài khoản 3voices hết credit — nạp thêm rồi chạy lại"+suffix(detail), technical)))
 	case status == http.StatusTooManyRequests:
 		// 429 = vượt rate limit (10 req/phút) -> để Asynq retry với backoff.
-		return domain.Explain(
+		return domain.FaultyKey(domain.KeyStatusRateLimited, detail, domain.Explain(
 			"3voices báo vượt giới hạn số request — hệ thống sẽ tự thử lại sau"+suffix(detail),
-			technical)
+			technical))
 	case status == http.StatusRequestEntityTooLarge:
 		return domain.Permanent(domain.Explain(
 			"Nội dung quá dài so với giới hạn của 3voices — rút ngắn text rồi chạy lại"+suffix(detail),
@@ -260,4 +281,14 @@ func baseLang(lang string) string {
 		return lang[:i]
 	}
 	return lang
+}
+
+// firstNonEmpty: giá trị người dùng chọn, không chọn thì rơi về mặc định.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

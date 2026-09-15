@@ -20,9 +20,14 @@ func (m *Mock) Name() string { return "mock" }
 
 func (m *Mock) SupportedLanguages() []string { return []string{"vi", "en", "ja", "ko", "zh"} }
 
-func (m *Mock) Synthesize(_ context.Context, text, _ string) ([]byte, error) {
-	// ~15 ký tự/giây, tối thiểu 1 giây.
-	seconds := math.Max(1, float64(len([]rune(text)))/15)
+func (m *Mock) Synthesize(_ context.Context, req domain.SpeechRequest) ([]byte, error) {
+	// ~15 ký tự/giây, tối thiểu 1 giây. Tốc độ đọc người dùng chọn đổi độ dài
+	// file theo đúng tỉ lệ, để test độ dài audio ở dev không lệch với thật.
+	speed := 1.0
+	if req.Style.Speed != nil && *req.Style.Speed > 0 {
+		speed = *req.Style.Speed
+	}
+	seconds := math.Max(1, float64(len([]rune(req.Text)))/15/speed)
 	return silentWAV(seconds), nil
 }
 

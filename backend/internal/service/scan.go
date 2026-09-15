@@ -28,16 +28,22 @@ type Scan struct {
 	enq       domain.Enqueuer
 	log       *slog.Logger
 	// gate giữ nhịp gọi yt-dlp theo từng nền tảng; stats đếm số lần bị chặn.
-	gate  *PlatformGate
+	gate  *KeyGate
 	stats *FetchStats
 }
+
+// skippedExcerptLen — độ dài đoạn text lưu kèm mỗi bài bị bỏ qua.
+//
+// 300 ký tự: đủ để nhìn ra bài nói về cái gì, và đủ ngắn để một vòng quét bỏ
+// qua 200 bài không biến bảng log thành nơi lưu nội dung của cả kênh.
+const skippedExcerptLen = 300
 
 type ScanDeps struct {
 	Queries    *repository.Queries
 	Platforms  domain.PlatformRegistry
 	Enqueuer   domain.Enqueuer
 	Logger     *slog.Logger
-	Gate       *PlatformGate
+	Gate       *KeyGate
 	FetchStats *FetchStats
 }
 
@@ -216,10 +222,15 @@ func (s *Scan) scanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 		// Regex là tiêu chí duy nhất quyết định lấy hay bỏ (business rule #3).
 		if !matchAny(patterns, p.Text) {
 			res.Skipped++
+			// Ghi kèm URL và ĐOẠN TEXT đã đem so: không có hai thứ đó thì log
+			// chỉ là một danh sách ID, và không ai nhìn ID mà kết luận được
+			// regex quá chặt hay bài thật sự không liên quan.
 			if err := s.q.CreateSkippedLog(ctx, repository.CreateSkippedLogParams{
 				ListBreakingID: list.ID,
 				PostIDExternal: p.PostID,
 				Reason:         fmt.Sprintf("không khớp %d regex_patterns", len(patterns)),
+				PostUrl:        nullable(p.URL),
+				TextExcerpt:    nullable(excerpt(p.Text, skippedExcerptLen)),
 			}); err != nil {
 				s.log.WarnContext(ctx, "ghi skipped_log thất bại", "error", err, "post_id", p.PostID)
 			}

@@ -57,6 +57,7 @@ func run() error {
 		LLMSets:    application.LLMSets,
 		Settings:   application.Settings,
 		FetchStats: application.FetchStats,
+		AIUsage:    application.AIUsage,
 		Audit:      application.Audit,
 		User:       application.User,
 

@@ -73,6 +73,41 @@ export interface PublishRequirements {
 /** Giới tính tài khoản Strongbody — đúng 3 giá trị strongbody-api nhận. */
 export type Gender = "male" | "female" | "other";
 
+/**
+ * VoiceStyle — cấu hình giọng đọc gửi cho TTS.
+ *
+ * Giá trị là bộ từ khoá tiếng Anh của nhà cung cấp, KHÔNG phải nhãn hiển thị:
+ * sai một chữ là hỏng cả request. Danh sách hợp lệ lấy từ `/meta/voice-style`
+ * chứ không chép cứng ở đây — một danh sách nằm ở hai nơi thì sớm muộn cũng
+ * lệch, và bên lệch sẽ là bên không validate.
+ *
+ * Mọi trường tuỳ chọn; để trống = theo mặc định của nhà cung cấp.
+ */
+export interface VoiceStyle {
+  gender?: string;
+  age?: string;
+  pitch?: string;
+  accent?: string;
+  /** Tốc độ đọc, 1.0 là bình thường. */
+  speed?: number;
+}
+
+/** Bộ giá trị hợp lệ cho VoiceStyle, do backend công bố. */
+export interface VoiceStyleOptions {
+  genders: string[];
+  ages: string[];
+  pitches: string[];
+  accents: string[];
+  speed: { min: number; max: number };
+  /**
+   * API key của người đang đăng nhập có khai sẵn một giọng đã lưu hay không.
+   *
+   * Có thì form phải nói trước: chỉnh cấu hình = bỏ giọng đó, sinh giọng mới
+   * theo mô tả.
+   */
+  has_saved_voice: boolean;
+}
+
 /** Quốc gia trong danh mục Strongbody — dùng để lọc author. */
 export interface Country {
   id: number;
@@ -236,6 +271,13 @@ export interface Voice {
   author_country_id: number | null;
   /** Tạo xong audio thì tự đăng — bảng dựa vào đây để biết còn việc đang chạy. */
   publish_when_ready: boolean;
+  /**
+   * Cấu hình giọng đọc đã chốt cho voice này (mục "Cấu hình giọng đọc").
+   *
+   * null = giọng mặc định của nhà cung cấp. Modal Tạo lại đọc lại từ đây để
+   * hiện đúng thứ người dùng đã chọn, thay vì mở ra là về mặc định.
+   */
+  tts_config: VoiceStyle | null;
   /** Người dùng chủ động chọn "không có ảnh" (khác với chưa có ảnh). */
   no_image: boolean;
   publish_status: PublishStatus;
@@ -433,6 +475,25 @@ export interface AIEngine {
   created_by: string;
   created_by_email: string;
   api_key_masked: string;
+  /**
+   * Key này có phải key ĐANG CHẠY của chủ sở hữu không.
+   *
+   * Mỗi người nhiều nhất 1 key bật — bật key này là tắt các key khác của cùng
+   * người, backend ép bằng unique index chứ không chỉ bằng UI.
+   */
+  is_active: boolean;
+  /**
+   * Điều học được từ LẦN GỌI TTS GẦN NHẤT bằng key này. Xem KEY_STATUS_LABELS.
+   *
+   * Luôn là thông tin QUÁ KHỨ: hệ thống không thăm dò 3voices định kỳ (mỗi lần
+   * hỏi là một request tính tiền), chỉ ghi lại những gì lần đọc thật nói ra.
+   * Vì thế luôn đọc kèm `key_status_at`.
+   */
+  key_status: "unknown" | "ok" | "invalid" | "no_credit" | "rate_limited";
+  /** Nguyên văn câu 3voices trả về, để đối chiếu khi mở ticket với họ. */
+  key_status_detail: string | null;
+  /** Lúc học được trạng thái đó; null = chưa chạy lần nào. */
+  key_status_at: string | null;
   created_at: string;
   /** Lần gần nhất key thật sự đọc ra audio; null = khai xong chưa dùng. */
   last_used_at: string | null;
@@ -532,6 +593,72 @@ export interface Settings {
   llm_batch: LLMBatchConfig;
   allowed_models: Record<LLMProvider, string[]>;
   providers: LLMProvider[];
+  ai_prices: AIPrice[];
+}
+
+/** Loại dịch vụ AI bị tính tiền — ba loại, ba đơn vị tính khác nhau. */
+export type AIKind = "llm" | "tts" | "stt";
+
+/**
+ * Đơn giá của 1 (loại, nhà cung cấp, model), do admin tự khai theo hoá đơn.
+ *
+ * Không có bảng giá mặc định trong code: giá đổi vài lần một năm và khác nhau
+ * theo hợp đồng, nên một con số ghim sẵn sẽ sai mà không báo lỗi.
+ */
+export interface AIPrice {
+  kind: AIKind;
+  provider: string;
+  model: string;
+  /** LLM: USD cho 1 triệu token. */
+  input_per_mtok: number;
+  output_per_mtok: number;
+  /** TTS: USD cho 1 triệu ký tự. */
+  per_mchars: number;
+  /** STT: USD cho 1 phút audio. */
+  per_minute: number;
+}
+
+export interface AIUsageRow {
+  day: string;
+  kind: AIKind;
+  provider: string;
+  model: string;
+  calls: number;
+  failed: number;
+  input_tokens: number;
+  output_tokens: number;
+  characters: number;
+  audio_seconds: number;
+  cost_usd: number;
+  /** false = chưa khai đơn giá, `cost_usd` KHÔNG có ý nghĩa (khác "miễn phí"). */
+  has_price: boolean;
+}
+
+export type AIUsageModel = Omit<AIUsageRow, "day">;
+
+export interface AIUsageReport {
+  days: number;
+  daily: AIUsageRow[];
+  models: AIUsageModel[];
+  /** Chỉ cộng phần ĐÃ có đơn giá — xem `missing_prices`. */
+  total_usd: number;
+  /** Đã dùng thật nhưng chưa khai giá. Dùng để dựng sẵn form khai giá. */
+  missing_prices: AIPrice[];
+  prices: AIPrice[];
+}
+
+/**
+ * Những thứ đang hỏng âm thầm.
+ *
+ * `users_need_relogin` là rủi ro nặng nhất: token multime của người tạo kênh
+ * hết hạn thì mọi auto-publish của các kênh đó fail, và chỉ chính họ đăng nhập
+ * lại mới sửa được.
+ */
+export interface Health {
+  failed_voices: number;
+  users_need_relogin: number;
+  channels_with_error: number;
+  ok: boolean;
 }
 
 /**
@@ -566,4 +693,28 @@ export interface AuditLog {
   object_id: string;
   changes: unknown;
   created_at: string;
+}
+
+/**
+ * 1 bài mà vòng quét Breaking đã xét rồi BỎ.
+ *
+ * `text_excerpt` là chính đoạn text đã đem so với regex — không có nó thì log
+ * chỉ là danh sách ID và không ai kết luận được regex quá chặt hay bài thật sự
+ * không liên quan. Bản ghi cũ (trước migration 000024) không có URL/excerpt.
+ */
+export interface SkippedLog {
+  post_id_external: string;
+  post_url: string;
+  text_excerpt: string;
+  reason: string;
+  checked_at: string;
+}
+
+export interface SkippedLogPage {
+  items: SkippedLog[];
+  total: number;
+  /** Số bài bỏ qua trong 7 ngày gần nhất — cửa sổ cố định để so giữa các kênh. */
+  last_7_days: number;
+  limit: number;
+  offset: number;
 }

@@ -21,10 +21,11 @@ import (
 type Settings struct {
 	svc   *service.Settings
 	stats *service.FetchStats
+	usage *service.AIUsage
 }
 
-func NewSettings(svc *service.Settings, stats *service.FetchStats) *Settings {
-	return &Settings{svc: svc, stats: stats}
+func NewSettings(svc *service.Settings, stats *service.FetchStats, usage *service.AIUsage) *Settings {
+	return &Settings{svc: svc, stats: stats, usage: usage}
 }
 
 // Get trả cấu hình đang dùng KÈM danh sách model cho phép, để UI dựng dropdown
@@ -38,6 +39,10 @@ type updateSettingsRequest struct {
 	// LLMChain khác nil = thay toàn bộ chuỗi dự phòng.
 	LLMChain *[]domain.LLMChainStep `json:"llm_chain"`
 	LLMBatch *domain.LLMBatchConfig `json:"llm_batch"`
+	// AIPrices khác nil = thay TOÀN BỘ bảng giá. Không sửa từng dòng: bảng giá
+	// chỉ vài dòng, và gửi cả bảng thì không có trạng thái nửa vời khi hai
+	// admin sửa cùng lúc.
+	AIPrices *[]domain.AIPrice `json:"ai_prices"`
 }
 
 func (h *Settings) Update(c *gin.Context) {
@@ -60,6 +65,13 @@ func (h *Settings) Update(c *gin.Context) {
 			return
 		}
 	}
+	if req.AIPrices != nil {
+		table := domain.AIPriceTable{Prices: *req.AIPrices}
+		if err := h.svc.SetAIPrices(c.Request.Context(), actor, table); err != nil {
+			httpx.Fail(c, err)
+			return
+		}
+	}
 	httpx.OK(c, h.svc.View(c.Request.Context()))
 }
 
@@ -69,15 +81,10 @@ func (h *Settings) Update(c *gin.Context) {
 // riêng `bot_block` và `rate_limit` — hai loại proxy giải quyết được; còn
 // `login_required` thì proxy không giúp gì, phải có cookies.
 func (h *Settings) FetchStats(c *gin.Context) {
-	days := int32(7)
-	if raw := c.Query("days"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n <= 0 || n > 365 {
-			httpx.Fail(c, fmt.Errorf("%w: days phải là số nguyên trong khoảng 1–365",
-				domain.ErrInvalidInput))
-			return
-		}
-		days = int32(n)
+	days, err := daysParam(c, 7)
+	if err != nil {
+		httpx.Fail(c, err)
+		return
 	}
 
 	rows, err := h.stats.List(c.Request.Context(), days)
@@ -86,4 +93,39 @@ func (h *Settings) FetchStats(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"items": rows, "days": days})
+}
+
+// AIUsage trả lượng dùng AI đã đo được, quy ra tiền theo bảng giá admin khai.
+//
+// Đây là nửa còn thiếu của mục "Tối ưu chi phí AI": màn Cài đặt vốn cho đổi
+// chuỗi dự phòng và bật batch — hai cần gạt ảnh hưởng thẳng tới hoá đơn —
+// nhưng không có con số nào để biết đổi xong rẻ hơn hay đắt hơn.
+func (h *Settings) AIUsage(c *gin.Context) {
+	days, err := daysParam(c, 30)
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	report, err := h.usage.Report(c.Request.Context(), days)
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, report)
+}
+
+// daysParam đọc ?days= với trần 365 — cửa sổ dài hơn thế thì bảng đã bị job dọn
+// dẹp cắt mất phần đuôi, trả về một khoảng trống trông như "tháng đó không ai
+// dùng".
+func daysParam(c *gin.Context, def int32) (int32, error) {
+	raw := c.Query("days")
+	if raw == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 || n > 365 {
+		return 0, fmt.Errorf("%w: days phải là số nguyên trong khoảng 1–365",
+			domain.ErrInvalidInput)
+	}
+	return int32(n), nil
 }
