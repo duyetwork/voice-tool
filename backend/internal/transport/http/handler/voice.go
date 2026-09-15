@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -185,7 +186,33 @@ type updateVoiceRequest struct {
 	AuthorGender *string `json:"author_gender"`
 	// AuthorCountryID: đổi quốc gia lọc author. Đổi nó (hoặc đổi giới tính) mà
 	// không kèm author_id thì tài khoản đã bốc trước đó bị bỏ, để bước đăng bốc lại.
-	AuthorCountryID *int64 `json:"author_country_id"`
+	//
+	// KHÔNG dùng *int64 như các trường khác: ở đây "không gửi trường" và "gửi
+	// null" là hai ý khác nhau, mà cả hai đều decode ra con trỏ nil.
+	//   - bảng Voice PATCH mỗi author_id/gender  -> phải GIỮ NGUYÊN quốc gia
+	//   - modal Sửa chọn "Tất cả quốc gia"       -> phải XOÁ quốc gia
+	// Gộp hai ý đó lại thì nhánh xoá im lặng không chạy: người dùng chọn "Tất
+	// cả quốc gia", bấm Lưu, mở lại vẫn thấy nước cũ.
+	AuthorCountryID optionalInt64 `json:"author_country_id"`
+}
+
+// optionalInt64 phân biệt ba trạng thái của một trường JSON: vắng mặt
+// (Set=false), null (Set=true, Value=nil) và có giá trị.
+//
+// UnmarshalJSON chỉ được gọi khi khoá CÓ MẶT trong body — đó chính là thứ đánh
+// dấu Set.
+type optionalInt64 struct {
+	Set   bool
+	Value *int64
+}
+
+func (o *optionalInt64) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	if string(data) == "null" {
+		o.Value = nil
+		return nil
+	}
+	return json.Unmarshal(data, &o.Value)
 }
 
 func (h *Voice) Update(c *gin.Context) {
@@ -209,7 +236,8 @@ func (h *Voice) Update(c *gin.Context) {
 			AuthorID:        req.AuthorID,
 			AuthorEmail:     req.AuthorEmail,
 			AuthorGender:    req.AuthorGender,
-			AuthorCountryID: req.AuthorCountryID,
+			SetCountry:      req.AuthorCountryID.Set,
+			AuthorCountryID: req.AuthorCountryID.Value,
 		})
 	if err != nil {
 		httpx.Fail(c, err)

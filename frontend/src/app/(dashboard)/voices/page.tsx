@@ -702,6 +702,39 @@ function normalizeHashtag(raw: string): string {
 }
 
 /**
+ * splitHashtags tách chuỗi hashtag đang lưu trên Voice ("tinnong vietnam")
+ * thành danh sách cho ô chọn nhiều.
+ *
+ * Nhận cả dấu phẩy lẫn '#' vì chuỗi cũ có thể do người dùng gõ tay theo mọi
+ * kiểu; khử trùng vì hai cách gõ khác nhau ("#Tin", "tin") ra cùng một thẻ.
+ */
+function splitHashtags(raw: string | null | undefined): string[] {
+  const out: string[] = [];
+  for (const part of (raw ?? "").split(/[\s,]+/)) {
+    const tag = normalizeHashtag(part);
+    if (tag && !out.includes(tag)) out.push(tag);
+  }
+  return out;
+}
+
+/**
+ * invalidURL: link không mở được. Chỉ http/https — yt-dlp không đi đường nào
+ * khác, nên bắt ngay ở form thay vì để worker chạy rồi mới hỏng.
+ *
+ * Tự kiểm thay cho `required`/`type="url"` của trình duyệt: bong bóng mặc định
+ * của trình duyệt chặn luôn sự kiện submit, nên mọi lỗi CÒN LẠI của form không
+ * bao giờ hiện ra — người dùng sửa xong ô này mới thấy ô sau cũng sai.
+ */
+function invalidURL(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return u.protocol !== "http:" && u.protocol !== "https:";
+  } catch {
+    return true;
+  }
+}
+
+/**
  * useLanguageCombo sắp ngôn ngữ theo thứ tự ưu tiên backend đưa xuống (suy ra
  * từ thứ tự quốc gia: Vietnam → vi, United States → en, …).
  *
@@ -835,11 +868,55 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
   const [hashtagKeyword, setHashtagKeyword] = React.useState("");
   const hashtagOptions = useHashtagCombo(catalog.data?.hashtags, hashtagKeyword);
 
-  // Hashtag BẮT BUỘC khi gõ text tay: không có bài gốc nào để gộp thẻ vào, mà
-  // multime từ chối bài không hashtag — bỏ trống ở đây nghĩa là voice chạy xong
-  // rồi nằm lại ở "chưa đủ điều kiện" và phải vào điền lại từng cái.
-  const hashtagRequired = !fromURL;
-  const hashtagMissing = hashtagRequired && hashtags.length === 0;
+  // Hashtag BẮT BUỘC đúng một trường hợp: hình thức B (Text -> TTS).
+  //
+  //   A — gộp thẻ của bài gốc vào.
+  //   C — LLM trả hashtag cùng lời đọc và chúng chỉ ĐIỀN VÀO CHỖ TRỐNG
+  //       (Engine.rewrite: chỉ dùng khi voice chưa có thẻ nào), nên bỏ trống ở
+  //       đây là giao việc cho LLM chứ không phải bỏ sót.
+  //   B — không có bài gốc, cũng không gọi LLM: không ai điền hộ, mà multime
+  //       từ chối bài không hashtag.
+  const hashtagRequired = collectMode === "B";
+
+  // Lỗi chỉ hiện SAU lần bấm Đăng đầu tiên: bắt lỗi ngay lúc mở form thì người
+  // dùng thấy một loạt chữ đỏ trước cả khi kịp gõ chữ nào.
+  const [showErrors, setShowErrors] = React.useState(false);
+
+  /**
+   * errors — mọi lý do form chưa gửi được, gắn theo TỪNG ô.
+   *
+   * Nút Đăng luôn bấm được: một nút mờ đi không nói được nó mờ vì ô nào, nên
+   * người dùng phải dò lại cả form. Bấm vào thì lỗi hiện ngay dưới đúng ô sai.
+   */
+  const errors = {
+    mode: gate.isEnabled(collectMode)
+      ? undefined
+      : `Hình thức này chưa dùng được${gate.note(collectMode)}.`,
+    prompt: needsPrompt && !promptId ? "Bắt buộc — chọn prompt để LLM viết lại nội dung." : undefined,
+    sourceUrl: !fromURL
+      ? undefined
+      : !sourceUrl.trim()
+        ? "Bắt buộc — dán link bài đăng cần lấy."
+        : invalidURL(sourceUrl.trim())
+          ? "Link không hợp lệ — phải là địa chỉ đầy đủ, bắt đầu bằng http:// hoặc https://."
+          : undefined,
+    text: fromURL
+      ? undefined
+      : !text.trim()
+        ? "Bắt buộc — nhập nội dung."
+        : textTooLong
+          ? `Vượt quá ${MAX_TTS_TEXT_LENGTH.toLocaleString("vi-VN")} ký tự — rút ngắn lại.`
+          : undefined,
+    title: titleTooLong
+      ? `Vượt quá ${MAX_TITLE_LENGTH.toLocaleString("vi-VN")} ký tự — rút ngắn lại.`
+      : undefined,
+    hashtag:
+      hashtagRequired && hashtags.length === 0 ? "Bắt buộc — thêm ít nhất 1 hashtag." : undefined,
+    author: author.gender ? undefined : "Bắt buộc — chọn giới tính tài khoản đứng tên bài đăng.",
+  };
+  const hasError = Object.values(errors).some(Boolean);
+  /** errorOf: chỉ trả lỗi khi đã bấm Đăng ít nhất một lần. */
+  const errorOf = (key: keyof typeof errors) => (showErrors ? errors[key] : undefined);
 
   async function pickImage(file: File | undefined) {
     if (!file) return;
@@ -919,15 +996,18 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          // Bấm Đăng là lúc bật phần báo lỗi lên, kể cả khi form còn sai: đó
+          // chính là câu trả lời cho "vì sao bấm mà không có gì xảy ra".
+          setShowErrors(true);
+          if (hasError) return;
           void send(false);
         }}
         className="space-y-4"
       >
-        <Field label="Hình thức tạo" required>
+        <Field label="Hình thức tạo" required error={errorOf("mode")}>
           <Select
             value={collectMode}
             onChange={(e) => setCollectMode(e.target.value as CollectMode)}
-            required
           >
             {Object.entries(COLLECT_MODE_LABELS).map(([value, label]) => (
               <option key={value} value={value} disabled={!gate.isEnabled(value)}>
@@ -943,9 +1023,10 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
             <Field
               label="Prompt mẫu"
               required
+              error={errorOf("prompt")}
               hint="Chọn sẵn theo lần bạn dùng gần nhất."
             >
-              <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
+              <Select value={promptId} onChange={(e) => setPromptId(e.target.value)}>
                 <option value="">— Chọn prompt —</option>
                 {prompts.data?.items.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -966,13 +1047,13 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
             đúng đoạn chữ gõ ở đây nên ô URL không còn nghĩa gì. Hiện cả hai là
             bắt người dùng đoán ô nào thắng. */}
         {fromURL ? (
-          <Field label="URL bài đăng" required>
+          <Field label="URL bài đăng" required error={errorOf("sourceUrl")}>
             <Input
-              type="url"
+              type="text"
+              inputMode="url"
               placeholder="https://www.youtube.com/watch?v=..."
               value={sourceUrl}
               onChange={(e) => setSourceUrl(e.target.value)}
-              required
               autoFocus
             />
           </Field>
@@ -980,6 +1061,7 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
           <Field
             label="Nội dung"
             required
+            error={errorOf("text")}
             hint={
               needsPrompt
                 ? "ĐẦU VÀO cho LLM, không phải lời đọc. Lời đọc là bản LLM viết lại theo Prompt mẫu."
@@ -991,14 +1073,13 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
               placeholder="Bản tin sáng nay…"
               value={text}
               onChange={(e) => setText(e.target.value)}
-              required
               autoFocus
             />
             <CharCount length={text.length} max={MAX_TTS_TEXT_LENGTH} />
           </Field>
         )}
 
-        <Field label="Tiêu đề">
+        <Field label="Tiêu đề" error={errorOf("title")}>
           <Textarea
             className="min-h-20"
             placeholder={
@@ -1034,12 +1115,7 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
           </Field>
         </div>
 
-        <Field
-          label="Hashtag"
-          required={hashtagRequired}
-          error={hashtagMissing ? "Bắt buộc — multime không nhận bài không có hashtag." : undefined}
-          hint="Danh mục lấy từ MultiMe. Gõ để tìm, hoặc gõ tag mới rồi Enter để thêm."
-        >
+        <Field label="Hashtag" required={hashtagRequired} error={errorOf("hashtag")}>
           <MultiCombobox
             values={hashtags}
             options={hashtagOptions}
@@ -1051,7 +1127,7 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
           />
         </Field>
 
-        <Field label="Tài khoản đứng tên bài đăng (author)" required>
+        <Field label="Tài khoản đứng tên bài đăng (author)" required error={errorOf("author")}>
           <AuthorPicker value={author} onChange={setAuthor} />
         </Field>
 
@@ -1116,19 +1192,10 @@ function CreateVoiceDialog({ onClose }: { onClose: () => void }) {
           <Button type="button" variant="secondary" onClick={onClose}>
             Huỷ
           </Button>
-          <Button
-            type="submit"
-            disabled={
-              pending ||
-              duplicate !== null ||
-              titleTooLong ||
-              textTooLong ||
-              hashtagMissing ||
-              !gate.isEnabled(collectMode) ||
-              !author.gender
-            }
-            title={author.gender ? undefined : "Chọn giới tính tài khoản đứng tên bài đăng"}
-          >
+          {/* Chỉ mờ đi khi bấm NỮA cũng vô nghĩa: đang gửi, hoặc đang chờ trả
+              lời về bài trùng. Form còn thiếu trường thì vẫn bấm được — lỗi
+              hiện dưới đúng ô sai, thứ mà một nút mờ không nói được. */}
+          <Button type="submit" disabled={pending || duplicate !== null}>
             {pending ? "Đang xử lý…" : "Đăng"}
           </Button>
         </div>
@@ -1217,12 +1284,26 @@ function originalTitle(voice: Voice): string {
   return cut && flatten(source).startsWith(cut) ? source : title;
 }
 
-/** VoiceInfoTab — phần chữ đi kèm bài đăng trên multime. */
+/**
+ * VoiceInfoTab — phần chữ đi kèm bài đăng trên multime.
+ *
+ * Hashtag và Quốc gia dùng ĐÚNG hai ô của modal Tạo voice, không phải bản rút
+ * gọn: trước đây Hashtag là ô chữ trống trơn (người dùng phải tự nhớ tag nào
+ * có thật bên MultiMe, gõ sai thì bài đăng kèm một tag không ai theo dõi), còn
+ * Quốc gia thì không có ô nào — nên voice tạo từ kênh, hoặc voice đổi ý về
+ * nước, không có đường nào sửa ngoài việc xoá đi tạo lại.
+ */
 function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void }) {
   const update = useUpdateVoice();
+  // Cùng nguồn danh mục với modal Tạo voice, và cũng đã cache — mở tab này
+  // không tốn thêm request.
+  const catalog = useCatalog();
   const [title, setTitle] = React.useState(originalTitle(voice));
-  const [hashtag, setHashtag] = React.useState(voice.hashtag ?? "");
+  const [hashtags, setHashtags] = React.useState<string[]>(splitHashtags(voice.hashtag));
   const [language, setLanguage] = React.useState(voice.language);
+  const [countryId, setCountryId] = React.useState(
+    voice.author_country_id ? String(voice.author_country_id) : "",
+  );
   const [image, setImage] = React.useState<VoiceImage>({
     url: voice.image_url ?? "",
     uploaded: voice.image_uploaded,
@@ -1233,17 +1314,54 @@ function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void })
     gender: voice.author_gender,
   });
 
+  const countryOptions = useCountryCombo(catalog.data?.countries);
+  const [hashtagKeyword, setHashtagKeyword] = React.useState("");
+  const hashtagOptions = useHashtagCombo(catalog.data?.hashtags, hashtagKeyword);
+
+  /**
+   * pickCountry đổi nước VÀ bỏ tài khoản đã bốc trước đó — đúng như ô giới
+   * tính làm.
+   *
+   * Giữ lại thì bài lên multime dưới tên một người thuộc nước khác hẳn nước vừa
+   * chọn: backend chỉ bốc lại khi request KHÔNG kèm author_id (xem
+   * Voice.UpdateMetadata), mà form này luôn gửi author_id nó đang giữ.
+   */
+  function pickCountry(next: string) {
+    setCountryId(next);
+    if (next !== (voice.author_country_id ? String(voice.author_country_id) : "")) {
+      setAuthor((cur) => ({ id: null, email: null, gender: cur.gender }));
+    }
+  }
+
+  // Giống modal Tạo voice: nút Lưu luôn bấm được, lỗi hiện dưới đúng ô sai sau
+  // lần bấm đầu tiên.
+  const [showErrors, setShowErrors] = React.useState(false);
+  const errors = {
+    title:
+      title.length > MAX_TITLE_LENGTH
+        ? `Vượt quá ${MAX_TITLE_LENGTH.toLocaleString("vi-VN")} ký tự — rút ngắn lại.`
+        : undefined,
+    hashtag: hashtags.length === 0 ? "Bắt buộc — thêm ít nhất 1 hashtag." : undefined,
+  };
+  const hasError = Object.values(errors).some(Boolean);
+  const errorOf = (key: keyof typeof errors) => (showErrors ? errors[key] : undefined);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    setShowErrors(true);
+    if (hasError) return;
     await update.mutateAsync({
       id: voice.id,
       title: title || null,
-      hashtag,
+      hashtag: hashtags.join(" "),
       language,
       image_url: image.url || null,
       author_id: author.id,
       author_email: author.email,
       author_gender: author.gender,
+      // Đổi quốc gia mà không kèm author_id thì backend bỏ tài khoản đã bốc để
+      // bước đăng bốc lại theo nước mới (xem updateVoiceRequest).
+      author_country_id: countryId ? Number(countryId) : null,
     });
     onClose();
   }
@@ -1252,21 +1370,12 @@ function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void })
     <form onSubmit={submit} className="space-y-4">
       {/* Tiêu đề là phần chữ DUY NHẤT multime hiển thị — không có ô mô tả.
             Điền sẵn bằng nội dung bài gốc đã cắt về giới hạn ký tự. */}
-      <Field label="Tiêu đề">
+      <Field label="Tiêu đề" error={errorOf("title")}>
         <Textarea className="min-h-20" value={title} onChange={(e) => setTitle(e.target.value)} />
         <CharCount length={title.length} max={MAX_TITLE_LENGTH} />
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Hashtag" required>
-          <Input
-            value={hashtag}
-            onChange={(e) => setHashtag(e.target.value)}
-            placeholder="#tinnong #vietnam"
-            required
-          />
-        </Field>
-
         <Field label="Ngôn ngữ">
           <Select value={language} onChange={(e) => setLanguage(e.target.value)}>
             {languageOptionsFor(language).map((o) => (
@@ -1276,7 +1385,29 @@ function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void })
             ))}
           </Select>
         </Field>
+
+        <Field label="Quốc gia">
+          <Combobox
+            value={countryId}
+            options={countryOptions}
+            onChange={pickCountry}
+            emptyLabel="— Tất cả quốc gia —"
+            placeholder="— Tất cả quốc gia —"
+          />
+        </Field>
       </div>
+
+      <Field label="Hashtag" required error={errorOf("hashtag")}>
+        <MultiCombobox
+          values={hashtags}
+          options={hashtagOptions}
+          onChange={setHashtags}
+          onSearch={setHashtagKeyword}
+          placeholder="#tinnong #vietnam"
+          allowCreate
+          normalize={normalizeHashtag}
+        />
+      </Field>
 
       <AuthorField value={author} onChange={setAuthor} />
 
@@ -1288,7 +1419,7 @@ function VoiceInfoTab({ voice, onClose }: { voice: Voice; onClose: () => void })
         <Button type="button" variant="secondary" onClick={onClose}>
           Huỷ
         </Button>
-        <Button type="submit" disabled={update.isPending || title.length > MAX_TITLE_LENGTH}>
+        <Button type="submit" disabled={update.isPending}>
           Lưu
         </Button>
       </div>

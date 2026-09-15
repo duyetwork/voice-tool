@@ -529,9 +529,10 @@ export default function HuongDanPage() {
                   <tr>
                     <Td className="font-medium text-slate-900">Hashtag</Td>
                     <Td>
-                      <b>Bắt buộc</b> với hình thức B và C: không có bài gốc nào để gộp thẻ vào, mà
-                      multime từ chối bài không hashtag. Gõ để tìm trong danh mục MultiMe, hoặc gõ
-                      tag mới rồi Enter.
+                      <b>Bắt buộc với hình thức B</b>: không có bài gốc để gộp thẻ vào, cũng không
+                      gọi LLM — không ai điền hộ, mà multime từ chối bài không hashtag. Hình thức{" "}
+                      <b>A</b> gộp thẻ của bài gốc, <b>C</b> lấy thẻ LLM đề xuất khi bạn để trống.
+                      Gõ để tìm trong danh mục MultiMe, hoặc gõ tag mới rồi Enter.
                     </Td>
                   </tr>
                   <tr>

@@ -227,6 +227,13 @@ export interface Voice {
   author_email: string | null;
   /** Giới tính đã bốc ra tài khoản đó, để hiện lại "Female - a@b.com". */
   author_gender: Gender | null;
+  /**
+   * Quốc gia lọc danh bạ lúc bốc author.
+   *
+   * Còn nguyên giá trị sau khi bài đã đăng: modal Sửa voice phải hiện lại đúng
+   * nước người dùng đã chọn, không thì mỗi lần mở ra lại thành "tất cả".
+   */
+  author_country_id: number | null;
   /** Tạo xong audio thì tự đăng — bảng dựa vào đây để biết còn việc đang chạy. */
   publish_when_ready: boolean;
   /** Người dùng chủ động chọn "không có ảnh" (khác với chưa có ảnh). */

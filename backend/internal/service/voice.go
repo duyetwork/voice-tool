@@ -221,6 +221,11 @@ type UpdateMetadataInput struct {
 	ImageURL *string
 	// AuthorCountryID: quốc gia đã lọc lúc chọn author. Lưu vì việc bốc tài
 	// khoản diễn ra ở bước publish, lúc đó không còn form nào để hỏi lại.
+	//
+	// SetCountry mới là thứ nói "request này CÓ đụng tới quốc gia không" —
+	// AuthorCountryID nil một mình không phân biệt được "bỏ lọc quốc gia" với
+	// "không nhắc tới quốc gia". Xem handler.optionalInt64.
+	SetCountry      bool
 	AuthorCountryID *int64
 	// AuthorID/AuthorEmail/AuthorGender: tài khoản Strongbody đứng tên bài đăng.
 	// Đi thành bộ — tác giả được bốc ngẫu nhiên theo giới tính, nên id, email
@@ -270,7 +275,7 @@ func (v *Voice) UpdateMetadata(ctx context.Context, actor, id uuid.UUID, in Upda
 	// Đổi giới tính hoặc quốc gia mà không đưa kèm tài khoản cụ thể thì tài
 	// khoản đã bốc trước đó không còn khớp — bỏ nó đi để bước đăng bốc lại.
 	genderChanged := in.AuthorGender != nil && *in.AuthorGender != deref(before.AuthorGender)
-	countryChanged := in.AuthorCountryID != nil &&
+	countryChanged := in.SetCountry &&
 		deref(in.AuthorCountryID) != deref(before.AuthorCountryID)
 	resetAuthor := in.AuthorID == nil && (genderChanged || countryChanged)
 
@@ -283,7 +288,7 @@ func (v *Voice) UpdateMetadata(ctx context.Context, actor, id uuid.UUID, in Upda
 		AuthorID:        in.AuthorID,
 		AuthorEmail:     in.AuthorEmail,
 		AuthorGender:    in.AuthorGender,
-		SetCountry:      in.AuthorCountryID != nil,
+		SetCountry:      in.SetCountry,
 		AuthorCountryID: in.AuthorCountryID,
 		ResetAuthor:     resetAuthor,
 	})
