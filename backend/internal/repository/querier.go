@@ -13,6 +13,12 @@ import (
 )
 
 type Querier interface {
+	// Bật key mới nhất cho người này, CHỈ KHI họ không còn key nào đang bật.
+	//
+	// Gọi sau khi xoá hoặc chuyển đi key đang bật: trước khi có công tắc, xoá key
+	// đang dùng thì key còn lại tự động thế chỗ (luật "key mới nhất thắng"). Không
+	// làm vậy nữa thì một thao tác xoá lại lặng lẽ làm chết mọi voice tiếp theo.
+	ActivateLatestAIEngine(ctx context.Context, userID uuid.UUID) error
 	AddLLMAPISetUser(ctx context.Context, arg AddLLMAPISetUserParams) error
 	// Đếm 1 lần bị nền tảng chặn. Gộp theo ngày nên bảng không phình theo từng lỗi,
 	// và vẫn đủ để trả lời câu hỏi duy nhất nó sinh ra để trả lời: nền tảng nào
@@ -49,6 +55,9 @@ type Querier interface {
 	ClearLLMAPISetUsers(ctx context.Context, setID uuid.UUID) error
 	// Token hết hiệu lực và refresh cũng thất bại -> buộc user đăng nhập lại.
 	ClearUserMultimeToken(ctx context.Context, id uuid.UUID) error
+	// Người này có đang bật key nào không — dùng lúc thêm key mới để quyết định
+	// key đó vào ở trạng thái bật hay tắt.
+	CountActiveAIEngines(ctx context.Context, userID uuid.UUID) (int64, error)
 	CountAdmins(ctx context.Context) (int64, error)
 	// Tổng số bản ghi khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
 	CountAuditLogs(ctx context.Context, arg CountAuditLogsParams) (int64, error)
@@ -63,6 +72,7 @@ type Querier interface {
 	// Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
 	CountListScheduleds(ctx context.Context, arg CountListScheduledsParams) (int64, error)
 	CountPrompts(ctx context.Context) (int64, error)
+	CountSkippedLogs(ctx context.Context, listBreakingID uuid.UUID) (int64, error)
 	// Tỉ lệ bỏ qua giúp đánh giá regex có quá chặt/quá lỏng hay không.
 	CountSkippedLogsSince(ctx context.Context, arg CountSkippedLogsSinceParams) (int64, error)
 	CountSourcePosts(ctx context.Context, arg CountSourcePostsParams) (int64, error)
@@ -81,6 +91,11 @@ type Querier interface {
 	CountriesSyncedAt(ctx context.Context) (CountriesSyncedAtRow, error)
 	// user_id là CHỦ SỞ HỮU key (worker chạy TTS của người đó bằng key này),
 	// created_by là người bấm nút — khác nhau khi admin khai hộ.
+	//
+	// is_active do service quyết định: key ĐẦU TIÊN của một người thì bật luôn
+	// (không thì họ khai key xong voice vẫn báo "chưa bật key nào"), còn người đã
+	// có key đang chạy thì key mới vào ở trạng thái tắt — thêm một key dự phòng
+	// không được âm thầm đổi giọng đọc của họ.
 	CreateAIEngine(ctx context.Context, arg CreateAIEngineParams) (AiEngine, error)
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) (AuditLog, error)
 	// ---------------------------------------------------------------------------
@@ -101,7 +116,12 @@ type Querier interface {
 	// hashtag, author, ảnh): worker sau đó chỉ ĐIỀN VÀO CHỖ TRỐNG chứ không ghi đè,
 	// nên giá trị người dùng gõ luôn thắng giá trị lấy từ bài gốc.
 	CreateVoice(ctx context.Context, arg CreateVoiceParams) (Voice, error)
+	// Tắt mọi key khác của cùng một người. Tách thành câu riêng chạy TRƯỚC câu bật
+	// vì unique index kiểm tra ngay trên từng dòng: gộp thành một UPDATE
+	// `is_active = (id = $1)` có thể chạm đúng lúc hai dòng cùng bật và văng lỗi.
+	DeactivateOtherAIEngines(ctx context.Context, arg DeactivateOtherAIEnginesParams) error
 	DeleteAIEngine(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteAIUsageBefore(ctx context.Context, before time.Time) (int64, error)
 	DeleteLLMAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteLLMAPISet(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteListBreaking(ctx context.Context, id uuid.UUID) (int64, error)
@@ -119,10 +139,17 @@ type Querier interface {
 	// sẵn từ Bài Post, không xoá trắng.
 	FinishVoice(ctx context.Context, arg FinishVoiceParams) (Voice, error)
 	GetAIEngine(ctx context.Context, id uuid.UUID) (GetAIEngineRow, error)
-	// Key mà worker dùng khi chạy TTS cho voice của user này: key mới khai nhất
-	// (thay key thì key mới thắng ngay, không phải xoá key cũ trước).
+	// Key mà worker dùng khi chạy TTS cho voice của user này: key ĐANG BẬT.
+	//
+	// Chỉ số ít (uq_ai_engine_active_per_user bảo đảm mỗi người nhiều nhất 1 key
+	// bật), nhưng vẫn LIMIT 1 để query không phụ thuộc vào index đó còn tồn tại.
+	// Không có dòng nào = người này chưa khai key, hoặc đã tắt hết — cả hai đều
+	// không chạy TTS được, và ttsFor nói ra đúng câu đó.
 	GetAIEngineForUser(ctx context.Context, userID uuid.UUID) (AiEngine, error)
 	GetAppSetting(ctx context.Context, key string) (AppSetting, error)
+	// Ba con số trả lời "hệ thống có đang hỏng âm thầm không", gộp trong 1 lượt đọc
+	// vì chúng luôn được hỏi cùng nhau (thanh cảnh báo trên giao diện).
+	GetHealthCounters(ctx context.Context) (GetHealthCountersRow, error)
 	GetLLMAPIKey(ctx context.Context, id uuid.UUID) (LlmApiKey, error)
 	GetLLMAPISet(ctx context.Context, id uuid.UUID) (GetLLMAPISetRow, error)
 	GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaking, error)
@@ -144,7 +171,15 @@ type Querier interface {
 	LastUsedPromptAndSet(ctx context.Context, userID uuid.UUID) (LastUsedPromptAndSetRow, error)
 	// `owner` NULL = xem tất cả (admin). User thường luôn được service ép owner =
 	// chính mình, nên không đọc được key của người khác dù gọi thẳng API.
+	//
+	// Xếp theo THỜI GIAN TẠO, mới nhất trước — giống mọi bảng khác trong hệ thống.
+	// Trước đây admin thấy danh sách gom theo email: key vừa thêm rơi vào giữa
+	// bảng theo thứ tự chữ cái, nên thao tác thường gặp nhất (khai key xong xem nó
+	// đã vào chưa) lại là thao tác khó nhất.
 	ListAIEngines(ctx context.Context, owner *uuid.UUID) ([]ListAIEnginesRow, error)
+	// Gộp theo ngày + model: đủ chi tiết để so hai model với nhau, đủ thô để bảng
+	// không dài hơn một màn hình sau một tuần chạy thật.
+	ListAIUsageDaily(ctx context.Context, days int32) ([]ListAIUsageDailyRow, error)
 	ListActiveListBreakings(ctx context.Context) ([]ListBreaking, error)
 	ListActiveListScheduleds(ctx context.Context) ([]ListScheduled, error)
 	ListAppSettings(ctx context.Context) ([]AppSetting, error)
@@ -254,6 +289,18 @@ type Querier interface {
 	// So khớp không phân biệt hoa thường và bỏ khoảng trắng thừa: `country.name`
 	// là bản sao từ Strongbody, không phải chuỗi ta tự kiểm soát.
 	PickCountryForLanguage(ctx context.Context, names []string) (int64, error)
+	RecordAIUsage(ctx context.Context, arg RecordAIUsageParams) error
+	// Bật/tắt MỘT key. Người gọi chịu trách nhiệm tắt các key khác TRƯỚC khi bật
+	// key này (xem DeactivateOtherAIEngines) — làm ngược lại là đụng
+	// uq_ai_engine_active_per_user.
+	SetAIEngineActive(ctx context.Context, arg SetAIEngineActiveParams) (AiEngine, error)
+	// Ghi lại điều vừa học được về key sau một lần gọi TTS.
+	//
+	// Chỉ gọi khi lần gọi đó THẬT SỰ nói lên điều gì về key (đọc được audio, hoặc
+	// nhà cung cấp từ chối vì key/credit/rate limit). Lỗi mạng và lỗi 5xx của họ
+	// không gọi vào đây: ghi 'unknown' đè lên một lần 402 là xoá mất đúng thông
+	// tin người dùng cần.
+	SetAIEngineStatus(ctx context.Context, arg SetAIEngineStatusParams) error
 	SetLastSyncedPostID(ctx context.Context, arg SetLastSyncedPostIDParams) error
 	// Ghi lỗi của vòng quét gần nhất lên kênh, hoặc xoá nó khi vòng quét chạy sạch.
 	// Người dùng chỉ nhìn thấy bảng kênh, không nhìn thấy log worker.

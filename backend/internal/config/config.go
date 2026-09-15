@@ -59,6 +59,20 @@ type Config struct {
 	FFmpegPath  string `mapstructure:"FFMPEG_PATH"`
 	FFprobePath string `mapstructure:"FFPROBE_PATH"`
 
+	// Proxy cho yt-dlp. YTDLP_PROXY áp cho mọi nền tảng; biến theo từng nền
+	// tảng ghi đè lên nó.
+	//
+	// Tách theo nền tảng vì lý do vận hành: thường chỉ MỘT nền tảng chặn IP máy
+	// chủ, và đẩy cả YouTube — luồng duy nhất đang chạy tốt — qua proxy là tự
+	// thêm một điểm hỏng. Bật sau khi bảng "số lần bị chặn" ở màn Cài đặt cho
+	// thấy con số đủ lớn, đừng bật sẵn.
+	YtDlpProxy          string `mapstructure:"YTDLP_PROXY"`
+	YtDlpProxyYouTube   string `mapstructure:"YTDLP_PROXY_YOUTUBE"`
+	YtDlpProxyFacebook  string `mapstructure:"YTDLP_PROXY_FACEBOOK"`
+	YtDlpProxyTikTok    string `mapstructure:"YTDLP_PROXY_TIKTOK"`
+	YtDlpProxyInstagram string `mapstructure:"YTDLP_PROXY_INSTAGRAM"`
+	YtDlpProxyX         string `mapstructure:"YTDLP_PROXY_X"`
+
 	// multime.ai — đích publish.
 	//   MULTIME_BASE_URL      voice API   (vd https://voice-api.strongbody.ai)
 	//   MULTIME_AUTH_BASE_URL auth API    (vd https://api-v2.strongbody.ai)
@@ -87,8 +101,14 @@ type Config struct {
 	// Giữ skipped_log bao lâu trước khi job dọn dẹp xoá.
 	SkippedLogRetention time.Duration `mapstructure:"SKIPPED_LOG_RETENTION"`
 	// Khoảng nghỉ tối thiểu giữa 2 lần gọi yt-dlp tới CÙNG một nền tảng.
-	// Xem service.PlatformGate.
+	// Xem service.NewPlatformGate.
 	PlatformMinGap time.Duration `mapstructure:"PLATFORM_MIN_GAP"`
+	// Hạn mức gọi TTS, tính TRÊN MỖI API KEY (3voices: 10 request/phút, 2 job
+	// đồng thời). Xem service.NewTTSGate.
+	TTSMinGap        time.Duration `mapstructure:"TTS_MIN_GAP"`
+	TTSMaxConcurrent int           `mapstructure:"TTS_MAX_CONCURRENT"`
+	// Giữ bản ghi ai_usage bao lâu trước khi job dọn dẹp xoá.
+	AIUsageRetention time.Duration `mapstructure:"AI_USAGE_RETENTION"`
 
 	// Ngôn ngữ mặc định hệ thống — đáy của cascade (business rule #9).
 	// "auto" = để nền tảng nguồn / multime.ai tự nhận diện.
@@ -183,6 +203,13 @@ func setDefaults(v *viper.Viper) {
 	// 3s giữa 2 lần gọi cùng 1 nền tảng: đủ để N kênh không bắn cùng một giây,
 	// không đủ để làm chậm một vòng quét bình thường.
 	v.SetDefault("PLATFORM_MIN_GAP", "3s")
+	// 6s giữa 2 lần gọi cùng 1 key = 10 request/phút, đúng bằng hạn mức của
+	// 3voices; 2 job đồng thời cũng là con số họ cho phép.
+	v.SetDefault("TTS_MIN_GAP", "6s")
+	v.SetDefault("TTS_MAX_CONCURRENT", 2)
+	// 90 ngày: đủ để so một quý với quý trước, và đủ ngắn để bảng không phình
+	// mãi vì một thứ chỉ dùng để nhìn xu hướng.
+	v.SetDefault("AI_USAGE_RETENTION", "2160h")
 	v.SetDefault("DEFAULT_LANGUAGE", "auto")
 	// B/C đã chạy được (TTS 3voices + LLM) nên bật sẵn cả 3 hình thức.
 	v.SetDefault("ENABLED_COLLECT_MODES", "A,B,C")
@@ -210,11 +237,14 @@ var allKeys = []string{
 	"OPENAI_API_KEY", "OPENAI_MODEL", "GEMINI_API_KEY", "GEMINI_MODEL",
 	"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
 	"YTDLP_PATH", "FFMPEG_PATH", "FFPROBE_PATH",
+	"YTDLP_PROXY", "YTDLP_PROXY_YOUTUBE", "YTDLP_PROXY_FACEBOOK", "YTDLP_PROXY_TIKTOK",
+	"YTDLP_PROXY_INSTAGRAM", "YTDLP_PROXY_X",
 	"MULTIME_BASE_URL", "MULTIME_AUTH_BASE_URL", "MULTIME_SITE_URL",
 	"MULTIME_VISIBILITY", "MULTIME_CATEGORY_IDS",
 	"MULTIME_PUBLIC_DOWNLOAD",
 	"BREAKING_SCAN_INTERVAL", "SCAN_LIMIT_DEFAULT", "MAX_POSTS_PER_RUN_DEFAULT",
 	"BREAKING_SCAN_PARALLELISM", "SCHEDULER_SYNC_INTERVAL", "SKIPPED_LOG_RETENTION", "PLATFORM_MIN_GAP",
+	"TTS_MIN_GAP", "TTS_MAX_CONCURRENT", "AI_USAGE_RETENTION",
 	"DEFAULT_LANGUAGE", "ENABLED_COLLECT_MODES", "BOOTSTRAP_ADMIN_EMAIL", "DEFAULT_USER_ROLE",
 	"TOKEN_ENCRYPTION_KEY",
 	"THREEVOICES_API_KEY", "THREEVOICES_BASE_URL", "THREEVOICES_VOICE_ID",
@@ -255,6 +285,28 @@ func (c *Config) EnabledCollectModes() []domain.CollectMode {
 		out = append(out, domain.ModeExtract)
 	}
 	return out
+}
+
+// YtDlpProxyFor trả proxy dùng cho 1 nền tảng: biến riêng của nền tảng đó,
+// không có thì rơi về biến chung. Rỗng = gọi thẳng, không qua proxy.
+func (c *Config) YtDlpProxyFor(p domain.Platform) string {
+	var specific string
+	switch p {
+	case domain.PlatformYouTube:
+		specific = c.YtDlpProxyYouTube
+	case domain.PlatformFacebook:
+		specific = c.YtDlpProxyFacebook
+	case domain.PlatformTikTok:
+		specific = c.YtDlpProxyTikTok
+	case domain.PlatformInstagram:
+		specific = c.YtDlpProxyInstagram
+	case domain.PlatformX:
+		specific = c.YtDlpProxyX
+	}
+	if s := strings.TrimSpace(specific); s != "" {
+		return s
+	}
+	return strings.TrimSpace(c.YtDlpProxy)
 }
 
 // MultimeCategoryIDs parse "12,34" thành danh sách category id.

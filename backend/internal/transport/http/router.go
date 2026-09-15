@@ -11,6 +11,7 @@ import (
 
 	"github.com/strongbody/voice-tool/backend/internal/config"
 	"github.com/strongbody/voice-tool/backend/internal/domain"
+	"github.com/strongbody/voice-tool/backend/internal/pkg/httpx"
 	"github.com/strongbody/voice-tool/backend/internal/pkg/jwt"
 	"github.com/strongbody/voice-tool/backend/internal/service"
 	"github.com/strongbody/voice-tool/backend/internal/transport/http/handler"
@@ -32,6 +33,8 @@ type RouterDeps struct {
 	LLMSets    *service.LLMAPISetService
 	Settings   *service.Settings
 	FetchStats *service.FetchStats
+	AIUsage    *service.AIUsage
+	Health     *service.Health
 	Audit      *service.Audit
 	User       *service.User
 	// MultimeUsers tra danh bạ tài khoản Strongbody (ô chọn tác giả).
@@ -151,11 +154,45 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"collect_modes": modes})
 	})
 
+	// Bộ giá trị hợp lệ cho mục "Cấu hình giọng đọc".
+	//
+	// Đi từ backend chứ không chép cứng vào frontend: đây là bộ từ khoá của nhà
+	// cung cấp TTS, sai một chữ là hỏng cả request. Một danh sách nằm ở hai nơi
+	// thì sớm muộn cũng lệch, và bên lệch sẽ là bên không validate.
+	authed.GET("/meta/voice-style", func(c *gin.Context) {
+		ctx := c.Request.Context()
+		c.JSON(http.StatusOK, gin.H{
+			"genders": domain.VoiceGenders,
+			"ages":    domain.VoiceAges,
+			"pitches": domain.VoicePitches,
+			"accents": domain.VoiceAccents,
+			"speed": gin.H{
+				"min": domain.MinVoiceSpeed,
+				"max": domain.MaxVoiceSpeed,
+			},
+			// Để form cảnh báo trước rằng chỉnh cấu hình sẽ thay giọng đã lưu
+			// của chính người này — xem AIEngineService.HasSavedVoice.
+			"has_saved_voice": d.AIEngine.HasSavedVoice(ctx, middleware.ActorID(c)),
+		})
+	})
+
 	// Prompt mẫu + Bộ API người này dùng gần nhất, để form tạo voice chọn sẵn.
 	// Gần như ai cũng chạy đi chạy lại cùng một prompt; bắt chọn tay ở mỗi lần
 	// tạo là hai lần bấm thừa cộng một lần quên.
 	authed.GET("/meta/last-used", func(c *gin.Context) {
 		c.JSON(http.StatusOK, d.Voice.LastUsedChoices(c.Request.Context(), middleware.ActorID(c)))
+	})
+
+	// Đếm những thứ đang hỏng âm thầm — thanh cảnh báo đọc mỗi khi đổi trang.
+	// MỌI vai trò đọc được: voice lỗi là việc của người tạo ra nó, không phải
+	// việc riêng của admin.
+	authed.GET("/meta/health", func(c *gin.Context) {
+		view, err := d.Health.View(c.Request.Context())
+		if err != nil {
+			httpx.Fail(c, err)
+			return
+		}
+		httpx.OK(c, view)
 	})
 
 	registerReadOnly(authed, d)
@@ -180,11 +217,13 @@ func NewRouter(d RouterDeps) *gin.Engine {
 
 	// Cài đặt: chuỗi dự phòng LLM + batch. Chặn bằng middleware được vì đây là
 	// cấu hình của cả hệ thống, không có "chủ sở hữu" nào để so như API key.
-	settings := handler.NewSettings(d.Settings, d.FetchStats)
+	settings := handler.NewSettings(d.Settings, d.FetchStats, d.AIUsage)
 	admin.GET("/settings", settings.Get)
 	admin.PATCH("/settings", settings.Update)
 	// Số lần bị từng nền tảng chặn — dữ liệu để quyết định có cần proxy không.
 	admin.GET("/settings/fetch-stats", settings.FetchStats)
+	// Token/ký tự đã tiêu, quy ra tiền theo bảng giá admin khai.
+	admin.GET("/settings/ai-usage", settings.AIUsage)
 
 	return r
 }
@@ -204,6 +243,10 @@ func registerReadOnly(g *gin.RouterGroup, d RouterDeps) {
 
 	g.GET("/lists/breaking", list.ListBreaking)
 	g.GET("/lists/breaking/:id", list.GetBreaking)
+	// Bài kênh này đã xét rồi bỏ + vì sao. Nằm DƯỚI kênh chứ không phải một
+	// route /skipped-logs toàn cục: lý do bỏ qua chỉ có nghĩa khi đọc cạnh
+	// regex của chính kênh đó.
+	g.GET("/lists/breaking/:id/skipped", list.SkippedLogs)
 	g.GET("/lists/scheduled", list.ListScheduled)
 	g.GET("/lists/scheduled/:id", list.GetScheduled)
 

@@ -91,14 +91,18 @@ func NewMock() *Mock { return &Mock{} }
 
 func (m *Mock) Name() string { return "mock" }
 
-func (m *Mock) Generate(_ context.Context, _, sourceText string) (string, error) {
-	return strings.TrimSpace(sourceText), nil
+// Mock không tốn token của ai nên usage luôn rỗng — và vì rỗng, nó không đẻ ra
+// dòng thống kê chi phí giả trong bảng ai_usage.
+func (m *Mock) Generate(_ context.Context, _, sourceText string) (string, domain.LLMUsage, error) {
+	return strings.TrimSpace(sourceText), domain.LLMUsage{}, nil
 }
 
-func (m *Mock) GenerateBatch(_ context.Context, _ string, items []string) ([]string, error) {
+func (m *Mock) GenerateBatch(_ context.Context, _ string, items []string) (
+	[]string, domain.LLMUsage, error,
+) {
 	out := make([]string, len(items))
 	for i, item := range items {
 		out[i] = strings.TrimSpace(item)
 	}
-	return out, nil
+	return out, domain.LLMUsage{}, nil
 }

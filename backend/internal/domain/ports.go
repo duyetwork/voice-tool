@@ -101,8 +101,23 @@ type PlatformRegistry interface {
 
 type TTSProvider interface {
 	Name() string
-	Synthesize(ctx context.Context, text, language string) (audioFile []byte, err error)
+	Synthesize(ctx context.Context, req SpeechRequest) (audioFile []byte, err error)
 	SupportedLanguages() []string
+}
+
+// SpeechRequest gom mọi thứ quyết định file audio sinh ra.
+//
+// Là struct chứ không phải danh sách tham số vì cấu hình giọng còn dài ra:
+// 3voices đã có accent, và mỗi lần thêm một tham số mà chữ ký hàm đổi theo thì
+// mọi provider (kể cả mock trong test) phải sửa cùng lúc.
+type SpeechRequest struct {
+	// Text là lời đọc — đúng đoạn chữ sẽ nghe thấy trong file.
+	Text string
+	// Language rỗng = để nhà cung cấp tự nhận diện từ chính nội dung.
+	Language string
+	// Style là cấu hình giọng người dùng chọn ở form. Rỗng = giọng mặc định
+	// của nhà cung cấp (hoặc giọng đã lưu, nếu credential có VoiceID).
+	Style VoiceStyle
 }
 
 // TTSCredential là thông tin của 1 AI Engine (bản ghi ai_engine) đủ để dựng
@@ -138,14 +153,16 @@ type STTProvider interface {
 // đoán "429 vì hết quota" khác với "400 vì nội dung bị chặn".
 type LLMProvider interface {
 	Name() string
-	Generate(ctx context.Context, promptContent, sourceText string) (resultText string, err error)
+	Generate(ctx context.Context, promptContent, sourceText string) (
+		resultText string, usage LLMUsage, err error)
 	// GenerateBatch viết lại NHIỀU mẩu text trong 1 request, dùng structured
 	// output theo JSON schema của từng nhà.
 	//
 	// Bắt buộc trả về đúng len(items) phần tử theo đúng thứ tự, hoặc trả lỗi —
 	// router không có cách nào đoán mẩu nào ứng với kết quả nào, và đoán sai ở
 	// đây nghĩa là voice của bài A đọc nội dung của bài B.
-	GenerateBatch(ctx context.Context, promptContent string, items []string) ([]string, error)
+	GenerateBatch(ctx context.Context, promptContent string, items []string) (
+		[]string, LLMUsage, error)
 }
 
 // ---------------------------------------------------------------------------

@@ -64,6 +64,9 @@ type voiceSeedRequest struct {
 	PublishWhenReady bool `json:"publish_when_ready"`
 	// LLMAPISetID: Bộ API key viết lại nội dung — chỉ hình thức C mới cần.
 	LLMAPISetID *uuid.UUID `json:"llm_api_set_id"`
+	// TTSConfig: cấu hình giọng đọc (mục "Cấu hình giọng đọc" ở form tạo Voice).
+	// Bỏ trống = giọng mặc định của nhà cung cấp.
+	TTSConfig *domain.VoiceStyle `json:"tts_config"`
 }
 
 // seed đổi request sang input của service; nil = không điền sẵn gì.
@@ -84,6 +87,7 @@ func (r *voiceSeedRequest) seed() service.VoiceSeed {
 		AuthorCountryID:  r.AuthorCountryID,
 		PublishWhenReady: r.PublishWhenReady,
 		LLMAPISetID:      r.LLMAPISetID,
+		TTSConfig:        r.TTSConfig,
 	}
 }
 

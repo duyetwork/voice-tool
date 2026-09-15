@@ -59,6 +59,23 @@ func NewAIEngineService(q *repository.Queries, box *secret.Box) *AIEngineService
 	return &AIEngineService{q: q, box: box}
 }
 
+// HasSavedVoice: API key của người này có khai sẵn một giọng đã lưu bên nhà
+// cung cấp hay không.
+//
+// Form tạo voice cần biết để nói trước rằng chỉnh "Cấu hình giọng đọc" sẽ THAY
+// giọng quen thuộc đó bằng giọng sinh theo mô tả — nếu không, người dùng chỉnh
+// xong nghe lại thấy khác hẳn và không có chỗ nào giải thích.
+//
+// Chưa khai key, hoặc key không có voice_id, đều trả false: cả hai trường hợp
+// đều không có giọng đã lưu nào để mất.
+func (s *AIEngineService) HasSavedVoice(ctx context.Context, userID uuid.UUID) bool {
+	engine, err := s.q.GetAIEngineForUser(ctx, userID)
+	if err != nil {
+		return false
+	}
+	return engine.VoiceID != nil && strings.TrimSpace(*engine.VoiceID) != ""
+}
+
 // AIEngineCreate là input thêm key.
 type AIEngineCreate struct {
 	APIKey string
@@ -78,6 +95,9 @@ type AIEngineUpdate struct {
 	APIKey string
 	// Owner khác nil = gán key cho người khác. Chỉ admin làm được.
 	Owner *uuid.UUID
+	// Active khác nil = bật/tắt key này. Bật thì mọi key khác của cùng chủ sở
+	// hữu tự tắt — mỗi người chỉ chạy bằng đúng một key.
+	Active *bool
 }
 
 // AIEngineView là bản trả ra API của ai_engine.
@@ -91,11 +111,22 @@ type AIEngineView struct {
 	UserID    uuid.UUID `json:"user_id"`
 	UserEmail string    `json:"user_email"`
 	// CreatedBy/CreatedByEmail — NGƯỜI KHAI (admin khai hộ thì khác chủ).
-	CreatedBy      uuid.UUID  `json:"created_by"`
-	CreatedByEmail string     `json:"created_by_email"`
-	APIKeyMasked   string     `json:"api_key_masked"`
-	CreatedAt      time.Time  `json:"created_at"`
-	LastUsedAt     *time.Time `json:"last_used_at"`
+	CreatedBy      uuid.UUID `json:"created_by"`
+	CreatedByEmail string    `json:"created_by_email"`
+	APIKeyMasked   string    `json:"api_key_masked"`
+	// IsActive — key này có phải key đang chạy TTS cho chủ sở hữu hay không.
+	// Mỗi người nhiều nhất 1 key bật (uq_ai_engine_active_per_user).
+	IsActive bool `json:"is_active"`
+	// KeyStatus — điều hệ thống học được từ LẦN GỌI TTS GẦN NHẤT bằng key này:
+	// còn chạy được, hết credit, hay đã bị thu hồi (xem domain.KeyStatus).
+	//
+	// Luôn mô tả quá khứ, nên đi kèm KeyStatusAt: một chữ "còn hạn" của tháng
+	// trước không nói gì về hôm nay, và người đọc phải thấy được điều đó.
+	KeyStatus       string     `json:"key_status"`
+	KeyStatusDetail *string    `json:"key_status_detail"`
+	KeyStatusAt     *time.Time `json:"key_status_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	LastUsedAt      *time.Time `json:"last_used_at"`
 }
 
 // Create thêm key. Admin gán được cho nhiều người một lượt (mỗi người 1 bản
@@ -121,10 +152,22 @@ func (s *AIEngineService) Create(
 
 	out := make([]AIEngineView, 0, len(owners))
 	for _, owner := range owners {
+		// Key ĐẦU TIÊN của một người thì bật luôn; người đã có key đang chạy
+		// thì key mới vào ở trạng thái tắt.
+		//
+		// Hai vế đều là "đừng làm người dùng ngạc nhiên": khai key đầu tiên mà
+		// vẫn phải đi bật thêm một lần nữa là một bước thừa không ai đoán được,
+		// còn thêm key dự phòng mà giọng đọc tự đổi sang key mới là thay đổi
+		// họ không hề xin.
+		active, err := s.q.CountActiveAIEngines(ctx, owner.ID)
+		if err != nil {
+			return nil, fmt.Errorf("đếm API key đang bật của %s: %w", owner.Email, err)
+		}
 		engine, err := s.q.CreateAIEngine(ctx, repository.CreateAIEngineParams{
 			UserID:          owner.ID,
 			ApiKeyEncrypted: *encrypted,
 			CreatedBy:       actor.ID,
+			IsActive:        active == 0,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("tạo ai_engine: %w", err)
@@ -166,6 +209,8 @@ func (s *AIEngineService) List(
 			ID: r.ID, Provider: r.Provider, CreatedAt: r.CreatedAt,
 			ApiKeyEncrypted: r.ApiKeyEncrypted, VoiceID: r.VoiceID,
 			CreatedBy: r.CreatedBy, UserID: r.UserID, LastUsedAt: r.LastUsedAt,
+			IsActive: r.IsActive, KeyStatus: r.KeyStatus,
+			KeyStatusDetail: r.KeyStatusDetail, KeyStatusAt: r.KeyStatusAt,
 		}, r.UserEmail, r.CreatedByEmail))
 	}
 	return out, nil
@@ -207,6 +252,21 @@ func (s *AIEngineService) Update(
 		ownerEmail = user.Email
 	}
 
+	// Chuyển key sang người khác thì key về trạng thái TẮT trước khi đổi chủ.
+	//
+	// Hai lý do, cùng một gốc là "mỗi người 1 key bật":
+	//   - chủ mới có thể đang bật một key khác; kéo key này sang mà vẫn bật là
+	//     đụng thẳng uq_ai_engine_active_per_user và UPDATE văng lỗi;
+	//   - kể cả không đụng index, tự bật key vừa nhận là đổi giọng đọc của
+	//     người ta mà họ không hề bấm gì. Chủ mới tự bật khi nào muốn dùng.
+	if owner != nil && before.IsActive {
+		if _, err := s.q.SetAIEngineActive(ctx, repository.SetAIEngineActiveParams{
+			ID: id, IsActive: false,
+		}); err != nil {
+			return AIEngineView{}, fmt.Errorf("tắt ai_engine %s trước khi đổi chủ: %w", id, err)
+		}
+	}
+
 	engine, err := s.q.UpdateAIEngine(ctx, repository.UpdateAIEngineParams{
 		ID:              id,
 		ApiKeyEncrypted: encrypted,
@@ -215,7 +275,53 @@ func (s *AIEngineService) Update(
 	if err != nil {
 		return AIEngineView{}, wrapNotFound(err, "ai_engine "+id.String())
 	}
+
+	// Chủ CŨ vừa mất key đang chạy -> đẩy key mới nhất còn lại của họ lên thay,
+	// giống hệt lúc xoá key. Không làm thì voice của họ chết vì một thao tác
+	// của admin trên bản ghi mà họ không còn liên quan.
+	if owner != nil && before.IsActive {
+		if err := s.q.ActivateLatestAIEngine(ctx, before.UserID); err != nil {
+			return AIEngineView{}, fmt.Errorf("bật lại API key cho %s: %w", before.UserEmail, err)
+		}
+	}
+
+	if in.Active != nil {
+		if engine, err = s.setActive(ctx, engine, *in.Active); err != nil {
+			return AIEngineView{}, err
+		}
+	}
 	return s.view(engine, ownerEmail, before.CreatedByEmail), nil
+}
+
+// setActive bật/tắt một key và giữ luật "mỗi người nhiều nhất 1 key bật".
+//
+// Tắt các key khác TRƯỚC rồi mới bật key này: unique index kiểm tra ngay trên
+// từng dòng, nên làm ngược lại là có lúc hai dòng cùng bật và câu lệnh văng lỗi.
+// Hai câu lệnh không nằm trong cùng transaction — kẽ hở duy nhất là "không có
+// key nào bật" trong vài mili-giây, vô hại vì worker chỉ đọc lúc chạy TTS và
+// job đó sẽ retry.
+func (s *AIEngineService) setActive(
+	ctx context.Context,
+	engine repository.AiEngine,
+	active bool,
+) (repository.AiEngine, error) {
+	if engine.IsActive == active {
+		return engine, nil
+	}
+	if active {
+		if err := s.q.DeactivateOtherAIEngines(ctx, repository.DeactivateOtherAIEnginesParams{
+			UserID: engine.UserID, ID: engine.ID,
+		}); err != nil {
+			return engine, fmt.Errorf("tắt các API key khác: %w", err)
+		}
+	}
+	updated, err := s.q.SetAIEngineActive(ctx, repository.SetAIEngineActiveParams{
+		ID: engine.ID, IsActive: active,
+	})
+	if err != nil {
+		return engine, fmt.Errorf("đổi trạng thái ai_engine %s: %w", engine.ID, err)
+	}
+	return updated, nil
 }
 
 func (s *AIEngineService) Delete(ctx context.Context, actor Actor, id uuid.UUID) error {
@@ -228,6 +334,18 @@ func (s *AIEngineService) Delete(ctx context.Context, actor Actor, id uuid.UUID)
 	}
 	if _, err := s.q.DeleteAIEngine(ctx, id); err != nil {
 		return fmt.Errorf("xoá ai_engine: %w", err)
+	}
+
+	// Xoá đúng key đang chạy -> key mới nhất còn lại lên thay.
+	//
+	// Đây là hành vi CŨ của hệ thống (luật "key mới nhất thắng" trước khi có
+	// công tắc) và vẫn là hành vi đúng: người dùng xoá một key hỏng để thay
+	// bằng key khác, không phải để dừng đọc voice. Không còn key nào thì câu
+	// lệnh không đụng dòng nào.
+	if before.IsActive {
+		if err := s.q.ActivateLatestAIEngine(ctx, before.UserID); err != nil {
+			return fmt.Errorf("bật lại API key sau khi xoá: %w", err)
+		}
 	}
 	return nil
 }
@@ -293,14 +411,18 @@ func (s *AIEngineService) encryptKey(raw string, required bool) (*string, error)
 
 func (s *AIEngineService) view(e repository.AiEngine, ownerEmail, authorEmail string) AIEngineView {
 	return AIEngineView{
-		ID:             e.ID,
-		UserID:         e.UserID,
-		UserEmail:      ownerEmail,
-		CreatedBy:      e.CreatedBy,
-		CreatedByEmail: authorEmail,
-		APIKeyMasked:   maskSecret(s.box, e.ApiKeyEncrypted),
-		CreatedAt:      e.CreatedAt,
-		LastUsedAt:     e.LastUsedAt,
+		ID:              e.ID,
+		UserID:          e.UserID,
+		UserEmail:       ownerEmail,
+		CreatedBy:       e.CreatedBy,
+		CreatedByEmail:  authorEmail,
+		APIKeyMasked:    maskSecret(s.box, e.ApiKeyEncrypted),
+		IsActive:        e.IsActive,
+		KeyStatus:       e.KeyStatus,
+		KeyStatusDetail: e.KeyStatusDetail,
+		KeyStatusAt:     e.KeyStatusAt,
+		CreatedAt:       e.CreatedAt,
+		LastUsedAt:      e.LastUsedAt,
 	}
 }
 
@@ -310,5 +432,7 @@ func engineOf(r repository.GetAIEngineRow) repository.AiEngine {
 		ID: r.ID, Provider: r.Provider, CreatedAt: r.CreatedAt,
 		ApiKeyEncrypted: r.ApiKeyEncrypted, VoiceID: r.VoiceID,
 		CreatedBy: r.CreatedBy, UserID: r.UserID, LastUsedAt: r.LastUsedAt,
+		IsActive: r.IsActive, KeyStatus: r.KeyStatus,
+		KeyStatusDetail: r.KeyStatusDetail, KeyStatusAt: r.KeyStatusAt,
 	}
 }

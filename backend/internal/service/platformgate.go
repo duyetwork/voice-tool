@@ -21,41 +21,84 @@ import (
 // khi nghĩ tới proxy.
 const defaultPlatformGap = 3 * time.Second
 
-// PlatformGate cho phép TỐI ĐA 1 lần gọi yt-dlp mỗi nền tảng tại một thời điểm,
-// và ép một khoảng nghỉ ngắn giữa hai lần liên tiếp.
+// KeyGate cho phép TỐI ĐA `slots` lần gọi đồng thời TRÊN MỖI KHOÁ, và ép một
+// khoảng nghỉ giữa hai lần liên tiếp của cùng khoá.
 //
-// Giới hạn theo TỪNG NỀN TẢNG chứ không phải toàn cục: chặn toàn cục thì một
-// kênh YouTube chậm sẽ chặn luôn cả việc quét TikTok, trong khi hai nền tảng đó
-// không hề chia sẻ hạn mức nào với nhau.
+// Hai chỗ dùng, cùng một bài toán "đừng dồn request vào một hạn mức":
+//
+//	nền tảng  khoá = tên nền tảng, 1 slot, nghỉ 3s  — xem NewPlatformGate.
+//	TTS       khoá = API key, 2 slot, nghỉ 6s       — xem NewTTSGate.
+//
+// Giới hạn theo TỪNG KHOÁ chứ không phải toàn cục: chặn toàn cục thì một kênh
+// YouTube chậm sẽ chặn luôn việc quét TikTok, và một người chạy hàng loạt sẽ
+// chặn luôn key của người khác — trong khi hai bên không chia sẻ hạn mức nào.
 //
 // Phạm vi là 1 process. Chạy nhiều worker thì mỗi process tự giữ nhịp của mình
-// — không hoàn hảo, nhưng nó biến "N kênh cùng bắn một giây" thành "N/số worker
-// kênh rải đều", tức là phần lớn vấn đề, mà không cần thêm khoá phân tán.
-type PlatformGate struct {
-	gap time.Duration
+// — không hoàn hảo, nhưng nó biến "N việc cùng bắn một giây" thành "N/số worker
+// rải đều", tức là phần lớn vấn đề, mà không cần thêm khoá phân tán.
+type KeyGate struct {
+	gap   time.Duration
+	slots int
 
 	mu    sync.Mutex
-	lanes map[string]*platformLane
+	lanes map[string]*gateLane
 }
 
-type platformLane struct {
-	// token sức chứa 1 = mỗi nền tảng chỉ 1 yt-dlp chạy cùng lúc.
+type gateLane struct {
+	// token sức chứa = số lần gọi đồng thời cho phép trên khoá này.
 	token  chan struct{}
 	mu     sync.Mutex
 	lastAt time.Time
 }
 
-func NewPlatformGate(gap time.Duration) *PlatformGate {
+// NewKeyGate dựng gate với số slot và khoảng nghỉ tuỳ ý.
+func NewKeyGate(gap time.Duration, slots int) *KeyGate {
+	if gap < 0 {
+		gap = 0
+	}
+	if slots <= 0 {
+		slots = 1
+	}
+	return &KeyGate{gap: gap, slots: slots, lanes: map[string]*gateLane{}}
+}
+
+// NewPlatformGate — gate cho yt-dlp: 1 lần gọi mỗi nền tảng tại một thời điểm.
+//
+// Nối tiếp chứ không song song: hai tiến trình yt-dlp cùng đánh vào một nền
+// tảng là cách nhanh nhất để ăn bot-check, và vòng quét không gấp tới mức đó.
+func NewPlatformGate(gap time.Duration) *KeyGate {
 	if gap <= 0 {
 		gap = defaultPlatformGap
 	}
-	return &PlatformGate{gap: gap, lanes: map[string]*platformLane{}}
+	return NewKeyGate(gap, 1)
 }
 
-// Acquire chờ tới lượt của nền tảng này. Hàm trả về phải được gọi khi xong
-// (kể cả khi lỗi), nếu không nền tảng đó kẹt vĩnh viễn.
-func (g *PlatformGate) Acquire(ctx context.Context, platform string) (func(), error) {
-	lane := g.lane(platform)
+// NewTTSGate — gate cho nhà cung cấp TTS, khoá theo TỪNG API KEY.
+//
+// 3voices giới hạn 10 request/phút và 2 job đồng thời TRÊN MỖI KEY. Key khai
+// theo từng người nên tải đã chia sẵn, nhưng WORKER_CONCURRENCY mặc định 10 × 2
+// worker = 20 task song song vẫn có thể dồn hết vào một key khi một người chạy
+// hàng loạt — và lúc đó 429 rơi vào đúng người đang vội.
+//
+// Vượt hạn mức không làm mất voice (Asynq retry với backoff), nên gate này mua
+// sự ổn định chứ không cứu dữ liệu: xếp hàng 6 giây rẻ hơn một vòng retry.
+func NewTTSGate(gap time.Duration, slots int) *KeyGate {
+	if gap <= 0 {
+		gap = 6 * time.Second
+	}
+	if slots <= 0 {
+		slots = 2
+	}
+	return NewKeyGate(gap, slots)
+}
+
+// Acquire chờ tới lượt của khoá này. Hàm trả về phải được gọi khi xong
+// (kể cả khi lỗi), nếu không khoá đó kẹt vĩnh viễn.
+func (g *KeyGate) Acquire(ctx context.Context, key string) (func(), error) {
+	if g == nil {
+		return func() {}, nil
+	}
+	lane := g.lane(key)
 
 	select {
 	case lane.token <- struct{}{}:
@@ -84,7 +127,7 @@ func (g *PlatformGate) Acquire(ctx context.Context, platform string) (func(), er
 		once.Do(func() {
 			lane.mu.Lock()
 			// Đóng mốc lúc XONG chứ không lúc bắt đầu: khoảng nghỉ phải nằm
-			// giữa hai lần gọi, còn bản thân lần gọi kéo dài bao lâu thì tuỳ bài.
+			// giữa hai lần gọi, còn bản thân lần gọi kéo dài bao lâu thì tuỳ việc.
 			lane.lastAt = time.Now()
 			lane.mu.Unlock()
 			<-lane.token
@@ -92,13 +135,13 @@ func (g *PlatformGate) Acquire(ctx context.Context, platform string) (func(), er
 	}, nil
 }
 
-func (g *PlatformGate) lane(platform string) *platformLane {
+func (g *KeyGate) lane(key string) *gateLane {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	lane, ok := g.lanes[platform]
+	lane, ok := g.lanes[key]
 	if !ok {
-		lane = &platformLane{token: make(chan struct{}, 1)}
-		g.lanes[platform] = lane
+		lane = &gateLane{token: make(chan struct{}, g.slots)}
+		g.lanes[key] = lane
 	}
 	return lane
 }

@@ -191,7 +191,14 @@ tạo Voice, trước cả khi hệ thống chạm vào bài gốc:
     "author_id": 91650,
     "author_email": "a@strongbody.ai",
     "author_gender": "female",
-    "publish_when_ready": true
+    "publish_when_ready": true,
+    "tts_config": {
+      "gender": "female",
+      "age": "young adult",
+      "pitch": "moderate pitch",
+      "accent": "british accent",
+      "speed": 1.0
+    }
   }
 }
 ```
@@ -205,6 +212,7 @@ cần chú ý:
 | `hashtag` | **Gộp** hashtag người dùng gõ với hashtag của bài gốc, bỏ trùng (không phân biệt hoa thường và dấu `#`), phần người dùng gõ đứng trước |
 | `no_image` | Khác với để trống: để trống thì lấy ảnh bìa bài gốc, bật `no_image` là đăng bài **không ảnh** |
 | `language` | Người dùng chọn thì đó là chốt — quyết định luôn giọng TTS, bước tự nhận diện không ghi đè |
+| `tts_config` | Cấu hình giọng đọc, lưu vào `voice.tts_config` (JSONB). Bỏ trống/`null` = giọng mặc định của nhà cung cấp. Chỉ có nghĩa với hình thức B và C — hình thức A lấy thẳng audio bài gốc, không qua TTS |
 
 `publish_when_ready: true` = tạo xong audio thì **tự đăng lên multime**, không
 cần bấm nút nữa (cùng đường với `auto_publish` của Danh sách nguồn). Voice thiếu
@@ -384,6 +392,32 @@ trả `400` ngay nếu thiếu author/hashtag, các điều kiện còn lại l�
 | PATCH | `/lists/breaking/:id` | Mọi field ở trên đều optional |
 | DELETE | `/lists/breaking/:id` | **Chỉ admin** |
 | POST | `/lists/breaking/:id/run` | → `202`. Quét thủ công 1 vòng để test regex |
+| GET | `/lists/breaking/:id/skipped` | Bài đã xét rồi bỏ. Query `limit`, `offset` |
+
+`GET /lists/breaking/:id/skipped` trả:
+
+```jsonc
+{
+  "items": [{
+    "post_id_external": "7300000000000000000",
+    "post_url":         "https://www.tiktok.com/@kenh/video/7300000000000000000",
+    "text_excerpt":     "Nội dung đã đem so với regex, cắt còn 300 ký tự…",
+    "reason":           "không khớp 3 regex_patterns",
+    "checked_at":       "2026-09-15T08:12:00Z"
+  }],
+  "total": 412,
+  "last_7_days": 412,   // cửa sổ cố định, so được giữa các kênh
+  "limit": 20, "offset": 0
+}
+```
+
+Đây là chỗ duy nhất trả lời được **"regex của kênh này có quá chặt không"**. Bảng
+kênh chỉ đếm Bài Post đã tạo, nên một kênh đang bật, quét đều, mà không ra bài
+nào trông y hệt một kênh chưa có bài mới.
+
+`text_excerpt` và `post_url` mới có từ migration `000024` — bản ghi cũ hơn chỉ có
+ID, và nhìn ID thì không kết luận được gì. Log giữ theo `SKIPPED_LOG_RETENTION`
+(mặc định 7 ngày).
 
 `regex_patterns` là **mảng** — nhiều pattern kết hợp **OR**, khớp 1 pattern là
 bắt bài. Mỗi phần tử nhận cả input thô, backend chuẩn hoá về regex:
@@ -512,17 +546,61 @@ Chỉ còn 1 nhà cung cấp TTS (3voices) nên `/ai-engines` không dùng để
 engine nữa, mà để mỗi người khai **API key của chính mình**: worker chạy TTS
 bằng key của người tạo voice, nên quota và hoá đơn về đúng người đó.
 
-Bản ghi chỉ còn 4 thông tin: key, **chủ sở hữu** (`user_id` — voice của người
-này đọc bằng key này), **người khai** (`created_by` — khác chủ khi admin khai
-hộ) và `last_used_at`. Tên gọi / provider / danh sách ngôn ngữ đã bỏ ở
-migration `000010`: chỉ có 1 nhà cung cấp thì không có gì để đặt tên, còn danh
-sách ngôn ngữ hỏi thẳng provider chính xác hơn là khai tay.
+Bản ghi gồm: key, **chủ sở hữu** (`user_id` — voice của người này đọc bằng key
+này), **người khai** (`created_by` — khác chủ khi admin khai hộ), `is_active`,
+bộ `key_status*` và `last_used_at`. Tên gọi / provider / danh sách ngôn ngữ đã
+bỏ ở migration `000010`: chỉ có 1 nhà cung cấp thì không có gì để đặt tên, còn
+danh sách ngôn ngữ hỏi thẳng provider chính xác hơn là khai tay.
 
 - `POST` body: `api_key` (bắt buộc), `user_ids?`.
   **Trả về mảng** `{"items": [...]}` — admin gán 1 key cho nhiều người thì mỗi
   người là một bản ghi riêng, nên sau này đổi/thu hồi key của từng người mà
   không đụng người còn lại. `user_ids` rỗng = key của chính mình.
-- `PATCH` body: `api_key?`, `user_id?` (chuyển key sang người khác).
+- `PATCH` body: `api_key?`, `user_id?` (chuyển key sang người khác),
+  `is_active?` (bật/tắt key).
+- `GET /ai-engines` xếp theo `created_at` giảm dần — key vừa thêm nằm ở dòng
+  đầu, kể cả với admin đang nhìn key của cả nhà.
+
+#### `is_active` — mỗi người đúng một key đang chạy
+
+Trước migration `000027`, luật là ngầm: "key mới khai nhất thắng". Người có 2
+key không có cách nào biết voice của mình đang chạy bằng key nào, càng không có
+cách chọn. `is_active` biến luật đó thành một công tắc nhìn thấy được.
+
+- `PATCH {"is_active": true}` **tắt mọi key khác của cùng chủ sở hữu** trước
+  khi bật key này. Unique index `uq_ai_engine_active_per_user` ép luật này ở
+  tầng dữ liệu, không chỉ ở UI.
+- Key **đầu tiên** của một người tự động bật; key thứ hai trở đi vào ở trạng
+  thái tắt — thêm key dự phòng không được âm thầm đổi key đang đọc.
+- Xoá key đang bật, hoặc admin chuyển nó sang người khác, thì **key mới nhất
+  còn lại của chủ cũ tự lên thay** (giữ đúng hành vi trước khi có công tắc).
+  Key vừa chuyển sang chủ mới luôn ở trạng thái tắt.
+- Tắt hết key = voice B/C của người đó dừng ở bước đọc, kèm câu hướng dẫn bật
+  lại. Đây là lựa chọn hợp lệ, không phải lỗi.
+
+#### `key_status` — key còn hạn hay hết credit
+
+Ba cột `key_status`, `key_status_detail`, `key_status_at` ghi lại điều học được
+từ **lần gọi TTS gần nhất** bằng key đó:
+
+| `key_status` | Nghĩa | Người dùng phải làm gì |
+|---|---|---|
+| `unknown` | chưa chạy lần nào bằng key này | — |
+| `ok` | lần đọc gần nhất ra audio | — |
+| `no_credit` | 3voices trả `402` | nạp thêm credit |
+| `invalid` | `401`/`403` — key sai hoặc bị thu hồi | khai lại key mới |
+| `rate_limited` | `429` — gọi quá nhanh | chờ, không cần đổi key |
+
+Hai điều quan trọng khi đọc mấy cột này:
+
+- **Luôn là thông tin quá khứ.** Hệ thống *không* thăm dò 3voices định kỳ: mỗi
+  lần hỏi là một request tính tiền của người dùng, để lấy đúng thứ mà lần đọc
+  thật sẽ nói ra miễn phí. Vì vậy `key_status_at` là phần bắt buộc phải hiện
+  cùng — "còn hạn" của tháng trước không nói gì về hôm nay.
+- **Lỗi không liên quan tới key thì không ghi đè.** Mạng chập chờn, 3voices lỗi
+  `5xx`, text quá dài — cả ba đều không chứng minh được gì về key, nên trạng
+  thái cũ được giữ nguyên: một lần rớt mạng không được phép xoá dấu vết của lần
+  hết credit.
 - **API key không bao giờ được trả về.** Response chỉ có `api_key_masked`
   (4 ký tự cuối); key lưu trong DB đã mã hoá AES-256-GCM bằng
   `TOKEN_ENCRYPTION_KEY`, cùng cơ chế với token multime.
@@ -539,9 +617,10 @@ sách ngôn ngữ hỏi thẳng provider chính xác hơn là khai tay.
 - `last_used_at` chỉ được đóng dấu khi TTS chạy **thành công**: key sai mà vẫn
   hiện "vừa dùng" thì người dùng tưởng key còn sống.
 
-Voice chạy hình thức B/C mà chủ nhân chưa khai key thì job dừng với câu
-*"Bạn chưa khai API key TTS — vào mục AI Engine thêm key 3voices rồi chạy lại"*
-(trừ khi `.env` có key chung `THREEVOICES_API_KEY` làm dự phòng).
+Voice chạy hình thức B/C mà chủ nhân chưa khai key — hoặc đã tắt hết key — thì
+job dừng với câu *"Bạn chưa khai hoặc chưa bật API key TTS nào — vào mục AI
+Engine thêm key 3voices (hoặc bật lại key đã có) rồi chạy lại"* (trừ khi `.env`
+có key chung `THREEVOICES_API_KEY` làm dự phòng).
 
 ### Bộ API key LLM (`/llm-api-sets`)
 
@@ -596,9 +675,10 @@ vì chuỗi dự phòng chỉ có ý nghĩa khi trong tay có key của nhiều 
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| GET | `/settings` | `{llm_chain, llm_batch, allowed_models, providers}` |
-| PATCH | `/settings` | Body: `llm_chain?`, `llm_batch?` |
+| GET | `/settings` | `{llm_chain, llm_batch, allowed_models, providers, ai_prices}` |
+| PATCH | `/settings` | Body: `llm_chain?`, `llm_batch?`, `ai_prices?` |
 | GET | `/settings/fetch-stats` | Query `days` (1–365, mặc định 7) |
+| GET | `/settings/ai-usage` | Query `days` (1–365, mặc định 30) |
 
 ```jsonc
 {
@@ -621,6 +701,54 @@ sẽ lệch ngay ở lần thêm model tiếp theo.
 
 `size` / `max_chars` / `wait_ms` là **điểm khởi đầu phải đo lại**, không phải
 hằng số đúng sẵn — đó chính là lý do chúng nằm trong DB.
+
+#### `GET /settings/ai-usage` — đo trước khi tối ưu
+
+Hai cần gạt ở trên (chuỗi dự phòng, batch) ảnh hưởng thẳng tới hoá đơn, nhưng
+trước đây không có con số nào nói gạt xong rẻ hơn hay đắt hơn. Mỗi lần gọi nhà
+cung cấp AI giờ ghi 1 dòng `ai_usage` — kể cả lần **thất bại** và kể cả các lần
+retry, vì chúng vẫn bị tính token đầu vào.
+
+```jsonc
+{
+  "days": 30,
+  "models": [{
+    "kind": "llm", "provider": "gemini", "model": "gemini-2.5-flash-lite",
+    "calls": 1240, "failed": 12,
+    "input_tokens": 8200000, "output_tokens": 1900000,
+    "characters": 0, "audio_seconds": 0,
+    "cost_usd": 1.23, "has_price": true
+  }],
+  "daily": [ /* cùng hình dạng, thêm "day" */ ],
+  "total_usd": 1.23,          // CHỈ cộng phần đã khai đơn giá
+  "missing_prices": [{ "kind": "tts", "provider": "3voices", "model": "" }],
+  "prices": [ /* bảng giá đang lưu */ ]
+}
+```
+
+**`has_price: false` khác hẳn "miễn phí"** — nó nghĩa là chưa ai khai đơn giá,
+và `cost_usd` của dòng đó không có ý nghĩa. `total_usd` cũng chỉ cộng phần đã
+khai, vì một tổng trông có vẻ đầy đủ mà thiếu chính là con số người ta mang đi
+báo cáo.
+
+Đơn giá là **dữ liệu, không phải hằng số trong code**: giá của cả ba nhà đổi vài
+lần một năm và khác nhau theo hợp đồng. Bảng giá cũ ghim trong Go sẽ không báo
+lỗi — nó vẫn cho ra một con số, chỉ là con số sai. Khai qua `PATCH /settings`:
+
+```jsonc
+{ "ai_prices": [
+  { "kind": "llm", "provider": "anthropic", "model": "claude-haiku-4-5-20251001",
+    "input_per_mtok": 1.0, "output_per_mtok": 5.0 },
+  { "kind": "tts", "provider": "3voices", "model": "", "per_mchars": 20.0 }
+] }
+```
+
+`ai_prices` thay **toàn bộ** bảng (không sửa từng dòng). Giao diện dựng sẵn các
+dòng từ `missing_prices` nên không phải gõ tay tên model — gõ sai một ký tự thì
+dòng giá không khớp dòng usage nào và chẳng có gì báo lỗi.
+
+Tiền tính lúc ĐỌC, không lưu vào từng dòng: khai nhầm rồi sửa lại là mọi con số
+đúng ngay. Bản ghi giữ theo `AI_USAGE_RETENTION` (mặc định 90 ngày).
 
 `GET /settings/fetch-stats` trả `[{day, platform, kind, count, last_at}]` — số
 lần từng nền tảng chặn ta, gộp theo ngày. Đây là dữ liệu để trả lời một câu hỏi
@@ -699,6 +827,40 @@ nền tảng — bài đó là dữ liệu của người khác.
   điền vẫn giữ, và bảng không mọc thêm voice rác. File audio cũ bị xoá khỏi
   storage **sau khi** file mới ghi xong.
 - Voice đã publish thì từ chối (`409`): bài bên multime đã có người nghe.
+- `tts_config` ở body theo luật 3 trạng thái: **bỏ hẳn trường** = giữ nguyên
+  giọng voice đang dùng; gửi `{}` = trả về giọng mặc định; gửi object có giá
+  trị = đọc lại bằng giọng đó. Không dùng `COALESCE` được vì `null` phải phân
+  biệt được với "không nhắc tới".
+
+### Cấu hình giọng đọc (`tts_config`)
+
+Lưu trên từng Voice (cột `voice.tts_config`, JSONB) chứ không phải trên API key:
+cùng một key vẫn phải đọc mỗi bài một giọng khác nhau được, và worker chạy bất
+đồng bộ nên giá trị phải nằm sẵn trên bản ghi.
+
+| Trường | Giá trị hợp lệ |
+|---|---|
+| `gender` | `female`, `male` |
+| `age` | `child`, `teenager`, `young adult`, `middle-aged`, `elderly` |
+| `pitch` | `very low pitch`, `low pitch`, `moderate pitch`, `high pitch`, `very high pitch`, `whisper` |
+| `accent` | `american accent`, `australian accent`, `british accent`, `canadian accent`, `chinese accent`, `indian accent`, `japanese accent`, `korean accent`, `portuguese accent`, `russian accent` |
+| `speed` | Số thực trong khoảng `0.5`–`2.0`; `1.0` là bình thường |
+
+Giá trị lạ bị chặn ngay ở API (`400`) kèm danh sách giá trị đúng — 3voices trả
+`500` cho một từ khoá sai, và lúc đó lỗi đã nằm trong một job đã chết. Trường bỏ
+trống rơi về mặc định của adapter (`female` / `young adult` / `moderate pitch` /
+`speed 1.0`); riêng `accent` **không có mặc định** — không gửi nghĩa là giọng
+chuẩn của ngôn ngữ đã chọn.
+
+> **Cấu hình thắng giọng đã lưu.** Khi API key của user có `voice_id`, adapter
+> vốn gọi `/tts/saved` — endpoint đó **bỏ qua** `gender`/`age`/`pitch`/`accent`.
+> Nên chỉ cần `tts_config` có một trường, hệ thống chuyển sang `/tts/design` và
+> không gửi `voice_id` nữa. Nếu không, người dùng chỉnh xong nghe lại thấy y hệt
+> cũ mà không có chỗ nào giải thích. `speed` và `language` có tác dụng ở cả hai
+> đường.
+
+Ngôn ngữ đọc **không** nằm trong `tts_config`: nó đã là trường `language` của
+Voice. Hai ô ngôn ngữ trong một form là hai nguồn sự thật.
 
 ## Nhật ký thao tác
 
@@ -724,7 +886,9 @@ Append-only — không có endpoint sửa/xoá.
 | GET | `/healthz` | Không cần auth |
 | GET | `/meta/platforms` | Danh sách nền tảng đang được tích hợp |
 | GET | `/meta/collect-modes` | `[{mode, enabled, reason?}]` — hình thức nào đang bật. `reason` chỉ có khi tắt và nói rõ vì sao: người vận hành tự tắt trong `ENABLED_COLLECT_MODES`, hoặc không có LLM thật nào (mode C tắt khi `LLM_PROVIDER=mock` **và** trong DB chưa có Bộ API key nào). Trạng thái mode C đọc lại từ DB ngay trong lúc chạy (nhớ tạm 30s) — thêm Bộ API key xong, tải lại trang là thấy bật, **không cần restart** |
+| GET | `/meta/voice-style` | `{genders, ages, pitches, accents, speed: {min, max}, has_saved_voice}` — bộ giá trị hợp lệ cho `tts_config`, để form không phải chép cứng bộ từ khoá của nhà cung cấp (xem [Cấu hình giọng đọc](#cấu-hình-giọng-đọc-tts_config)). `has_saved_voice` = API key của **chính người đang đăng nhập** có khai `voice_id` hay không; form dùng nó để cảnh báo trước rằng chỉnh cấu hình sẽ thay giọng đã lưu đó |
 | GET | `/meta/publish` | `{category_ids, min_duration_seconds}` — điều kiện multime đòi ở 1 bài đăng |
+| GET | `/meta/health` | `{failed_voices, users_need_relogin, channels_with_error, ok}` — những thứ đang hỏng **âm thầm**. Giao diện đọc mỗi phút và hiện thanh cảnh báo ở mọi trang khi `ok = false`. `users_need_relogin` chỉ đếm người đã mất token multime **mà đang đứng tên kênh đang bật**: token của họ là thứ worker dùng để auto-publish, hỏng thì mọi voice của các kênh đó fail mà bảng kênh vẫn hiện "Đang bật" (rủi ro 🔴 ở [status.md §3.1](status.md)). Chỉ chính họ đăng nhập lại mới sửa được |
 | GET | `/meta/authors/random` | Query: `gender` (`male`/`female`/`other`, bắt buộc), `country_id` (tuỳ chọn). Trả `{author: {id, email, gender, full_name, avatar_url}}` — **bốc ngẫu nhiên 1 tài khoản** bên Strongbody (`GET /v1/admin/user` + `filter_names=gender` + `country_id`) bằng token của người đang đăng nhập; tool không giữ bản sao danh bạ. `id` chính là `author_id` khi đăng voice. Mỗi lần gọi là một lần bốc mới |
 | GET | `/meta/catalog` | `{countries, hashtags, language_order}` — **cả 3 danh mục của modal Tạo Voice trong 1 lần gọi**. Frontend cache vĩnh viễn trong phiên: mở modal lần sau không gọi lại, mọi thao tác search chạy trên dữ liệu này. `countries` đọc từ bảng `country` (đồng bộ từ Strongbody mỗi 24h, sắp theo thứ tự nghiệp vụ — Việt Nam trước); `hashtags` là `[{tag, count, languages}]` dựng từ chính dữ liệu hệ thống; `language_order` là mã ngôn ngữ theo thứ tự suy ra từ thứ tự quốc gia |
 | GET | `/meta/countries` | `{countries: [{id, name, code}]}` — danh mục quốc gia để lọc author. Đọc từ `GET /v1/buyer/countries` của Strongbody (bản `/v1/admin/countries` trả `403 unauthorized application` với token tài khoản thường) |

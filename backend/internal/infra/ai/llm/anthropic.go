@@ -52,7 +52,9 @@ func NewAnthropic(apiKey, model string) *Anthropic {
 
 func (a *Anthropic) Name() string { return "anthropic:" + a.model }
 
-func (a *Anthropic) Generate(ctx context.Context, promptContent, sourceText string) (string, error) {
+func (a *Anthropic) Generate(ctx context.Context, promptContent, sourceText string) (
+	string, domain.LLMUsage, error,
+) {
 	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.Model(a.model),
 		MaxTokens: anthropicMaxTokens,
@@ -63,11 +65,12 @@ func (a *Anthropic) Generate(ctx context.Context, promptContent, sourceText stri
 		},
 	})
 	if err != nil {
-		return "", anthropicClassify(err)
+		return "", domain.LLMUsage{}, anthropicClassify(err)
 	}
+	usage := anthropicUsage(resp)
 
 	if resp.StopReason == anthropic.StopReasonRefusal {
-		return "", domain.LLMFail(domain.LLMFailContent,
+		return "", usage, domain.LLMFail(domain.LLMFailContent,
 			fmt.Errorf("anthropic từ chối xử lý nội dung: %s", resp.StopDetails.Explanation))
 	}
 
@@ -81,15 +84,17 @@ func (a *Anthropic) Generate(ctx context.Context, promptContent, sourceText stri
 	out := strings.TrimSpace(b.String())
 	if out == "" {
 		if resp.StopReason == anthropic.StopReasonMaxTokens {
-			return "", domain.LLMFail(domain.LLMFailContent,
+			return "", usage, domain.LLMFail(domain.LLMFailContent,
 				fmt.Errorf("anthropic cắt đầu ra vì quá dài (max_tokens)"))
 		}
-		return "", emptyResult(a.Name(), "stop_reason="+string(resp.StopReason))
+		return "", usage, emptyResult(a.Name(), "stop_reason="+string(resp.StopReason))
 	}
-	return out, nil
+	return out, usage, nil
 }
 
-func (a *Anthropic) GenerateBatch(ctx context.Context, promptContent string, items []string) ([]string, error) {
+func (a *Anthropic) GenerateBatch(ctx context.Context, promptContent string, items []string) (
+	[]string, domain.LLMUsage, error,
+) {
 	schema := batchSchema(false)
 	props, _ := schema["properties"].(map[string]any)
 
@@ -116,11 +121,12 @@ func (a *Anthropic) GenerateBatch(ctx context.Context, promptContent string, ite
 		}},
 	})
 	if err != nil {
-		return nil, anthropicClassify(err)
+		return nil, domain.LLMUsage{}, anthropicClassify(err)
 	}
+	usage := anthropicUsage(resp)
 
 	if resp.StopReason == anthropic.StopReasonRefusal {
-		return nil, domain.LLMFail(domain.LLMFailContent,
+		return nil, usage, domain.LLMFail(domain.LLMFailContent,
 			fmt.Errorf("anthropic từ chối xử lý nội dung: %s", resp.StopDetails.Explanation))
 	}
 
@@ -131,14 +137,32 @@ func (a *Anthropic) GenerateBatch(ctx context.Context, promptContent string, ite
 		}
 		out, err := parseBatch(string(use.Input), len(items))
 		if err != nil {
-			return nil, domain.LLMFail(domain.LLMFailTransient,
+			return nil, usage, domain.LLMFail(domain.LLMFailTransient,
 				fmt.Errorf("anthropic batch: %w", err))
 		}
-		return out, nil
+		return out, usage, nil
 	}
 
-	return nil, emptyResult(a.Name(),
+	return nil, usage, emptyResult(a.Name(),
 		"không có tool_use nào, stop_reason="+string(resp.StopReason))
+}
+
+// anthropicUsage gom số token của một response.
+//
+// Token đọc từ cache (CacheReadInputTokens) tính vào đầu vào dù nhà cung cấp
+// tính tiền chúng rẻ hơn token thường: bảng giá ở đây chỉ có MỘT đơn giá đầu
+// vào, nên con số quy ra tiền là TRẦN TRÊN chứ không phải hoá đơn chính xác.
+// Gộp như vậy vẫn tốt hơn bỏ qua — bỏ qua thì phần cache biến mất khỏi thống kê
+// và system prompt trông như miễn phí.
+func anthropicUsage(resp *anthropic.Message) domain.LLMUsage {
+	if resp == nil {
+		return domain.LLMUsage{}
+	}
+	return domain.LLMUsage{
+		InputTokens: resp.Usage.InputTokens +
+			resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens,
+		OutputTokens: resp.Usage.OutputTokens,
+	}
 }
 
 // system dựng khối system kèm cache: phần này cố định giữa mọi request nên

@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { AIUsageSection } from "@/components/ai-usage";
 import { ErrorNote, PageHeader } from "@/components/page-header";
 import { usePermissions } from "@/components/permission";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +22,9 @@ import type { LLMBatchConfig, LLMChainStep, LLMProvider } from "@/types/api";
  *
  *   1. Chuỗi dự phòng LLM — thứ tự thử model khi tạo voice hình thức C.
  *   2. Batch — gộp N mẩu text vào 1 request.
- *   3. Thống kê bị nền tảng chặn — dữ liệu để quyết định có cần proxy không.
+ *   3. Chi phí AI — token/ký tự đã tiêu + đơn giá, để biết hai mục trên có
+ *      đang rẻ đi thật không.
+ *   4. Thống kê bị nền tảng chặn — dữ liệu để quyết định có cần proxy không.
  */
 export default function SettingsPage() {
   const { role, loading } = usePermissions();
@@ -49,10 +52,11 @@ export default function SettingsPage() {
     <>
       <PageHeader
         title="Cài đặt"
-        description="Chuỗi dự phòng LLM, batch, và số lần bị nền tảng chặn."
+        description="Chuỗi dự phòng LLM, batch, chi phí AI, và số lần bị nền tảng chặn."
       />
       <div className="space-y-6">
         <LLMSection />
+        <AIUsageSection />
         <FetchStatsSection />
       </div>
     </>

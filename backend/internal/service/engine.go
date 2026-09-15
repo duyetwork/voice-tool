@@ -43,8 +43,12 @@ type Engine struct {
 	audit   *Audit
 	log     *slog.Logger
 	// gate giữ nhịp gọi yt-dlp theo từng nền tảng; stats đếm số lần bị chặn.
-	gate  *PlatformGate
+	gate  *KeyGate
 	stats *FetchStats
+	// ttsGate giữ nhịp gọi TTS theo từng API KEY (hạn mức của 3voices tính
+	// trên key, không phải trên hệ thống). usage ghi lượng dùng để tính tiền.
+	ttsGate *KeyGate
+	usage   *AIUsage
 	// authors bốc tài khoản Strongbody đứng tên bài đăng — chạy ở BƯỚC ĐĂNG,
 	// không phải lúc người dùng chọn giới tính trên form.
 	authors *MultimeUsers
@@ -66,8 +70,10 @@ type EngineDeps struct {
 	Enqueuer   domain.Enqueuer
 	Audit      *Audit
 	Logger     *slog.Logger
-	Gate       *PlatformGate
+	Gate       *KeyGate
 	FetchStats *FetchStats
+	TTSGate    *KeyGate
+	Usage      *AIUsage
 	Authors    *MultimeUsers
 }
 
@@ -77,7 +83,8 @@ func NewEngine(d EngineDeps) *Engine {
 		box: d.Secret, stt: d.STT, llm: d.LLM,
 		storage: d.Storage, prober: d.Prober, multime: d.Multime, creds: d.Creds,
 		enq: d.Enqueuer, audit: d.Audit, log: d.Logger,
-		gate: d.Gate, stats: d.FetchStats, authors: d.Authors,
+		gate: d.Gate, stats: d.FetchStats, ttsGate: d.TTSGate, usage: d.Usage,
+		authors: d.Authors,
 	}
 }
 
@@ -399,19 +406,10 @@ func (e *Engine) buildVoice(
 		if err != nil {
 			return repository.Voice{}, err
 		}
-		audio, err = provider.Synthesize(ctx, spoken, ttsLang)
+		audio, err = e.synthesize(ctx, provider, engine, actor, spoken, ttsLang,
+			e.voiceStyle(ctx, current.TtsConfig, voiceID))
 		if err != nil {
-			return repository.Voice{}, fmt.Errorf("TTS (%s): %w", provider.Name(), err)
-		}
-
-		// Đóng dấu key vừa đọc xong — cột "dùng gần đây" ở màn AI Engine. Chỉ
-		// đánh dấu khi TTS THÀNH CÔNG: key sai mà vẫn hiện "vừa dùng" thì người
-		// dùng tưởng key còn sống. Ghi hỏng cũng không ảnh hưởng voice.
-		if engineID != nil {
-			if err := e.q.TouchAIEngineUsed(ctx, *engineID); err != nil {
-				e.log.WarnContext(ctx, "không ghi được last_used_at của API key",
-					"error", err, "ai_engine_id", *engineID)
-			}
+			return repository.Voice{}, err
 		}
 	}
 
@@ -703,9 +701,14 @@ func (e *Engine) ttsFor(
 	engine, err := e.q.GetAIEngineForUser(ctx, owner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if e.tts == nil {
+			// Nói cả hai khả năng: từ khi có công tắc bật/tắt, "không có key
+			// nào chạy được" gồm cả người chưa khai key lẫn người đã khai
+			// nhưng tắt hết. Câu chỉ nhắc "chưa khai" khiến người thứ hai đi
+			// khai thêm một key nữa trong khi họ chỉ cần bật lại cái đang có.
 			return nil, nil, domain.Permanent(domain.Explain(
-				"Bạn chưa khai API key TTS — vào mục AI Engine thêm key 3voices rồi chạy lại",
-				fmt.Errorf("%w: user %s chưa có ai_engine", domain.ErrInvalidInput, owner)))
+				"Bạn chưa khai hoặc chưa bật API key TTS nào — vào mục AI Engine "+
+					"thêm key 3voices (hoặc bật lại key đã có) rồi chạy lại",
+				fmt.Errorf("%w: user %s không có ai_engine đang bật", domain.ErrInvalidInput, owner)))
 		}
 		e.log.WarnContext(ctx, "user chưa khai API key TTS, dùng provider mặc định trong .env",
 			"user_id", owner, "provider", e.tts.Name())
@@ -732,6 +735,124 @@ func (e *Engine) ttsFor(
 	}
 
 	return provider, &engine, nil
+}
+
+// synthesize gọi TTS qua gate hạn mức, ghi lượng dùng, và đóng dấu key vừa
+// dùng. Mọi lần đọc đều phải đi qua đây.
+//
+// Gom 3 việc vào 1 chỗ vì cả 3 đều dễ quên ở một trong hai đường gọi (voice từ
+// Bài Post và voice gõ tay), và quên thì không có gì báo: thiếu gate là thỉnh
+// thoảng ăn 429, thiếu ghi usage là bảng chi phí thiếu một nửa.
+func (e *Engine) synthesize(
+	ctx context.Context,
+	provider domain.TTSProvider,
+	engine *repository.AiEngine,
+	owner uuid.UUID,
+	spoken, ttsLang string,
+	style domain.VoiceStyle,
+) ([]byte, error) {
+	// Khoá gate là API KEY, không phải người dùng: một người có thể khai nhiều
+	// key, và hạn mức của 3voices đếm trên key. Không có engine (dùng provider
+	// .env) thì cả hệ thống chung một lane.
+	key := "shared:" + provider.Name()
+	if engine != nil {
+		key = engine.ID.String()
+	}
+	release, err := e.ttsGate.Acquire(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	audio, err := provider.Synthesize(ctx, domain.SpeechRequest{
+		Text:     spoken,
+		Language: ttsLang,
+		Style:    style,
+	})
+
+	// Ghi cả lần hỏng: key sai vẫn tính request, và tỉ lệ lỗi theo nhà cung cấp
+	// là thứ cần nhìn khi quyết định đổi nhà.
+	e.usage.Record(ctx, owner, domain.AIUsageEvent{
+		Kind:     domain.AIKindTTS,
+		Provider: provider.Name(),
+		// 3voices tính tiền theo KÝ TỰ gửi đi, nên đó là đơn vị đo. Số giây
+		// audio ghi ở bước probe thì đã quá muộn cho lần gọi này.
+		Characters: int64(len([]rune(spoken))),
+		OK:         err == nil,
+	})
+
+	if err != nil {
+		// Lần gọi hỏng vẫn dạy ta một điều về key — nhưng chỉ khi nhà cung cấp
+		// nói về key (401/402/429). Mạng chập chờn hay 5xx của họ thì không:
+		// xem domain.KeyStatusOf.
+		e.recordKeyStatus(ctx, engine, err)
+		return nil, fmt.Errorf("TTS (%s): %w", provider.Name(), err)
+	}
+
+	// Đóng dấu key vừa đọc xong — cột "dùng gần đây" ở màn AI Engine. Chỉ đánh
+	// dấu khi THÀNH CÔNG: key sai mà vẫn hiện "vừa dùng" thì người dùng tưởng
+	// key còn sống. Ghi hỏng cũng không ảnh hưởng voice.
+	if engine != nil {
+		if terr := e.q.TouchAIEngineUsed(ctx, engine.ID); terr != nil {
+			e.log.WarnContext(ctx, "không ghi được last_used_at của API key",
+				"error", terr, "ai_engine_id", engine.ID)
+		}
+	}
+	// Đọc ra được audio = key còn sống và còn hạn mức, tại đúng thời điểm này.
+	e.recordKeyStatus(ctx, engine, nil)
+	return audio, nil
+}
+
+// recordKeyStatus ghi tình trạng key vừa học được từ một lần gọi TTS.
+//
+// Ba lần "không làm gì" ở đây đều có chủ đích:
+//
+//   - engine == nil: đang chạy bằng provider chung trong .env (chỉ có ở dev),
+//     không có bản ghi key nào để ghi vào.
+//   - err khác nil nhưng không mang KeyFault: lỗi đó không chứng minh được gì
+//     về key. Ghi 'unknown' đè lên là xoá mất đúng thông tin người dùng cần —
+//     một lần rớt mạng không được phép làm biến mất dấu vết của lần hết credit.
+//   - ghi hỏng: chỉ log. Cột trạng thái là thông tin phụ trợ, không đáng để
+//     làm chết một voice đã đọc xong.
+func (e *Engine) recordKeyStatus(ctx context.Context, engine *repository.AiEngine, err error) {
+	if engine == nil {
+		return
+	}
+	status, detail, known := domain.KeyStatusOf(err)
+	if err == nil {
+		status, detail, known = domain.KeyStatusOK, "", true
+	}
+	if !known {
+		return
+	}
+
+	var note *string
+	if detail = strings.TrimSpace(detail); detail != "" {
+		note = &detail
+	}
+	if serr := e.q.SetAIEngineStatus(ctx, repository.SetAIEngineStatusParams{
+		ID:              engine.ID,
+		KeyStatus:       string(status),
+		KeyStatusDetail: note,
+	}); serr != nil {
+		e.log.WarnContext(ctx, "không ghi được trạng thái API key",
+			"error", serr, "ai_engine_id", engine.ID, "status", status)
+	}
+}
+
+// voiceStyle đọc cấu hình giọng đã lưu trên voice.
+//
+// Cột hỏng KHÔNG làm chết job: nó chỉ mô tả giọng, còn nội dung đọc vẫn đúng.
+// Dừng ở đây nghĩa là người dùng mất cả bài vì một trường trang trí — thà đọc
+// bằng giọng mặc định rồi để lại một dòng log cho người vận hành.
+func (e *Engine) voiceStyle(ctx context.Context, raw []byte, voiceID uuid.UUID) domain.VoiceStyle {
+	style, err := domain.ParseVoiceStyle(raw)
+	if err != nil {
+		e.log.WarnContext(ctx, "tts_config hỏng, đọc bằng giọng mặc định",
+			"error", err, "voice_id", voiceID)
+		return domain.VoiceStyle{}
+	}
+	return style
 }
 
 // speechLanguage chốt mã ngôn ngữ gửi cho TTS, và quyết định khi nào thì từ
@@ -925,15 +1046,10 @@ func (e *Engine) buildTextVoice(
 	if err != nil {
 		return err
 	}
-	audio, err := provider.Synthesize(ctx, spoken, ttsLang)
+	audio, err := e.synthesize(ctx, provider, engine, actor, spoken, ttsLang,
+		e.voiceStyle(ctx, voice.TtsConfig, voice.ID))
 	if err != nil {
-		return fmt.Errorf("TTS (%s): %w", provider.Name(), err)
-	}
-	if engineID != nil {
-		if err := e.q.TouchAIEngineUsed(ctx, *engineID); err != nil {
-			e.log.WarnContext(ctx, "không ghi được last_used_at của API key",
-				"error", err, "ai_engine_id", *engineID)
-		}
+		return err
 	}
 
 	info := e.probe(ctx, audio, voice.ID)

@@ -98,6 +98,6 @@ type fakeTTS struct{ langs []string }
 
 func (f *fakeTTS) Name() string                 { return "fake" }
 func (f *fakeTTS) SupportedLanguages() []string { return f.langs }
-func (f *fakeTTS) Synthesize(context.Context, string, string) ([]byte, error) {
+func (f *fakeTTS) Synthesize(context.Context, domain.SpeechRequest) ([]byte, error) {
 	return []byte("audio"), nil
 }

@@ -415,6 +415,11 @@ func (v *Voice) CreateFromText(
 
 	// Tiêu đề tạm lấy từ chính đoạn text (trừ hashtag) để dòng voice đang chạy
 	// đã đọc được ngay; worker ghi đè bằng nội dung thật sự được đọc.
+	ttsConfig, err := ttsConfigJSON(in.Seed.TTSConfig)
+	if err != nil {
+		return repository.Voice{}, err
+	}
+
 	meta := domain.TextPostMetadata(text)
 	// Tiêu đề người dùng gõ THẮNG tiêu đề tạm cắt từ text: họ đã nói rõ muốn
 	// bài tên gì. Hashtag thì ngược lại — không có nguồn nào khác để gộp, nên
@@ -435,6 +440,7 @@ func (v *Voice) CreateFromText(
 		AuthorGender:     in.Seed.AuthorGender,
 		AuthorCountryID:  in.Seed.AuthorCountryID,
 		PublishWhenReady: in.Seed.PublishWhenReady,
+		TtsConfig:        ttsConfig,
 	})
 	if err != nil {
 		return repository.Voice{}, fmt.Errorf("tạo voice từ text: %w", err)
@@ -474,6 +480,12 @@ type RegenerateInput struct {
 	// muốn nghe, chạy prompt lên đó là ghi đè chính thứ họ vừa sửa. Ở hình thức
 	// B trường này vô nghĩa (Text đã là lời đọc) nên bị bỏ qua.
 	SpokenText *string
+	// TTSConfig là cấu hình giọng đọc cho lần chạy này.
+	//
+	// nil = GIỮ NGUYÊN cấu hình voice đang có, không phải "về mặc định": người
+	// gọi không nhắc tới giọng thì không có lý do gì đổi giọng của họ. Muốn
+	// quay về mặc định thì gửi một VoiceStyle rỗng.
+	TTSConfig *domain.VoiceStyle
 }
 
 // Regenerate đọc lại Voice bằng nội dung mới, GHI ĐÈ lên chính bản ghi cũ.
@@ -545,14 +557,21 @@ func (v *Voice) Regenerate(
 		spoken = &sp
 	}
 
+	ttsConfig, err := ttsConfigJSON(in.TTSConfig)
+	if err != nil {
+		return repository.Voice{}, err
+	}
+
 	after, err := v.q.SetVoiceContent(ctx, repository.SetVoiceContentParams{
-		ID:          id,
-		InputText:   &text,
-		CollectMode: ptr(string(in.CollectMode)),
-		PromptID:    in.PromptID,
-		Language:    nilIfEmpty(strings.ToLower(strings.TrimSpace(in.Language))),
-		LlmApiSetID: in.LLMAPISetID,
-		SpokenText:  spoken,
+		ID:           id,
+		InputText:    &text,
+		CollectMode:  ptr(string(in.CollectMode)),
+		PromptID:     in.PromptID,
+		Language:     nilIfEmpty(strings.ToLower(strings.TrimSpace(in.Language))),
+		LlmApiSetID:  in.LLMAPISetID,
+		SpokenText:   spoken,
+		SetTtsConfig: in.TTSConfig != nil,
+		TtsConfig:    ttsConfig,
 	})
 	if err != nil {
 		return repository.Voice{}, wrapNotFound(err, "voice "+id.String())

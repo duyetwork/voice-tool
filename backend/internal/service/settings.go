@@ -81,6 +81,24 @@ func (s *Settings) LLMBatch(ctx context.Context) domain.LLMBatchConfig {
 	return cfg
 }
 
+// AIPrices trả bảng đơn giá admin đã khai.
+//
+// Chưa khai gì thì trả bảng RỖNG, không phải một bảng giá mặc định: giá bịa ra
+// vẫn cho được con số, chỉ là con số sai, và người đọc không có cách nào biết.
+// Chưa có giá thì màn Cài đặt nói thẳng "chưa có đơn giá".
+func (s *Settings) AIPrices(ctx context.Context) domain.AIPriceTable {
+	var table domain.AIPriceTable
+	if !s.read(ctx, domain.SettingAIPrices, &table) {
+		return domain.AIPriceTable{}
+	}
+	if err := domain.ValidateAIPrices(table); err != nil {
+		s.log.WarnContext(ctx, "bảng đơn giá AI đã lưu không hợp lệ, coi như chưa khai",
+			"error", err)
+		return domain.AIPriceTable{}
+	}
+	return table
+}
+
 // ---------------------------------------------------------------------------
 // Ghi
 // ---------------------------------------------------------------------------
@@ -100,6 +118,13 @@ func (s *Settings) SetLLMBatch(ctx context.Context, actor uuid.UUID, cfg domain.
 	return s.write(ctx, actor, domain.SettingLLMBatch, cfg)
 }
 
+func (s *Settings) SetAIPrices(ctx context.Context, actor uuid.UUID, table domain.AIPriceTable) error {
+	if err := domain.ValidateAIPrices(table); err != nil {
+		return err
+	}
+	return s.write(ctx, actor, domain.SettingAIPrices, table)
+}
+
 // SettingsView là toàn bộ cấu hình chung, cho màn Cài đặt.
 //
 // Trả kèm danh sách model cho phép để UI dựng được dropdown mà không phải giữ
@@ -110,6 +135,7 @@ type SettingsView struct {
 	LLMBatch      domain.LLMBatchConfig               `json:"llm_batch"`
 	AllowedModels map[domain.LLMProviderName][]string `json:"allowed_models"`
 	Providers     []domain.LLMProviderName            `json:"providers"`
+	AIPrices      []domain.AIPrice                    `json:"ai_prices"`
 }
 
 func (s *Settings) View(ctx context.Context) SettingsView {
@@ -118,6 +144,7 @@ func (s *Settings) View(ctx context.Context) SettingsView {
 		LLMBatch:      s.LLMBatch(ctx),
 		AllowedModels: domain.AllowedLLMModels,
 		Providers:     domain.AllLLMProviders,
+		AIPrices:      s.AIPrices(ctx).Prices,
 	}
 }
 

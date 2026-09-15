@@ -26,6 +26,49 @@ type ytdlpCore struct {
 	// chỉ có caption (Facebook, TikTok, Instagram, X). Quyết định cách dựng
 	// nội dung Bài Post — xem title.go.
 	ownTitle bool
+
+	// extraArgs chèn vào TRƯỚC tham số riêng của từng lệnh yt-dlp. Hiện chỉ có
+	// `--proxy`, nhưng mọi tham số toàn cục khác (`--cookies`, `--source-address`)
+	// đều cắm vào đúng chỗ này — 4 lệnh yt-dlp bên dưới dùng chung một đường.
+	extraArgs []string
+}
+
+// Option tinh chỉnh adapter sau khi dựng. Dùng dạng option vì chỉ môi trường
+// production mới cần tới chúng: dev và test dựng adapter bằng 2 tham số như cũ.
+type Option func(*ytdlpCore)
+
+// WithProxy đẩy mọi lệnh yt-dlp của nền tảng này qua proxy.
+//
+// Cấu hình THEO TỪNG NỀN TẢNG chứ không phải một proxy chung: thường chỉ một
+// nền tảng chặn IP máy chủ, và đẩy cả YouTube — nơi đang chạy tốt — qua proxy
+// là tự thêm một điểm hỏng cho luồng duy nhất đang sống được.
+//
+// Proxy là bậc xử lý SAU khi `/settings` cho thấy số lần bị chặn đủ nhiều
+// (xem service.FetchStats). Đừng bật sẵn.
+func WithProxy(proxyURL string) Option {
+	return func(c *ytdlpCore) {
+		if p := strings.TrimSpace(proxyURL); p != "" {
+			c.extraArgs = append(c.extraArgs, "--proxy", p)
+		}
+	}
+}
+
+// apply gom việc áp option cho cả 5 adapter.
+func (c ytdlpCore) apply(opts []Option) ytdlpCore {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&c)
+		}
+	}
+	return c
+}
+
+// args ghép tham số toàn cục vào trước tham số của lệnh. Luôn trả về slice
+// mới: dùng chung mảng nền với extraArgs thì lệnh sau ghi đè tham số lệnh trước.
+func (c ytdlpCore) args(rest ...string) []string {
+	out := make([]string, 0, len(c.extraArgs)+len(rest))
+	out = append(out, c.extraArgs...)
+	return append(out, rest...)
 }
 
 func newCore(runner CommandRunner, tempDir string, ownTitle bool) ytdlpCore {
@@ -52,7 +95,8 @@ type ytEntry struct {
 }
 
 func (c ytdlpCore) dumpJSON(ctx context.Context, url string) (ytEntry, error) {
-	stdout, err := c.runner.Run(ctx, "yt-dlp", "--dump-json", "--no-warnings", "--skip-download", url)
+	stdout, err := c.runner.Run(ctx, "yt-dlp",
+		c.args("--dump-json", "--no-warnings", "--skip-download", url)...)
 	if err != nil {
 		return ytEntry{}, explainYtDlp(err)
 	}
@@ -74,9 +118,9 @@ func (c ytdlpCore) downloadAudio(ctx context.Context, url, name string) ([]byte,
 		name = "audio"
 	}
 	outTmpl := filepath.Join(dir, name+".%(ext)s")
-	if _, err := c.runner.Run(ctx, "yt-dlp",
+	if _, err := c.runner.Run(ctx, "yt-dlp", c.args(
 		"-f", "bestaudio/best", "-x", "--audio-format", "mp3",
-		"--no-warnings", "-o", outTmpl, url); err != nil {
+		"--no-warnings", "-o", outTmpl, url)...); err != nil {
 		return nil, explainYtDlp(err)
 	}
 
@@ -102,10 +146,10 @@ func (c ytdlpCore) subtitleText(ctx context.Context, url, name, lang string) (st
 		name = "sub"
 	}
 	outTmpl := filepath.Join(dir, name+".%(ext)s")
-	if _, err := c.runner.Run(ctx, "yt-dlp",
+	if _, err := c.runner.Run(ctx, "yt-dlp", c.args(
 		"--skip-download", "--write-subs", "--write-auto-subs",
 		"--sub-langs", subLangs, "--sub-format", "vtt",
-		"--no-warnings", "-o", outTmpl, url); err != nil {
+		"--no-warnings", "-o", outTmpl, url)...); err != nil {
 		return "", fmt.Errorf("yt-dlp lấy phụ đề: %w", err)
 	}
 
@@ -125,9 +169,9 @@ func (c ytdlpCore) latestPosts(ctx context.Context, target string, limit int) ([
 	if limit <= 0 {
 		limit = 10
 	}
-	stdout, err := c.runner.Run(ctx, "yt-dlp",
+	stdout, err := c.runner.Run(ctx, "yt-dlp", c.args(
 		"--flat-playlist", "--dump-json", "--no-warnings",
-		"--playlist-end", fmt.Sprint(limit), target)
+		"--playlist-end", fmt.Sprint(limit), target)...)
 	if err != nil {
 		return nil, fmt.Errorf("yt-dlp liệt kê kênh %s: %w", target, err)
 	}

@@ -230,6 +230,81 @@ func (l *List) ListBreaking(ctx context.Context, f ChannelFilter) ([]repository.
 	return items, total, nil
 }
 
+// ---------------------------------------------------------------------------
+// Bài bị bỏ qua (B4)
+// ---------------------------------------------------------------------------
+
+// SkippedEntry là 1 dòng "bài đã xét rồi bỏ" của một kênh Breaking.
+type SkippedEntry struct {
+	PostIDExternal string    `json:"post_id_external"`
+	PostURL        string    `json:"post_url"`
+	TextExcerpt    string    `json:"text_excerpt"`
+	Reason         string    `json:"reason"`
+	CheckedAt      time.Time `json:"checked_at"`
+}
+
+// SkippedSummary là cả tab "Bài bị bỏ qua" trong modal chi tiết kênh.
+type SkippedSummary struct {
+	Items []SkippedEntry `json:"items"`
+	Total int64          `json:"total"`
+	// Last7Days: số bài bỏ qua trong 7 ngày gần nhất. Tổng ở trên bị chặn bởi
+	// hạn lưu log nên nó KHÔNG phải tổng từ đầu — con số theo cửa sổ cố định là
+	// thứ duy nhất so sánh giữa hai kênh được.
+	Last7Days int64 `json:"last_7_days"`
+	Limit     int32 `json:"limit"`
+	Offset    int32 `json:"offset"`
+}
+
+// SkippedLogs liệt kê những bài mà vòng quét đã xét rồi BỎ, kèm đoạn text đã
+// đem so với regex.
+//
+// Đây là câu trả lời duy nhất cho "regex của kênh này có quá chặt không". Bảng
+// kênh chỉ nói được bao nhiêu Bài Post đã tạo ra; nó im lặng hoàn toàn về số
+// bài trượt sát nút, mà đó mới là thứ cần nhìn khi một kênh đang chạy nhưng
+// chẳng ra bài nào.
+//
+// Log chỉ giữ theo SKIPPED_LOG_RETENTION (mặc định 7 ngày) — đây là ảnh chụp
+// hiện tại, không phải sổ sách.
+func (l *List) SkippedLogs(ctx context.Context, id uuid.UUID, limit, offset int32) (SkippedSummary, error) {
+	// Kênh không tồn tại phải ra 404, không phải một tab rỗng trông như "kênh
+	// này chưa bỏ qua bài nào".
+	if _, err := l.GetBreaking(ctx, id); err != nil {
+		return SkippedSummary{}, err
+	}
+
+	limit, offset = clampPage(limit, offset)
+	rows, err := l.q.ListSkippedLogs(ctx, repository.ListSkippedLogsParams{
+		ListBreakingID: id, Lim: limit, Off: offset,
+	})
+	if err != nil {
+		return SkippedSummary{}, fmt.Errorf("list skipped_log: %w", err)
+	}
+	total, err := l.q.CountSkippedLogs(ctx, id)
+	if err != nil {
+		return SkippedSummary{}, fmt.Errorf("count skipped_log: %w", err)
+	}
+	last7, err := l.q.CountSkippedLogsSince(ctx, repository.CountSkippedLogsSinceParams{
+		ListBreakingID: id, Since: time.Now().Add(-7 * 24 * time.Hour),
+	})
+	if err != nil {
+		return SkippedSummary{}, fmt.Errorf("count skipped_log 7 ngày: %w", err)
+	}
+
+	items := make([]SkippedEntry, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, SkippedEntry{
+			PostIDExternal: r.PostIDExternal,
+			PostURL:        deref(r.PostUrl),
+			TextExcerpt:    deref(r.TextExcerpt),
+			Reason:         r.Reason,
+			CheckedAt:      r.CheckedAt,
+		})
+	}
+	return SkippedSummary{
+		Items: items, Total: total, Last7Days: last7, Limit: limit, Offset: offset,
+	}, nil
+}
+
 type BreakingUpdate struct {
 	SourceURL     *string
 	RegexPatterns []string

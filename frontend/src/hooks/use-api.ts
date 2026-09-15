@@ -27,10 +27,15 @@ import type {
   ListScheduled,
   Page,
   Prompt,
+  AIUsageReport,
+  Health,
   Role,
+  SkippedLogPage,
   SourcePost,
   User,
   Voice,
+  VoiceStyle,
+  VoiceStyleOptions,
 } from "@/types/api";
 
 export const keys = {
@@ -39,6 +44,8 @@ export const keys = {
   sourcePosts: (filters: Record<string, unknown>) => ["source-posts", filters] as const,
   voices: (filters: Record<string, unknown>) => ["voices", filters] as const,
   breaking: (filters: Record<string, unknown>) => ["lists", "breaking", filters] as const,
+  skippedLogs: (id: string, limit: number, offset: number) =>
+    ["lists", "breaking", id, "skipped", limit, offset] as const,
   scheduled: (filters: Record<string, unknown>) => ["lists", "scheduled", filters] as const,
   prompts: (filters: Record<string, unknown>) => ["prompts", filters] as const,
   aiEngines: ["ai-engines"] as const,
@@ -46,6 +53,8 @@ export const keys = {
   llmApiSet: (id: string) => ["llm-api-sets", id] as const,
   settings: ["settings"] as const,
   fetchStats: (days: number) => ["settings", "fetch-stats", days] as const,
+  aiUsage: (days: number) => ["settings", "ai-usage", days] as const,
+  health: ["meta", "health"] as const,
   auditLog: (filters: Record<string, unknown>) => ["audit-log", filters] as const,
   platforms: ["meta", "platforms"] as const,
   publishMeta: ["meta", "publish"] as const,
@@ -53,6 +62,7 @@ export const keys = {
   hashtags: (q: string) => ["meta", "hashtags", q] as const,
 
   collectModes: ["meta", "collect-modes"] as const,
+  voiceStyleOptions: ["meta", "voice-style"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +157,8 @@ export interface VoiceSeedInput {
   author_country_id?: number | null;
   /** Tạo xong audio thì đăng luôn lên multime. */
   publish_when_ready?: boolean;
+  /** Cấu hình giọng đọc. Bỏ trống = giọng mặc định của nhà cung cấp. */
+  tts_config?: VoiceStyle | null;
 }
 
 /**
@@ -299,6 +311,12 @@ export interface RegenerateVoiceInput {
    * KHÔNG gọi LLM — dùng khi họ sửa tay bản LLM đã viết ra.
    */
   spoken_text?: string | null;
+  /**
+   * Cấu hình giọng đọc cho lần chạy này.
+   *
+   * Bỏ hẳn trường = giữ nguyên giọng voice đang dùng; gửi `{}` = về mặc định.
+   */
+  tts_config?: VoiceStyle | null;
 }
 
 export function useRegenerateVoice() {
@@ -436,6 +454,20 @@ export function useRunBreakingList() {
   return useMutation({
     mutationFn: (id: string) => api.post<{ status: string }>(`/lists/breaking/${id}/run`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["source-posts"] }),
+  });
+}
+
+/**
+ * Bài kênh này đã xét rồi bỏ.
+ *
+ * Chỉ gọi khi tab được mở (`enabled`): phần lớn lần mở modal là để sửa regex,
+ * và tải sẵn vài trăm dòng log cho mọi lần đó là trả tiền cho thứ không ai xem.
+ */
+export function useSkippedLogs(id: string, limit = 20, offset = 0, enabled = true) {
+  return useQuery({
+    queryKey: keys.skippedLogs(id, limit, offset),
+    queryFn: () => api.get<SkippedLogPage>(`/lists/breaking/${id}/skipped`, { limit, offset }),
+    enabled: enabled && Boolean(id),
   });
 }
 
@@ -590,6 +622,11 @@ export interface CreateAIEngineInput {
 export interface UpdateAIEngineInput {
   api_key?: string;
   user_id?: string;
+  /**
+   * Bật/tắt key. Bỏ trống = giữ nguyên, nên công tắc ở bảng gửi đúng một
+   * trường này — không gửi kèm key hay chủ sở hữu thì không có gì để ghi nhầm.
+   */
+  is_active?: boolean;
 }
 
 /**
@@ -760,9 +797,40 @@ export function useSettings() {
 export function useUpdateSettings() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Partial<Pick<Settings, "llm_chain" | "llm_batch">>) =>
+    mutationFn: (body: Partial<Pick<Settings, "llm_chain" | "llm_batch" | "ai_prices">>) =>
       api.patch<Settings>("/settings", body),
-    onSuccess: (data) => qc.setQueryData(keys.settings, data),
+    onSuccess: (data) => {
+      qc.setQueryData(keys.settings, data);
+      // Đổi đơn giá là đổi mọi con số tiền trong báo cáo — bảng đang mở phải
+      // tính lại, nếu không admin sửa giá xong vẫn thấy con số cũ.
+      qc.invalidateQueries({ queryKey: ["settings", "ai-usage"] });
+    },
+  });
+}
+
+/** Token/ký tự đã tiêu, quy ra tiền theo bảng giá admin khai. */
+export function useAIUsage(days = 30) {
+  return useQuery({
+    queryKey: keys.aiUsage(days),
+    queryFn: () => api.get<AIUsageReport>("/settings/ai-usage", { days }),
+  });
+}
+
+/**
+ * Đếm những thứ đang hỏng âm thầm — voice lỗi, token chủ kênh chết, kênh quét
+ * hỏng.
+ *
+ * Tự làm mới mỗi phút: đây là thứ người dùng KHÔNG chủ động đi tìm, nên nếu chỉ
+ * cập nhật lúc tải trang thì một phiên làm việc dài sẽ không bao giờ thấy sự cố
+ * vừa xảy ra.
+ */
+export function useHealth() {
+  return useQuery({
+    queryKey: keys.health,
+    queryFn: () => api.get<Health>("/meta/health"),
+    refetchInterval: 60_000,
+    // Hỏng thì im lặng: thanh cảnh báo không phải thứ đáng làm vỡ màn hình.
+    retry: false,
   });
 }
 
@@ -977,6 +1045,20 @@ export function usePublishRequirements() {
 }
 
 /** Hình thức thu thập nào đang bật (ENABLED_COLLECT_MODES) — tắt thì UI làm mờ. */
+/**
+ * useVoiceStyleOptions — bộ giá trị hợp lệ cho mục "Cấu hình giọng đọc".
+ *
+ * Lấy từ backend thay vì chép cứng: đây là bộ từ khoá của nhà cung cấp TTS và
+ * nó là thứ duy nhất được validate. Cache dài vì nó gần như không đổi.
+ */
+export function useVoiceStyleOptions() {
+  return useQuery({
+    queryKey: keys.voiceStyleOptions,
+    queryFn: () => api.get<VoiceStyleOptions>("/meta/voice-style"),
+    staleTime: 60 * 60_000,
+  });
+}
+
 export function useCollectModes() {
   return useQuery({
     queryKey: keys.collectModes,

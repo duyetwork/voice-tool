@@ -170,6 +170,23 @@ type VoiceSeed struct {
 	// sửa hoặc đổi bộ giữa lúc bài nằm trong hàng đợi, và lúc đó voice phải chạy
 	// bằng đúng bộ đã chọn khi tạo — không thì hoá đơn rơi vào nhầm nhóm.
 	LLMAPISetID *uuid.UUID
+	// TTSConfig: cấu hình giọng đọc mở ra chỉnh ở mục "Cấu hình giọng đọc".
+	//
+	// nil = để mặc định. Đi theo voice vì worker chạy sau, lúc đó form đã đóng
+	// — và vì cùng một API key vẫn phải đọc mỗi bài một giọng khác nhau được.
+	TTSConfig *domain.VoiceStyle
+}
+
+// ttsConfigJSON đổi cấu hình giọng sang JSONB để lưu vào cột voice.tts_config.
+//
+// Trả về lỗi thay vì lặng lẽ bỏ qua giá trị sai: người dùng chọn một cao độ mà
+// nhà cung cấp không có thì phải biết ngay lúc bấm nút, không phải nghe xong
+// file mới thấy giọng chẳng giống thứ mình chọn.
+func ttsConfigJSON(style *domain.VoiceStyle) ([]byte, error) {
+	if style == nil {
+		return nil, nil
+	}
+	return domain.MarshalVoiceStyle(*style)
 }
 
 func enqueueVoiceProcess(
@@ -180,6 +197,11 @@ func enqueueVoiceProcess(
 	actor uuid.UUID,
 	seed VoiceSeed,
 ) (repository.Voice, error) {
+	ttsConfig, err := ttsConfigJSON(seed.TTSConfig)
+	if err != nil {
+		return repository.Voice{}, err
+	}
+
 	// Ảnh: ưu tiên ảnh người dùng đưa; họ chọn "không có ảnh" thì để trống hẳn;
 	// còn lại mới lấy ảnh bìa bài gốc.
 	image := post.ThumbnailUrl
@@ -207,6 +229,7 @@ func enqueueVoiceProcess(
 		NoImage:          seed.NoImage,
 		PublishWhenReady: seed.PublishWhenReady,
 		LlmApiSetID:      seed.LLMAPISetID,
+		TtsConfig:        ttsConfig,
 	})
 	if err != nil {
 		return repository.Voice{}, fmt.Errorf("tạo voice processing: %w", err)
@@ -237,4 +260,26 @@ func maskSecret(box *secret.Box, encrypted string) string {
 		return strings.Repeat("•", len(runes))
 	}
 	return "••••" + string(runes[len(runes)-4:])
+}
+
+// nullable đổi chuỗi rỗng thành NULL. Cột tuỳ chọn trong DB nên phân biệt
+// "không có" với "có nhưng rỗng" — chuỗi rỗng lưu vào chỉ làm câu truy vấn nào
+// cũng phải kiểm tra hai trạng thái thay vì một.
+func nullable(s string) *string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// excerpt cắt text về tối đa n KÝ TỰ (rune, không phải byte — tiếng Việt 1 chữ
+// có dấu là nhiều byte, cắt theo byte thì ra ký tự vỡ ở cuối).
+func excerpt(s string, n int) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimSpace(string(r[:n])) + "…"
 }

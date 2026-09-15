@@ -33,6 +33,24 @@ func (p LLMProviderName) Valid() bool {
 // AllLLMProviders là danh sách để UI dựng ô chọn nhà cung cấp.
 var AllLLMProviders = []LLMProviderName{LLMGemini, LLMOpenAI, LLMAnthropic}
 
+// LLMUsage — số token của MỘT lần gọi, do chính nhà cung cấp trả về.
+//
+// Đếm bằng con số của họ chứ không tự ước lượng từ độ dài chuỗi: mỗi nhà chia
+// token một kiểu, và hoá đơn tính theo con số của họ chứ không theo con số của
+// ta. Nhà nào không trả thì để 0 — thiếu dữ liệu, chứ không phải miễn phí.
+type LLMUsage struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+}
+
+// Add cộng dồn, dùng khi một lần gọi logic phải chia thành nhiều request.
+func (u LLMUsage) Add(o LLMUsage) LLMUsage {
+	return LLMUsage{
+		InputTokens:  u.InputTokens + o.InputTokens,
+		OutputTokens: u.OutputTokens + o.OutputTokens,
+	}
+}
+
 // LLMCredential đủ để dựng 1 provider LLM cụ thể: key của ai, model nào.
 //
 // Cùng lý do tồn tại với TTSCredential: key không còn là hằng số trong .env mà
@@ -258,4 +276,6 @@ func (c LLMBatchConfig) Wait() time.Duration {
 const (
 	SettingLLMChain = "llm.chain"
 	SettingLLMBatch = "llm.batch"
+	// SettingAIPrices — bảng đơn giá admin tự khai, xem domain/aiusage.go.
+	SettingAIPrices = "ai.prices"
 )

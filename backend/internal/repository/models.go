@@ -20,6 +20,24 @@ type AiEngine struct {
 	CreatedBy       uuid.UUID  `json:"created_by"`
 	UserID          uuid.UUID  `json:"user_id"`
 	LastUsedAt      *time.Time `json:"last_used_at"`
+	IsActive        bool       `json:"is_active"`
+	KeyStatus       string     `json:"key_status"`
+	KeyStatusDetail *string    `json:"key_status_detail"`
+	KeyStatusAt     *time.Time `json:"key_status_at"`
+}
+
+type AiUsage struct {
+	ID           uuid.UUID  `json:"id"`
+	At           time.Time  `json:"at"`
+	Kind         string     `json:"kind"`
+	Provider     string     `json:"provider"`
+	Model        string     `json:"model"`
+	UserID       *uuid.UUID `json:"user_id"`
+	InputTokens  int64      `json:"input_tokens"`
+	OutputTokens int64      `json:"output_tokens"`
+	Characters   int64      `json:"characters"`
+	AudioSeconds float64    `json:"audio_seconds"`
+	Ok           bool       `json:"ok"`
 }
 
 type AppSetting struct {
@@ -186,6 +204,8 @@ type SkippedLog struct {
 	PostIDExternal string    `json:"post_id_external"`
 	Reason         string    `json:"reason"`
 	CheckedAt      time.Time `json:"checked_at"`
+	PostUrl        *string   `json:"post_url"`
+	TextExcerpt    *string   `json:"text_excerpt"`
 }
 
 type SourcePost struct {
@@ -244,4 +264,5 @@ type Voice struct {
 	LlmModelUsed     *string    `json:"llm_model_used"`
 	AuthorCountryID  *int64     `json:"author_country_id"`
 	SpokenText       *string    `json:"spoken_text"`
+	TtsConfig        []byte     `json:"tts_config"`
 }

@@ -78,7 +78,11 @@ type LLMRouter struct {
 	// fallback là provider cấu hình trong .env. Chỉ dùng khi KHÔNG chọn bộ API
 	// nào — thực tế là dev (LLM_PROVIDER=mock).
 	fallback domain.LLMProvider
-	log      *slog.Logger
+	// usage ghi số token của mỗi lần gọi. Ghi Ở ĐÂY chứ không ở adapter: chỉ
+	// router mới biết lần gọi này thuộc về ai và chạy bằng model nào sau khi
+	// đã chuyển dự phòng.
+	usage *AIUsage
+	log   *slog.Logger
 	// batcher gom những lần gọi đang cùng chờ vào 1 request (xem llmbatcher.go).
 	batcher *llmBatcher
 }
@@ -91,13 +95,14 @@ type LLMRouterDeps struct {
 	Factory  domain.LLMFactory
 	Settings *Settings
 	Fallback domain.LLMProvider
+	Usage    *AIUsage
 	Logger   *slog.Logger
 }
 
 func NewLLMRouter(d LLMRouterDeps) *LLMRouter {
 	r := &LLMRouter{
 		q: d.Queries, box: d.Secret, factory: d.Factory,
-		settings: d.Settings, fallback: d.Fallback, log: d.Logger,
+		settings: d.Settings, fallback: d.Fallback, usage: d.Usage, log: d.Logger,
 	}
 	r.batcher = newLLMBatcher(r)
 	return r
@@ -220,24 +225,25 @@ func (r *LLMRouter) generateOne(
 	promptContent, sourceText string,
 ) (LLMResult, error) {
 	if setID == nil {
-		text, name, err := r.viaFallback(ctx, func(p domain.LLMProvider) (string, error) {
-			return p.Generate(ctx, promptContent, sourceText)
-		})
+		text, name, err := r.viaFallback(ctx, owner,
+			func(p domain.LLMProvider) (string, domain.LLMUsage, error) {
+				return p.Generate(ctx, promptContent, sourceText)
+			})
 		return LLMResult{Text: text, Model: name}, err
 	}
 
 	var out LLMResult
-	err := r.run(ctx, *setID, owner, func(p domain.LLMProvider) error {
-		text, err := p.Generate(ctx, promptContent, sourceText)
+	err := r.run(ctx, *setID, owner, func(p domain.LLMProvider) (domain.LLMUsage, error) {
+		text, used, err := p.Generate(ctx, promptContent, sourceText)
 		if err != nil {
-			return err
+			return used, err
 		}
 		if strings.TrimSpace(text) == "" {
-			return domain.LLMFail(domain.LLMFailTransient,
+			return used, domain.LLMFail(domain.LLMFailTransient,
 				fmt.Errorf("%s trả về nội dung rỗng", p.Name()))
 		}
 		out = LLMResult{Text: strings.TrimSpace(text), Model: p.Name()}
-		return nil
+		return used, nil
 	})
 	return out, err
 }
@@ -268,7 +274,7 @@ func (r *LLMRouter) GenerateBatch(
 	}
 
 	if setID == nil {
-		out, name, err := r.batchViaFallback(ctx, promptContent, items)
+		out, name, err := r.batchViaFallback(ctx, owner, promptContent, items)
 		return out, name, err
 	}
 
@@ -276,13 +282,13 @@ func (r *LLMRouter) GenerateBatch(
 		out   []string
 		model string
 	)
-	err := r.run(ctx, *setID, owner, func(p domain.LLMProvider) error {
-		texts, err := p.GenerateBatch(ctx, promptContent, items)
+	err := r.run(ctx, *setID, owner, func(p domain.LLMProvider) (domain.LLMUsage, error) {
+		texts, used, err := p.GenerateBatch(ctx, promptContent, items)
 		if err != nil {
-			return err
+			return used, err
 		}
 		out, model = texts, p.Name()
-		return nil
+		return used, nil
 	})
 	if err == nil {
 		return out, model, nil
@@ -314,7 +320,7 @@ func (r *LLMRouter) run(
 	ctx context.Context,
 	setID uuid.UUID,
 	owner uuid.UUID,
-	call func(domain.LLMProvider) error,
+	call func(domain.LLMProvider) (domain.LLMUsage, error),
 ) error {
 	// Người dùng chỉ được chạy bằng bộ của mình / được chia sẻ / admin đã bật
 	// hiển thị. Chặn ở đây chứ không chỉ lúc tạo voice: bộ có thể bị gỡ chia sẻ
@@ -356,7 +362,7 @@ func (r *LLMRouter) run(
 			continue
 		}
 
-		err = r.attempt(ctx, provider, call)
+		err = r.attempt(ctx, owner, c, provider, call)
 		if err == nil {
 			r.markOK(ctx, setID, c)
 			return nil
@@ -404,14 +410,23 @@ func (r *LLMRouter) run(
 }
 
 // attempt gọi 1 provider, thử lại tại chỗ với lỗi tạm thời.
+//
+// Ghi usage sau MỖI lần thử, kể cả lần hỏng và kể cả các lần retry: ba lần thử
+// trên cùng một key là ba lần nhà cung cấp tính token đầu vào, và một bảng chi
+// phí chỉ đếm lần thành công sẽ thiếu đúng phần đắt nhất của những ngày tệ.
 func (r *LLMRouter) attempt(
 	ctx context.Context,
+	owner uuid.UUID,
+	c candidate,
 	provider domain.LLMProvider,
-	call func(domain.LLMProvider) error,
+	call func(domain.LLMProvider) (domain.LLMUsage, error),
 ) error {
 	var err error
 	for i := 0; i <= transientRetries; i++ {
-		if err = call(provider); err == nil {
+		var used domain.LLMUsage
+		used, err = call(provider)
+		r.recordUsage(ctx, owner, string(c.step.Provider), c.step.Model, used, err)
+		if err == nil {
 			return nil
 		}
 		// Chỉ lỗi TẠM THỜI mới đáng thử lại trên cùng key. Hết quota mà thử
@@ -526,8 +541,9 @@ func (r *LLMRouter) exhausted(setID uuid.UUID, skip, failures []skipped) error {
 // ---------------------------------------------------------------------------
 
 func (r *LLMRouter) viaFallback(
-	_ context.Context,
-	call func(domain.LLMProvider) (string, error),
+	ctx context.Context,
+	owner uuid.UUID,
+	call func(domain.LLMProvider) (string, domain.LLMUsage, error),
 ) (string, string, error) {
 	if r.fallback == nil {
 		return "", "", domain.Permanent(domain.Explain(
@@ -535,7 +551,9 @@ func (r *LLMRouter) viaFallback(
 			fmt.Errorf("%w: không có llm_api_set_id và cũng không có LLM_PROVIDER trong .env",
 				domain.ErrInvalidInput)))
 	}
-	text, err := call(r.fallback)
+	text, used, err := call(r.fallback)
+	provider, model := splitProviderName(r.fallback.Name())
+	r.recordUsage(ctx, owner, provider, model, used, err)
 	if err != nil {
 		return "", r.fallback.Name(), err
 	}
@@ -544,15 +562,51 @@ func (r *LLMRouter) viaFallback(
 
 func (r *LLMRouter) batchViaFallback(
 	ctx context.Context,
+	owner uuid.UUID,
 	promptContent string,
 	items []string,
 ) ([]string, string, error) {
 	if r.fallback == nil {
-		_, _, err := r.viaFallback(ctx, nil)
+		_, _, err := r.viaFallback(ctx, owner, nil)
 		return nil, "", err
 	}
-	out, err := r.fallback.GenerateBatch(ctx, promptContent, items)
+	out, used, err := r.fallback.GenerateBatch(ctx, promptContent, items)
+	provider, model := splitProviderName(r.fallback.Name())
+	r.recordUsage(ctx, owner, provider, model, used, err)
 	return out, r.fallback.Name(), err
+}
+
+// recordUsage ghi 1 lần gọi vào bảng chi phí.
+//
+// Bỏ qua lần gọi KHÔNG tốn token nào và cũng không lỗi: đó là mock (dev), và
+// một dòng "mock, 0 token" mỗi lần chạy chỉ làm loãng bảng thống kê thật.
+func (r *LLMRouter) recordUsage(
+	ctx context.Context,
+	owner uuid.UUID,
+	provider, model string,
+	used domain.LLMUsage,
+	callErr error,
+) {
+	if used.InputTokens == 0 && used.OutputTokens == 0 && callErr == nil {
+		return
+	}
+	r.usage.Record(ctx, owner, domain.AIUsageEvent{
+		Kind:         domain.AIKindLLM,
+		Provider:     provider,
+		Model:        model,
+		InputTokens:  used.InputTokens,
+		OutputTokens: used.OutputTokens,
+		OK:           callErr == nil,
+	})
+}
+
+// splitProviderName tách "anthropic:claude-haiku-4-5" thành nhà và model —
+// đường dự phòng chỉ có tên gộp, trong khi bảng giá tra theo từng phần.
+func splitProviderName(name string) (provider, model string) {
+	if i := strings.Index(name, ":"); i >= 0 {
+		return name[:i], name[i+1:]
+	}
+	return name, ""
 }
 
 // errBatchShortResult chỉ xảy ra nếu bảo đảm "đủ phần tử" của GenerateBatch bị

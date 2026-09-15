@@ -5,9 +5,10 @@ import * as React from "react";
 import { LLMApiSetsTab } from "@/components/llm-api-sets";
 import { ErrorNote, PageHeader } from "@/components/page-header";
 import { Can } from "@/components/permission";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
-import { Field, Input } from "@/components/ui/field";
+import { Field, Input, Toggle } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { Pagination, usePaging } from "@/components/ui/pagination";
 import { DateCell, EmptyRow, RowActions, Table, Td, Th } from "@/components/ui/table";
@@ -101,6 +102,52 @@ function TabButton({
  */
 const PROVIDER = "3voices";
 
+/**
+ * Nhãn cột "Trạng thái" — điều lần gọi TTS gần nhất nói về key.
+ *
+ * `hint` chỉ nằm trong tooltip, nhưng vẫn phải có: ba trạng thái hỏng cần ba
+ * hành động khác hẳn nhau (nạp credit / khai key mới / chờ), mà cái nhãn thì
+ * không nói ra được điều đó.
+ */
+const KEY_STATUS: Record<
+  AIEngine["key_status"],
+  { label: string; tone: "neutral" | "success" | "warning" | "danger"; hint: string }
+> = {
+  ok: { label: "Còn hạn", tone: "success", hint: "Lần đọc gần nhất thành công." },
+  no_credit: { label: "Hết credit", tone: "danger", hint: `Nạp thêm credit bên ${PROVIDER}.` },
+  invalid: {
+    label: "Key hỏng",
+    tone: "danger",
+    hint: "Key sai hoặc đã bị thu hồi — khai key mới.",
+  },
+  rate_limited: { label: "Vượt giới hạn", tone: "warning", hint: "Tự hết sau ít phút." },
+  unknown: { label: "Chưa rõ", tone: "neutral", hint: "Chưa chạy lần nào bằng key này." },
+};
+
+/**
+ * StatusCell — trạng thái key kèm thời điểm biết được.
+ *
+ * Luôn hiện cả mốc thời gian vì con chữ này mô tả QUÁ KHỨ: hệ thống không thăm
+ * dò nhà cung cấp định kỳ (mỗi lần hỏi là một request tính tiền), chỉ ghi lại
+ * những gì lần đọc thật nói ra. "Còn hạn" của tháng trước không nói gì về hôm
+ * nay, và người đọc phải thấy được điều đó.
+ */
+function StatusCell({ engine }: { engine: AIEngine }) {
+  const meta = KEY_STATUS[engine.key_status] ?? KEY_STATUS.unknown;
+  const at = engine.key_status_at ? new Date(engine.key_status_at) : null;
+  // Phần giải thích dồn hết vào tooltip: bảng này có 7 cột, mỗi dòng thêm hai
+  // câu chữ nhỏ là bảng dài gấp ba mà vẫn chỉ nói đúng một điều.
+  const title = [meta.hint, engine.key_status_detail?.trim(), at?.toLocaleString("vi-VN")]
+    .filter(Boolean)
+    .join(" — ");
+
+  return (
+    <span title={title} className="whitespace-nowrap">
+      <Badge tone={meta.tone}>{meta.label}</Badge>
+    </span>
+  );
+}
+
 function TTSTab() {
   const me = useMe();
   const engines = useAIEngines();
@@ -109,6 +156,7 @@ function TTSTab() {
   const paging = usePaging();
 
   const isAdmin = me.data?.role === "admin";
+  const canWrite = me.data?.permissions.can_write ?? false;
 
   const [adding, setAdding] = React.useState(false);
   const [editing, setEditing] = React.useState<AIEngine | null>(null);
@@ -118,9 +166,16 @@ function TTSTab() {
   const all = engines.data?.items ?? [];
   const shown = all.slice(paging.offset, paging.offset + paging.limit);
 
-  // API key + người tạo + 2 cột thời gian, cộng cột người dùng của admin và
-  // cột hành động của người có quyền sửa.
-  const columns = 4 + (isAdmin ? 1 : 0) + (me.data?.permissions.can_write ? 1 : 0);
+  // API key + đang dùng + trạng thái + người tạo + 2 cột thời gian, cộng cột
+  // người dùng của admin và cột hành động của người có quyền sửa.
+  const columns = 6 + (isAdmin ? 1 : 0) + (me.data?.permissions.can_write ? 1 : 0);
+
+  // Có key nhưng tắt hết = mọi voice B/C của người này sẽ chết ở bước TTS, mà
+  // bảng thì vẫn đầy key trông rất bình thường. Nói ra ngay, đừng để họ phát
+  // hiện qua một job hỏng. Chỉ xét key của CHÍNH MÌNH: admin nhìn thấy key của
+  // cả nhà, tắt hết của người khác không phải việc cảnh báo ở đây.
+  const mine = all.filter((e) => e.user_id === me.data?.id);
+  const noneActive = mine.length > 0 && !mine.some((e) => e.is_active);
 
   return (
     <>
@@ -135,11 +190,20 @@ function TTSTab() {
         </Can>
       </div>
 
+      {noneActive ? (
+        <p className="mx-4 mb-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          Bạn đang tắt hết API key — voice hình thức B và C sẽ báo lỗi ở bước đọc. Bật một key trong
+          danh sách dưới để chạy lại.
+        </p>
+      ) : null}
+
       <ErrorNote error={engines.error ?? update.error ?? remove.error} />
       <Table>
         <thead>
           <tr>
             <Th>API key</Th>
+            <Th>Đang dùng</Th>
+            <Th>Trạng thái</Th>
             {isAdmin ? <Th>Người dùng</Th> : null}
             <Th>Người tạo</Th>
             <Th>Thời gian tạo</Th>
@@ -159,6 +223,21 @@ function TTSTab() {
                   <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">
                     {engine.api_key_masked || "(không đọc được)"}
                   </code>
+                </Td>
+                <Td>
+                  {/* Công tắc, không phải nút "Đặt làm mặc định": trạng thái
+                      hiện tại phải đọc được ngay mà không cần so sánh các dòng
+                      với nhau. Bật dòng này là tắt các dòng khác của cùng
+                      người — backend lo, UI chỉ gửi đúng một trường. */}
+                  <Toggle
+                    checked={engine.is_active}
+                    disabled={!canWrite || update.isPending}
+                    label={engine.is_active ? "Đang dùng" : "Đang tắt"}
+                    onChange={(next) => update.mutate({ id: engine.id, is_active: next })}
+                  />
+                </Td>
+                <Td>
+                  <StatusCell engine={engine} />
                 </Td>
                 {isAdmin ? <Td className="text-xs">{engine.user_email}</Td> : null}
                 <Td className="text-xs">{engine.created_by_email}</Td>

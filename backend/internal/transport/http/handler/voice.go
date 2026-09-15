@@ -259,6 +259,11 @@ type regenerateVoiceRequest struct {
 	// SpokenText: lời đọc người dùng tự chốt. Có mặt thì lần này TTS đọc đúng
 	// chuỗi này và KHÔNG gọi LLM — xem service.RegenerateInput.SpokenText.
 	SpokenText *string `json:"spoken_text"`
+	// TTSConfig: cấu hình giọng đọc cho lần chạy này.
+	//
+	// Bỏ hẳn trường này = giữ nguyên giọng voice đang dùng. Gửi object rỗng
+	// (`{}`) = trả về giọng mặc định.
+	TTSConfig *domain.VoiceStyle `json:"tts_config"`
 }
 
 func (h *Voice) Regenerate(c *gin.Context) {
@@ -280,6 +285,7 @@ func (h *Voice) Regenerate(c *gin.Context) {
 			Language:    req.Language,
 			LLMAPISetID: req.LLMAPISetID,
 			SpokenText:  req.SpokenText,
+			TTSConfig:   req.TTSConfig,
 		})
 	if err != nil {
 		httpx.Fail(c, err)

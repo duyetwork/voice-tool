@@ -36,6 +36,7 @@ import {
   usePlatforms,
   usePrompts,
   useRunBreakingList,
+  useSkippedLogs,
   useUpdateBreakingList,
 } from "@/hooks/use-api";
 import { LANGUAGE_OPTIONS, compactLanguageOptions } from "@/lib/languages";
@@ -401,6 +402,8 @@ export default function BreakingListsPage() {
  */
 function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () => void }) {
   const editing = list != null;
+  // Kênh mới chưa quét lần nào nên không có gì để bỏ qua — tab chỉ hiện khi sửa.
+  const [tab, setTab] = React.useState<"config" | "skipped">("config");
   const prompts = usePrompts();
   const modes = useCollectModes();
   const create = useCreateBreakingList();
@@ -477,6 +480,34 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
       width="2xl"
       onClose={onClose}
     >
+      {editing ? (
+        <div className="mb-4 grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+          {(
+            [
+              ["config", "Cấu hình"],
+              ["skipped", "Bài bị bỏ qua"],
+            ] as ["config" | "skipped", string][]
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setTab(value)}
+              className={
+                "rounded-md px-3 py-1.5 text-sm font-medium transition " +
+                (tab === value
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900")
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {editing && tab === "skipped" ? (
+        <SkippedPanel listId={list.id} patternCount={list.regex_patterns?.length ?? 0} />
+      ) : (
       <form onSubmit={submit} className="space-y-4">
         {/* Nhận diện được URL của một nền tảng không có nghĩa là quét được
             kênh của nó: yt-dlp lấy từng bài X/Facebook/Instagram bình thường
@@ -648,6 +679,83 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
           </Button>
         </div>
       </form>
+      )}
     </Modal>
+  );
+}
+
+/**
+ * SkippedPanel — những bài vòng quét đã xét rồi bỏ, kèm chính đoạn text đã đem
+ * so với regex.
+ *
+ * Đây là chỗ duy nhất trả lời được "regex của kênh này có quá chặt không". Bảng
+ * kênh chỉ đếm Bài Post đã tạo; một kênh đang bật, quét đều, mà không ra bài
+ * nào trông y hệt một kênh chưa có bài mới — cho tới khi mở tab này ra.
+ */
+function SkippedPanel({ listId, patternCount }: { listId: string; patternCount: number }) {
+  const paging = usePaging();
+  const query = useSkippedLogs(listId, paging.limit, paging.offset);
+  const data = query.data;
+
+  if (query.isLoading) {
+    return <p className="py-6 text-center text-sm text-slate-500">Đang tải…</p>;
+  }
+  if (query.error) {
+    return <ErrorNote error={query.error} />;
+  }
+
+  const items = data?.items ?? [];
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-600">
+        <b>{data?.last_7_days ?? 0}</b> bài bị bỏ qua trong 7 ngày qua vì không khớp{" "}
+        {patternCount} điều kiện bắt bài. Log chỉ giữ 7 ngày.
+      </p>
+
+      <Table>
+        <thead>
+          <tr>
+            <Th>Nội dung đã đem so với điều kiện</Th>
+            <Th>Lý do</Th>
+            <Th>Lúc</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.length === 0 ? (
+            <EmptyRow colSpan={3}>
+              Chưa bỏ qua bài nào. Kênh chưa quét lần nào, hoặc mọi bài đều khớp điều kiện.
+            </EmptyRow>
+          ) : (
+            items.map((row) => (
+              <tr key={`${row.post_id_external}-${row.checked_at}`}>
+                <Td>
+                  <span className="line-clamp-3 text-slate-700">
+                    {row.text_excerpt || <i className="text-slate-400">(không có text)</i>}
+                  </span>
+                  {row.post_url ? (
+                    <a
+                      href={row.post_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-blue-600 hover:underline"
+                    >
+                      Mở bài gốc
+                    </a>
+                  ) : (
+                    <span className="text-xs text-slate-400">{row.post_id_external}</span>
+                  )}
+                </Td>
+                <Td className="whitespace-nowrap text-slate-600">{row.reason}</Td>
+                <Td className="whitespace-nowrap text-slate-500">
+                  {formatDateTime(row.checked_at)}
+                </Td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </Table>
+
+      <Pagination total={data?.total} paging={paging} unit="bài" />
+    </div>
   );
 }

@@ -283,6 +283,23 @@ func (h *List) RunBreaking(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"status": "queued", "list_breaking_id": id})
 }
 
+// SkippedLogs trả những bài vòng quét đã xét rồi bỏ — tab "Bài bị bỏ qua"
+// trong modal chi tiết kênh Breaking.
+func (h *List) SkippedLogs(c *gin.Context) {
+	id, err := pathUUID(c, "id")
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	limit, offset := pagination(c)
+	out, err := h.svc.SkippedLogs(c.Request.Context(), id, limit, offset)
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, out)
+}
+
 // ---------------------------------------------------------------------------
 // Scheduled
 // ---------------------------------------------------------------------------

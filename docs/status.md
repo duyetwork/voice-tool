@@ -25,13 +25,13 @@ Quy mô hiện tại: **10.4k dòng Go** (+886 dòng test), **3.0k dòng TypeScr
 
 | Luồng | Backend | Frontend |
 |---|---|---|
-| **F1** On-demand (URL → Bài Post → Voice) | ✅ | ✅ `/on-demand` |
+| **F1** On-demand (URL → Bài Post → Voice) | ✅ | ✅ `/voices` (modal Tạo voice một bước) |
 | **F2** Breaking (quét liên tục, nhiều regex OR) | ✅ | ✅ `/lists/breaking` |
 | **F3** Định kỳ (tần suất riêng từng kênh) | ✅ | ✅ `/lists/scheduled` |
 | **Mode A** Extract audio từ URL | ✅ yt-dlp + ffprobe | ✅ mặc định trên UI |
 | **Mode B** Text → TTS | ✅ đã bật (3voices, key theo từng user) | ✅ |
 | **Mode C** Text + Prompt → LLM → TTS | ✅ (bắt buộc `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`; còn mock thì hệ thống tự tắt mode C kèm lý do) | ✅ |
-| Nguồn cho B/C: URL (qua Bài Post) **hoặc** text gõ tay (thẳng ra Voice) | ✅ | ✅ `/on-demand`, `/voices` |
+| Nguồn cho B/C: URL (qua Bài Post) **hoặc** text gõ tay (thẳng ra Voice) | ✅ | ✅ `/voices` |
 | **Publish** lên multime.ai | ✅ đúng API thật, đăng bằng tài khoản của user | ✅ `/voices` |
 | Duyệt Bài Post trước khi tốn chi phí AI | ✅ | ✅ `/source-posts` |
 | Prompt mẫu | ✅ | ✅ |
@@ -105,7 +105,30 @@ Router chia 4 nhóm (`authed` / `writer` / `remover` / `admin`) thay vì kiểm 
 role rải rác trong handler. Tài khoản đăng nhập lần đầu nhận `DEFAULT_USER_ROLE`
 (mặc định `user`); email trong `BOOTSTRAP_ADMIN_EMAIL` luôn được nâng lên admin.
 
-### 1.6 Đã xoá (code/config thừa)
+### 1.6 Giai đoạn 4 + 5 (specs §6)
+
+Xem [plan-gd4-gd5.md](plan-gd4-gd5.md) để biết phạm vi và những gì cố ý không làm.
+
+| Việc | Trạng thái |
+|---|---|
+| B4 — tab **"Bài bị bỏ qua"** trong modal kênh Breaking | ✅ `GET /lists/breaking/:id/skipped`. `skipped_log` ghi thêm URL + 300 ký tự text đã đem so với regex (migration `000024`) |
+| Proxy cho yt-dlp, khai **theo từng nền tảng** | ✅ `YTDLP_PROXY`, `YTDLP_PROXY_<NỀN TẢNG>`. Bật sau khi bảng "bị nền tảng chặn" cho thấy con số đủ lớn |
+| **Đo chi phí AI** | ✅ Bảng `ai_usage` (migration `000025`) + đơn giá trong `app_setting` + section "Chi phí AI" ở màn Cài đặt |
+| **Rate limiter TTS theo từng API key** | ✅ `KeyGate` dùng chung cho cả nền tảng lẫn TTS. `TTS_MIN_GAP=6s`, `TTS_MAX_CONCURRENT=2` |
+| **Thanh cảnh báo** hỏng âm thầm | ✅ `GET /meta/health` + banner mọi trang: voice lỗi, token chủ kênh chết, kênh quét hỏng |
+| Quét cả kênh Facebook / Instagram / X | ❌ **Đóng lại** — kênh nguồn là của người khác, không có đường API chính chủ, và đã chốt không dùng cookie tài khoản thật. Ba nền tảng này chỉ lấy được **từng bài** ở màn Tạo voice |
+| Chạy thật F2 ở quy mô / TOTP / tách `engine.go` | ⏳ Chưa — xem `plan-gd4-gd5.md` §6.3 |
+
+Hai chỗ lệch so với kế hoạch, ghi lại vì lý do đằng sau mới là phần quan trọng:
+
+- **Đơn giá AI nằm trong DB, không phải hằng số trong code.** Bảng giá cũ ghim
+  trong Go không báo lỗi — nó vẫn cho ra con số, chỉ là con số sai. Chưa khai giá
+  thì hệ thống đếm đủ token và hiển thị "chưa có đơn giá", không bịa số.
+- **`domain.LLMProvider` đổi chữ ký** thành `(text, LLMUsage, error)` để lấy số
+  token THẬT của nhà cung cấp. Ước lượng theo độ dài chuỗi thì rẻ hơn nhưng lệch
+  với hoá đơn — mà đối chiếu hoá đơn là việc duy nhất bảng này sinh ra để phục vụ.
+
+### 1.7 Đã xoá (code/config thừa)
 
 | Thứ bị xoá | Vì sao |
 |---|---|
@@ -120,7 +143,7 @@ role rải rác trong handler. Tài khoản đăng nhập lần đầu nhận `D
 | `@tanstack/react-query-devtools`, `lucide-react` | Có trong package.json nhưng không import ở đâu |
 | `internal/infra/redis/`, `backend/api/`, `internal/transport/http/dto/`, `deploy/` | Thư mục rỗng |
 
-### 1.7 Test
+### 1.8 Test
 
 | Package | Nội dung |
 |---|---|
@@ -235,10 +258,15 @@ chỉ dùng được với nội dung đủ dài.
 3voices giới hạn 10 request/phút và 2 job đồng thời **trên mỗi API key**. Vì
 key giờ khai theo từng người, tải được chia sẵn theo người dùng — nhưng
 `WORKER_CONCURRENCY` mặc định 10 × 2 worker = 20 task song song vẫn có thể dồn
-vào cùng 1 key khi một người chạy hàng loạt. **Chưa có rate limiter**: nếu
-dùng bulk nhiều, giảm `WORKER_CONCURRENCY` hoặc làm limiter theo key (xem 4.1).
-Vượt hạn mức trả 429 và Asynq retry với backoff, nên không mất voice — chỉ
-chậm.
+vào cùng 1 key khi một người chạy hàng loạt.
+
+**Đã có rate limiter** (`service.NewTTSGate`): mỗi API key tối đa 2 lần gọi đồng
+thời, cách nhau 6 giây — đúng bằng 10 request/phút. Chỉnh bằng `TTS_MIN_GAP` /
+`TTS_MAX_CONCURRENT`.
+
+Giới hạn còn lại: gate nằm **trong 1 process**, nên chạy 2 worker thì trần thực
+tế là gấp đôi. Vẫn dưới mức nguy hiểm, và vượt hạn mức cũng chỉ trả 429 rồi Asynq
+retry với backoff — không mất voice, chỉ chậm.
 
 ### 3.9 🟡 Công cụ quan sát khi dev không có bảo vệ
 
@@ -293,7 +321,7 @@ thành công. 8 điểm rời rạc phát hiện khi dùng đã được nối l
 2. `docker compose up -d --build` → kiểm tra toàn bộ migration apply sạch.
 3. Đăng nhập bằng tài khoản multime thật → xác nhận `app_user` được tạo với
    `strongbody_user_id` đúng.
-4. `/on-demand`: dán 1 URL YouTube, Mode A → xác nhận có file voice nghe được.
+4. `/voices` > **Tạo voice**: dán 1 URL YouTube, Mode A → xác nhận có file voice nghe được.
 5. Thêm hashtag cho voice → bấm Đăng → xác nhận bài xuất hiện trên
    `https://multime.ai/voice/<id>` dưới đúng tài khoản đó.
 6. Xác nhận file trên S3 đã bị xoá và `voice_file_url = NULL`.
@@ -305,18 +333,16 @@ Bước 5 là bước kiểm chứng quan trọng nhất — nó xác nhận to�
 
 | Việc | Vì sao chưa làm |
 |---|---|
-| Kiểm chứng adapter Facebook / X / TikTok / Instagram bằng URL thật | Đã code và test phần parse URL; chưa chạy yt-dlp thật với 4 nền tảng này — nhiều nền tảng chặn tải nếu không đăng nhập (xem mục 2.3) |
-| Rate limiter cho TTS provider | 3voices giới hạn 10 req/phút, 2 job đồng thời **trên mỗi key** — key giờ theo từng người nên áp lực giảm hẳn; chỉ cần khi 1 người chạy hàng loạt (xem 3.8) |
+| Kiểm chứng adapter Facebook / X / TikTok / Instagram bằng URL **từng bài** | Đã code và test phần parse URL; chưa chạy yt-dlp thật với 4 nền tảng này. Quét cả kênh của FB/IG/X đã đóng lại (xem 1.6) — phần còn phải thử là lấy từng bài |
 | Luồng xác minh TOTP khi login | Chỉ cần nếu tài khoản dùng voice-tool bắt buộc bật 2FA |
-| Cảnh báo khi có Voice `failed` / token hết hạn | Specs ghi rõ "không bao gồm chức năng thông báo", nhưng 3.1 cho thấy cần ít nhất 1 chỗ hiển thị số Voice lỗi |
 | Endpoint batch upload của multime (`/upload-batch`, 20 file) | Luồng hiện tại đăng từng voice; chỉ cần khi tối ưu throughput |
-| Dashboard số liệu (voice/ngày, tỉ lệ lỗi, chi phí AI) | Chưa có yêu cầu, nhưng là thứ đầu tiên cần khi chạy thật ở quy mô |
+| Dashboard số liệu (voice/ngày, tỉ lệ lỗi) | Phần **chi phí AI** đã có ở màn Cài đặt (xem 1.6). Còn thiếu số liệu vận hành theo ngày |
 
 ### 4.3 Nợ kỹ thuật đã biết
 
 | Món | Mức độ |
 |---|---|
 | Chưa có integration test chạy trên Postgres thật (testcontainers) | 🟡 Migration và query phức tạp (partial unique index, `ListDueListBreakings`) chỉ được verify bằng mắt |
-| `service/engine.go` đã 400+ dòng, gánh cả 3 mode + publish | 🟢 Còn đọc được, nhưng thêm 1 mode nữa thì nên tách |
+| `service/engine.go` đã **1316 dòng**, gánh cả 3 mode + publish + regenerate | 🟡 Nên tách theo mode TRƯỚC khi thêm nền tảng hoặc mode mới |
 | Chưa có OpenAPI spec (chỉ có `docs/api.md` viết tay) | 🟢 Đủ cho 1 frontend; cần khi có client thứ 2 |
 | Frontend chưa có test | 🟢 Logic đều ở backend; FE chủ yếu là form + table |

@@ -1,0 +1,13 @@
+-- Cấu hình giọng đọc người dùng chọn ở form tạo Voice (mục "Cấu hình giọng đọc").
+--
+-- Nằm trên VOICE chứ không phải trên ai_engine vì nó là lựa chọn của TỪNG bài:
+-- cùng một API key có thể đọc bản tin bằng giọng nữ trẻ hôm nay và giọng nam
+-- lớn tuổi hôm sau. Worker chạy bất đồng bộ nên giá trị phải nằm sẵn trên bản
+-- ghi, không giữ được trong form.
+--
+-- JSONB một cột thay vì mỗi tham số một cột: bộ từ khoá của nhà cung cấp TTS
+-- còn đổi (3voices đã có accent chưa dùng tới, và có thể thêm nữa), mà không
+-- có màn hình nào cần lọc voice theo cao độ giọng.
+--
+-- NULL = "để mặc định" — đúng hành vi của mọi voice đã tạo trước migration này.
+ALTER TABLE voice ADD COLUMN tts_config JSONB;

@@ -341,6 +341,11 @@ func (h *Handler) maintenanceCleanup(ctx context.Context, _ *asynq.Task) error {
 	if _, err := h.maintenance.CleanupSkippedLogs(ctx); err != nil {
 		return err
 	}
+	// Bảng trên hỏng thì dừng luôn ở đây: job này chạy lại mỗi ngày, và dọn
+	// muộn một ngày không phải vấn đề — dữ liệu chỉ phình thêm một ngày.
+	if _, err := h.maintenance.CleanupAIUsage(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 

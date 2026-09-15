@@ -36,6 +36,9 @@ type updateAIEngineRequest struct {
 	APIKey string `json:"api_key"`
 	// UserID: chuyển key sang cho người khác — chỉ admin.
 	UserID *uuid.UUID `json:"user_id"`
+	// IsActive: bật/tắt key. Bỏ trống = giữ nguyên trạng thái, nên công tắc ở
+	// UI gửi đúng một trường này mà không cần gửi kèm key hay chủ sở hữu.
+	IsActive *bool `json:"is_active"`
 }
 
 // Create trả về DANH SÁCH: admin gán 1 key cho nhiều người thì mỗi người là
@@ -101,6 +104,7 @@ func (h *AIEngine) Update(c *gin.Context) {
 	engine, err := h.svc.Update(c.Request.Context(), actorOf(c), id, service.AIEngineUpdate{
 		APIKey: req.APIKey,
 		Owner:  req.UserID,
+		Active: req.IsActive,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
