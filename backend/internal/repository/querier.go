@@ -104,7 +104,11 @@ type Querier interface {
 	CountPrompts(ctx context.Context) (int64, error)
 	CountScanRuns(ctx context.Context, arg CountScanRunsParams) (int64, error)
 	// Bảng tổng quan trên màn Cài đặt: bao nhiêu via sống/chết theo từng nền tảng.
-	CountScrapeViasByStatus(ctx context.Context) ([]CountScrapeViasByStatusRow, error)
+	//
+	// Đếm theo đúng phạm vi người xem được nhìn (`owner` NULL = cả hệ thống, chỉ
+	// admin): một editor thấy 3 via của mình mà ô tổng quan nói 40 thì con số đó
+	// không trả lời được câu hỏi duy nhất họ có — "via CỦA TÔI còn đủ không".
+	CountScrapeViasByStatus(ctx context.Context, owner *uuid.UUID) ([]CountScrapeViasByStatusRow, error)
 	CountSkippedLogs(ctx context.Context, listBreakingID uuid.UUID) (int64, error)
 	// Tỉ lệ bỏ qua giúp đánh giá regex có quá chặt/quá lỏng hay không.
 	CountSkippedLogsSince(ctx context.Context, arg CountSkippedLogsSinceParams) (int64, error)
@@ -143,10 +147,13 @@ type Querier interface {
 	// ---------------------------------------------------------------------------
 	// Proxy (lối ra mạng cho các request quét)
 	// ---------------------------------------------------------------------------
+	// user_id là CHỦ SỞ HỮU, created_by là người khai — xem CreateScrapeVia.
 	CreateScrapeProxy(ctx context.Context, arg CreateScrapeProxyParams) (ScrapeProxy, error)
 	// ---------------------------------------------------------------------------
 	// Via (phiên đăng nhập dùng để quét trang công khai)
 	// ---------------------------------------------------------------------------
+	// user_id là CHỦ SỞ HỮU (người thấy và sửa được via này), created_by là người
+	// bấm nút — khác nhau khi admin khai hộ. Cùng ý nghĩa với ai_engine.
 	CreateScrapeVia(ctx context.Context, arg CreateScrapeViaParams) (ScrapeVia, error)
 	CreateSkippedLog(ctx context.Context, arg CreateSkippedLogParams) error
 	CreateSourcePost(ctx context.Context, arg CreateSourcePostParams) (SourcePost, error)
@@ -289,11 +296,19 @@ type Querier interface {
 	ListPrompts(ctx context.Context, arg ListPromptsParams) ([]Prompt, error)
 	// Lịch sử của ĐÚNG MỘT kênh — service luôn truyền đúng một trong hai id.
 	ListScanRuns(ctx context.Context, arg ListScanRunsParams) ([]ListScanRunsRow, error)
-	ListScrapeProxies(ctx context.Context, platform *string) ([]ScrapeProxy, error)
+	// `owner` NULL = xem tất cả (chỉ admin) — xem ListScrapeVias.
+	//
+	// Bộ lọc nền tảng nằm trong DẤU NGOẶC riêng: không có nó thì `OR platform IS
+	// NULL` cũng nuốt luôn điều kiện chủ sở hữu, và mọi proxy dùng chung của người
+	// khác lọt vào danh sách của một editor.
+	ListScrapeProxies(ctx context.Context, arg ListScrapeProxiesParams) ([]ListScrapeProxiesRow, error)
 	// Bảng quản lý trên màn Cài đặt. Sắp theo nền tảng rồi nhãn để danh sách đứng
 	// yên giữa các lần tải — sắp theo trạng thái thì dòng nhảy chỗ mỗi lần một via
 	// vào cooldown, đúng lúc người ta đang nhìn nó.
-	ListScrapeVias(ctx context.Context, platform *string) ([]ScrapeVia, error)
+	//
+	// `owner` NULL = xem tất cả (chỉ admin). Editor luôn bị service ép owner =
+	// chính mình, nên không đọc được via của người khác dù gọi thẳng API.
+	ListScrapeVias(ctx context.Context, arg ListScrapeViasParams) ([]ListScrapeViasRow, error)
 	ListSkippedLogs(ctx context.Context, arg ListSkippedLogsParams) ([]SkippedLog, error)
 	// Bài Post đi kèm URL của kênh đã đẻ ra nó. Kênh không có cột tên, nên thứ
 	// nhận diện được một kênh trên giao diện vẫn là source_url của nó.
@@ -417,7 +432,11 @@ type Querier interface {
 	// kênh quét 1 lần/ngày mà tất cả rơi vào cùng một khung giờ thì nền tảng nhìn
 	// thấy một đợt tấn công, còn bảng thống kê lỗi thì chỉ nói "bị chặn" mà không
 	// nói vì sao — cột giờ này mới nói ra.
-	ScrapeHourlyLoad(ctx context.Context, days int32) ([]ScrapeHourlyLoadRow, error)
+	//
+	// `owner` NULL = cả hệ thống (chỉ admin); ngược lại chỉ đếm lượt đi qua via của
+	// người đó. Biểu đồ nói về NHỊP QUÉT, và nhịp của cả hệ thống không phải thứ
+	// một editor sửa được — họ chỉ rải lại lịch các kênh mình quét.
+	ScrapeHourlyLoad(ctx context.Context, arg ScrapeHourlyLoadParams) ([]ScrapeHourlyLoadRow, error)
 	// Bật/tắt MỘT key. Người gọi chịu trách nhiệm tắt các key khác TRƯỚC khi bật
 	// key này (xem DeactivateOtherAIEngines) — làm ngược lại là đụng
 	// uq_ai_engine_active_per_user.

@@ -20,6 +20,10 @@ SET finished_at    = now(),
     posts_created  = sqlc.arg('posts_created'),
     voices_created = sqlc.arg('voices_created'),
     skipped        = sqlc.arg('skipped'),
+    -- Số bài vòng này ĐÃ XIN nền tảng, sau khi đã ép về trần của nền tảng đó.
+    -- Ghi lúc đóng vòng chứ không lúc mở: lúc mở chưa biết đây là vòng quét đầu
+    -- (dùng backfill_limit) hay vòng thường (dùng scan_limit).
+    requested_limit = sqlc.arg('requested_limit'),
     error          = sqlc.narg('error')
 WHERE id = sqlc.arg('id');
 

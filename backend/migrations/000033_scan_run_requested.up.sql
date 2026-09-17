@@ -1,0 +1,14 @@
+-- ---------------------------------------------------------------------------
+-- scan_run ghi lại SỐ BÀI VÒNG QUÉT ĐÓ ĐÃ XIN.
+--
+-- Không suy ngược được từ kênh: `scan_limit` và `backfill_limit` là cấu hình
+-- HIỆN TẠI, sửa lúc nào cũng được, còn lịch sử quét nói về quá khứ. Đọc bảng
+-- lịch sử mà thấy "lấy được 12" thì câu hỏi tiếp theo luôn là "xin bao nhiêu",
+-- và trước cột này thì không có chỗ nào trả lời — kể cả khi con số đã bị ép về
+-- trần của nền tảng, tức là đúng lúc chênh lệch cần giải thích nhất.
+--
+-- DEFAULT 0 = không biết, dành cho những dòng đã có từ trước. Giao diện hiện
+-- dấu gạch cho 0 chứ không hiện số 0, vì "xin 0 bài" và "không rõ" là hai
+-- chuyện khác nhau.
+-- ---------------------------------------------------------------------------
+ALTER TABLE scan_run ADD COLUMN requested_limit INT NOT NULL DEFAULT 0;

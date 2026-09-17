@@ -29,10 +29,34 @@ import (
 
 // scrapeTimeout — trần cho MỘT request đọc trang.
 //
-// 45 giây: các trang này nặng và đi qua proxy residential vốn chậm, nhưng chờ
-// lâu hơn thế thì một kênh treo giữ luôn suất đồng thời của cả nền tảng — mà
-// suất đó cố tình chỉ có vài cái.
-const scrapeTimeout = 45 * time.Second
+// 90 giây, nâng từ 45. Lý do là số đo thật: trang `/reels` của một số page
+// Facebook (vd facebook.com/etnow/reels) hỏng đều đặn ở 45s với
+// "context deadline exceeded ... while reading body" — tức là kết nối đã mở,
+// header đã về, và hết giờ ĐANG ĐỌC THÂN. Những trang đó nặng vài MB JSON và
+// đi qua proxy residential vốn chậm.
+//
+// Không nâng vô hạn: một kênh treo giữ luôn suất đồng thời của cả nền tảng, mà
+// suất đó cố tình chỉ có vài cái. 90s là mức còn chấp nhận được cho một vòng
+// quét chạy nền, và phần thân đọc dở vẫn được tận dụng — xem minUsableBody.
+const scrapeTimeout = 90 * time.Second
+
+// maxScrapeBody — trần dung lượng một trang.
+//
+// 8MB, hạ từ 16MB. Trang nặng nhất quan sát được còn cách xa mức này, còn trần
+// cao hơn chỉ có tác dụng duy nhất là kéo dài một lần đọc đang hỏng.
+const maxScrapeBody = 8 << 20
+
+// minUsableBody — đọc dở nhưng đã được chừng này thì vẫn đem đi phân tích.
+//
+// VÌ SAO KHÔNG VỨT ĐI: io.ReadAll trả về CẢ phần đã đọc lẫn lỗi, và trước đây
+// ta bỏ luôn phần đã đọc khi hết giờ. Nhưng dữ liệu cần lấy — khối JSON nhúng
+// chứa danh sách bài — nằm ở phần đầu trang; phần đuôi chủ yếu là script và
+// theo dõi. Vứt 6MB đã về chỉ vì thiếu 200KB cuối nghĩa là kênh đó không bao
+// giờ quét được, trong khi mọi thứ cần thiết đã nằm trong tay.
+//
+// 256KB là ngưỡng để phân biệt "đọc dở nhưng có nội dung" với "gần như chưa
+// nhận được gì" — trường hợp sau thì lỗi mới là câu trả lời đúng.
+const minUsableBody = 256 << 10
 
 // scrapeUserAgent — User-Agent gửi kèm mọi request.
 //
@@ -93,9 +117,13 @@ func (f *ScrapeFetcher) Get(
 
 	// Trần đọc: một trang bất thường (hoặc một trang lỗi trả về stream vô hạn)
 	// không được phép ngốn hết bộ nhớ của worker.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxScrapeBody))
 	if err != nil {
-		return nil, fmt.Errorf("đọc phản hồi %s: %w", rawURL, err)
+		// Đọc dở mà đã có đủ nội dung thì DÙNG phần đó — xem minUsableBody.
+		// Phân tích một trang cụt còn hơn không quét được kênh đó lần nào.
+		if len(body) < minUsableBody {
+			return nil, fmt.Errorf("đọc phản hồi %s: %w", rawURL, err)
+		}
 	}
 
 	if blocked := classifyScrapeResponse(resp, body); blocked != nil {
@@ -145,8 +173,23 @@ func classifyScrapeResponse(resp *http.Response, body []byte) error {
 			"Nền tảng đang giới hạn tần suất — giảm số kênh quét cùng lúc",
 			fmt.Errorf("HTTP 429 từ %s", resp.Request.URL.Host)))
 	case http.StatusUnauthorized, http.StatusForbidden:
-		// 403 của Facebook/X gần như luôn là checkpoint theo IP, không phải
-		// phiên sai — phiên sai thì họ trả 200 kèm trang đăng nhập.
+		// ĐỌC THÂN PHẢN HỒI TRƯỚC khi kết luận. Mặc định của nhánh này là "IP bị
+		// chặn", đúng với 403 của Facebook/X (checkpoint theo IP), nhưng KHÔNG
+		// đúng với Instagram: endpoint `/api/v1/users/web_profile_info` trả
+		//
+		//	HTTP 401 {"message":"Please wait a few minutes before you try again.",
+		//	          "require_login":true, ...}
+		//
+		// khi phiên của via hỏng. Đo trực tiếp ngày 17/09/2026. Không kiểm thân
+		// phản hồi ở đây thì mỗi via Instagram hết hạn lại bị tính thành một lần
+		// proxy bị chặn: proxy tốt bị hạ cấp rồi khai tử, còn via hỏng — thứ
+		// thật sự cần thay — vẫn nằm nguyên trong vòng xoay ở trạng thái khoẻ.
+		if loginMarkers.Match(snippetOf(body)) {
+			return domain.FetchBlocked(domain.FetchBlockLogin, domain.Explain(
+				"Phiên đăng nhập của via đã hỏng — cần dán cookies mới",
+				fmt.Errorf("HTTP %d kèm dấu hiệu đòi đăng nhập từ %s",
+					resp.StatusCode, resp.Request.URL.Host)))
+		}
 		return domain.FetchBlocked(domain.FetchBlockBot, domain.Explain(
 			"Nền tảng từ chối request — nhiều khả năng IP đang bị chặn",
 			fmt.Errorf("HTTP %d từ %s", resp.StatusCode, resp.Request.URL.Host)))
@@ -157,12 +200,7 @@ func classifyScrapeResponse(resp *http.Response, body []byte) error {
 	}
 
 	// Trang 200 nhưng là trang chặn — xem ghi chú ở loginMarkers.
-	snippet := body
-	// Chỉ soi phần đầu: dấu hiệu chặn luôn nằm ở khối <head>/JSON đầu trang,
-	// còn quét regex trên 16MB HTML cho mỗi request là phí vô ích.
-	if len(snippet) > 256<<10 {
-		snippet = snippet[:256<<10]
-	}
+	snippet := snippetOf(body)
 	if botMarkers.Match(snippet) {
 		return domain.FetchBlocked(domain.FetchBlockBot, domain.Explain(
 			"Nền tảng đang nghi ngờ IP máy chủ (checkpoint/captcha) — cần đổi proxy",
@@ -182,6 +220,17 @@ func classifyScrapeResponse(resp *http.Response, body []byte) error {
 		return fmt.Errorf("nền tảng trả HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// snippetOf cắt phần đầu thân phản hồi để đem đi dò dấu hiệu chặn.
+//
+// Chỉ soi phần đầu: dấu hiệu chặn luôn nằm ở khối <head>/JSON đầu trang, còn
+// quét regex trên 16MB HTML cho mỗi request là phí vô ích.
+func snippetOf(body []byte) []byte {
+	if len(body) > 256<<10 {
+		return body[:256<<10]
+	}
+	return body
 }
 
 // ---------------------------------------------------------------------------

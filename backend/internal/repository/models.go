@@ -214,6 +214,7 @@ type ScanRun struct {
 	VoicesCreated   int32      `json:"voices_created"`
 	Skipped         int32      `json:"skipped"`
 	Error           *string    `json:"error"`
+	RequestedLimit  int32      `json:"requested_limit"`
 }
 
 type ScrapeProxy struct {
@@ -234,6 +235,7 @@ type ScrapeProxy struct {
 	CreatedBy         uuid.UUID   `json:"created_by"`
 	CreatedAt         time.Time   `json:"created_at"`
 	UpdatedAt         time.Time   `json:"updated_at"`
+	UserID            uuid.UUID   `json:"user_id"`
 }
 
 type ScrapeVia struct {
@@ -253,6 +255,7 @@ type ScrapeVia struct {
 	CreatedBy              uuid.UUID   `json:"created_by"`
 	CreatedAt              time.Time   `json:"created_at"`
 	UpdatedAt              time.Time   `json:"updated_at"`
+	UserID                 uuid.UUID   `json:"user_id"`
 }
 
 type SkippedLog struct {

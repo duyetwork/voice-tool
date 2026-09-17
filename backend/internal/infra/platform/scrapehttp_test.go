@@ -45,6 +45,22 @@ func TestClassifyScrapeResponse(t *testing.T) {
 			name: "403 là chặn IP", status: 403, wantErr: true, wantKind: domain.FetchBlockBot,
 		},
 		{
+			// Instagram trả ĐÚNG thân này kèm HTTP 401 khi phiên của via hỏng —
+			// đo trên /api/v1/users/web_profile_info ngày 17/09/2026. Đọc nó
+			// thành "IP bị chặn" là hạ cấp một proxy tốt rồi khai tử, còn via
+			// hỏng thì vẫn nằm nguyên trong vòng xoay ở trạng thái khoẻ.
+			name:   "401 kèm require_login là via hỏng, không phải IP",
+			status: 401,
+			body: `{"message":"Please wait a few minutes before you try again.",` +
+				`"require_login":true,"status":"fail"}`,
+			wantErr: true, wantKind: domain.FetchBlockLogin,
+		},
+		{
+			name:   "401 không có dấu hiệu đăng nhập thì vẫn là chặn IP",
+			status: 401, body: `{"error":"forbidden"}`,
+			wantErr: true, wantKind: domain.FetchBlockBot,
+		},
+		{
 			name:   "404 là trang không còn tồn tại",
 			status: 404, wantErr: true, wantKind: domain.FetchBlockUnavailable,
 		},
@@ -153,7 +169,7 @@ func TestParseFacebookPage(t *testing.T) {
 </script>
 </html>`
 
-	posts := parseFacebookPage(body, 10)
+	posts := parseFacebookPage(body, "dailystar", 10)
 	if len(posts) != 2 {
 		t.Fatalf("lấy được %d bài, muốn 2", len(posts))
 	}
@@ -170,12 +186,22 @@ func TestParseFacebookPage(t *testing.T) {
 	if len(posts[0].Meta.Hashtags) == 0 {
 		t.Error("hashtag phải được tách ra khỏi nội dung")
 	}
-	if posts[0].URL == "" {
-		t.Error("bài không có URL thì vòng quét không xử lý lại được")
+	// URL phải mang NGỮ CẢNH TRANG. Dạng trần facebook.com/<id> chạy được với
+	// video/reel nhưng 404 với bài thường, và triệu chứng là "Bài đăng không
+	// còn tồn tại" cho một bài vẫn đang sống — xem facebookPostURL.
+	if posts[0].URL != "https://www.facebook.com/dailystar/posts/111" {
+		t.Errorf("URL = %q, muốn dạng /<trang>/posts/<id>", posts[0].URL)
 	}
 
+	t.Run("không biết trang thì quay về dạng trần", func(t *testing.T) {
+		got := parseFacebookPage(body, "", 1)
+		if len(got) != 1 || got[0].URL != "https://www.facebook.com/111" {
+			t.Errorf("URL dự phòng sai: %+v", got)
+		}
+	})
+
 	t.Run("limit cắt đúng", func(t *testing.T) {
-		if got := parseFacebookPage(body, 1); len(got) != 1 {
+		if got := parseFacebookPage(body, "dailystar", 1); len(got) != 1 {
 			t.Errorf("lấy %d bài, muốn 1", len(got))
 		}
 	})
@@ -183,7 +209,7 @@ func TestParseFacebookPage(t *testing.T) {
 	t.Run("trang không có khối JSON nào", func(t *testing.T) {
 		// Không panic, không đoán bừa — trả rỗng để tầng trên báo đúng rằng
 		// không tách được bài nào.
-		if got := parseFacebookPage("<html><body>trống</body></html>", 10); len(got) != 0 {
+		if got := parseFacebookPage("<html><body>trống</body></html>", "dailystar", 10); len(got) != 0 {
 			t.Errorf("muốn rỗng, được %d bài", len(got))
 		}
 	})

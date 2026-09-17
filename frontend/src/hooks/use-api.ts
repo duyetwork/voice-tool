@@ -61,8 +61,8 @@ export const keys = {
   llmApiSet: (id: string) => ["llm-api-sets", id] as const,
   settings: ["settings"] as const,
   fetchStats: (days: number) => ["settings", "fetch-stats", days] as const,
-  vias: (platform: string) => ["settings", "vias", platform] as const,
-  proxies: (platform: string) => ["settings", "proxies", platform] as const,
+  vias: (platform: string, owner: string) => ["settings", "vias", platform, owner] as const,
+  proxies: (platform: string, owner: string) => ["settings", "proxies", platform, owner] as const,
   scrapeHealth: ["settings", "scrape-health"] as const,
   viaCookieSpecs: ["settings", "via-cookie-specs"] as const,
   scrapeLoad: (days: number) => ["settings", "scrape-load", days] as const,
@@ -962,6 +962,10 @@ export interface ChannelScan {
   enabled: boolean;
   /** Chỉ có khi enabled=false: vì sao không, và nên làm gì thay thế. */
   reason?: string;
+  /** Số bài NHIỀU NHẤT lấy được trong một lượt quét. 0 = không có trần. */
+  max_posts: number;
+  /** Vì sao có trần đó — hiện ngay dưới ô nhập. */
+  max_posts_reason?: string;
 }
 
 /**
@@ -1007,6 +1011,39 @@ export function useChannelScanSupport() {
     const blocked = items.find((p) => !p.enabled && hostMatches(url, p.platform));
     return blocked ?? null;
   };
+}
+
+/**
+ * platformFromURL đoán nền tảng từ URL đang gõ — cùng cách backend làm (suy từ
+ * host, vì form thêm kênh không có ô chọn nền tảng).
+ *
+ * Chuỗi rỗng = chưa nhận ra. Dùng để nói trước những thứ phụ thuộc nền tảng,
+ * ví dụ trần số bài cũ lấy được.
+ */
+export function platformFromURL(rawURL: string): string {
+  const url = rawURL.trim().toLowerCase();
+  if (!url) return "";
+  for (const p of ["youtube", "facebook", "tiktok", "instagram", "x"]) {
+    if (hostMatches(url, p)) return p;
+  }
+  return "";
+}
+
+/**
+ * useChannelPostCap tra trần số bài/lượt quét của một nền tảng.
+ *
+ * Con số đi từ BACKEND chứ không chép cứng ở đây, cùng lý do với bộ cookie bắt
+ * buộc của via: chính backend là bên ép con số đó xuống khi quét, nên form phải
+ * khoá đúng cái backend ép. Hai nơi giữ hai bản thì sớm muộn form cho nhập một
+ * đằng, vòng quét lấy một nẻo.
+ *
+ * Trả null khi chưa biết nền tảng hoặc nền tảng đó không có trần.
+ */
+export function useChannelPostCap(platform: string): ChannelScan | null {
+  const meta = usePlatforms();
+  if (!platform) return null;
+  const item = (meta.data?.channel_scan ?? []).find((p) => p.platform === platform);
+  return item && item.max_posts > 0 ? item : null;
 }
 
 /** hostMatches: tên nền tảng có xuất hiện trong phần host của URL không. */
@@ -1204,10 +1241,16 @@ export function useSetUserActive() {
  * thì thứ họ đang nhìn là ảnh chụp của vài phút trước, và đó chính là lúc họ ra
  * quyết định thay via.
  */
-export function useVias(platform = "") {
+export function useVias(platform = "", owner = "") {
   return useQuery({
-    queryKey: keys.vias(platform),
-    queryFn: () => api.get<{ items: Via[] }>("/settings/vias", { platform: platform || undefined }),
+    queryKey: keys.vias(platform, owner),
+    queryFn: () =>
+      api.get<{ items: Via[] }>("/settings/vias", {
+        platform: platform || undefined,
+        // `owner` chỉ có tác dụng với admin — server ép mọi vai trò khác về
+        // chính họ, nên gửi thừa cũng không mở thêm được gì.
+        owner: owner || undefined,
+      }),
     refetchInterval: 30_000,
   });
 }
@@ -1220,6 +1263,8 @@ export interface ViaInput {
   daily_quota?: number;
   /** Chỉ `active` / `disabled` — cooldown và dead do hệ thống kết luận. */
   status?: "active" | "disabled";
+  /** Gán via cho người này. Chỉ admin; server từ chối vai trò khác. */
+  user_id?: string;
 }
 
 export function useCreateVia() {
@@ -1247,11 +1292,14 @@ export function useDeleteVia() {
   });
 }
 
-export function useProxies(platform = "") {
+export function useProxies(platform = "", owner = "") {
   return useQuery({
-    queryKey: keys.proxies(platform),
+    queryKey: keys.proxies(platform, owner),
     queryFn: () =>
-      api.get<{ items: ScrapeProxy[] }>("/settings/proxies", { platform: platform || undefined }),
+      api.get<{ items: ScrapeProxy[] }>("/settings/proxies", {
+        platform: platform || undefined,
+        owner: owner || undefined,
+      }),
     refetchInterval: 30_000,
   });
 }
@@ -1263,6 +1311,8 @@ export interface ProxyInput {
   endpoint?: string;
   kind?: "residential" | "mobile" | "datacenter";
   status?: "active" | "disabled";
+  /** Gán proxy cho người này. Chỉ admin. */
+  user_id?: string;
 }
 
 export function useCreateProxy() {

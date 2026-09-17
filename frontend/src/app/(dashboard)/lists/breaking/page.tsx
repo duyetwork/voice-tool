@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { BulkBar, SelectAllBox, useSelection } from "@/components/bulk";
+import { CreatorFilter } from "@/components/creator-filter";
 import { ErrorNote, PageHeader } from "@/components/page-header";
 import {
   ChannelTuning,
@@ -31,6 +32,7 @@ import { EmptyRow, RowActions, SortableTh, Table, Td, Th, useSorting } from "@/c
 import {
   useBreakingLists,
   useCatalog,
+  platformFromURL,
   useChannelScanSupport,
   useCollectModes,
   useCreateBreakingList,
@@ -64,6 +66,7 @@ export default function BreakingListsPage() {
   const [search, setSearch] = React.useState("");
   const [platform, setPlatform] = React.useState("");
   const [status, setStatus] = React.useState("");
+  const [createdBy, setCreatedBy] = React.useState("");
   const [creating, setCreating] = React.useState(false);
   // Kênh đang sửa. Giữ cả object chứ không chỉ id: dialog cần giá trị hiện tại
   // để đổ vào form, và bảng đã có sẵn chúng rồi.
@@ -78,12 +81,13 @@ export default function BreakingListsPage() {
   const paging = usePaging();
   const sorting = useSorting("created_at", paging.reset);
   // Nút "Xoá lọc" chỉ hiện khi thực sự có gì để xoá.
-  const hasFilters = Boolean(search || platform || status);
+  const hasFilters = Boolean(search || platform || status || createdBy);
 
   const lists = useBreakingLists({
     search: search || undefined,
     platform: platform || undefined,
     status: status || undefined,
+    created_by: createdBy || undefined,
     ...sorting.params,
     limit: paging.limit,
     offset: paging.offset,
@@ -140,6 +144,14 @@ export default function BreakingListsPage() {
             </Select>
           </div>
 
+          <CreatorFilter
+            value={createdBy}
+            onChange={(id) => {
+              setCreatedBy(id);
+              paging.reset();
+            }}
+          />
+
           <div className="w-64">
             <label className="mb-1 block text-xs font-medium text-slate-500">Tìm theo URL</label>
             <Input
@@ -162,6 +174,7 @@ export default function BreakingListsPage() {
                 setSearch("");
                 setPlatform("");
                 setStatus("");
+                setCreatedBy("");
                 paging.reset();
               }}
             >
@@ -534,11 +547,7 @@ function BreakingDialog({
   }
 
   return (
-    <Modal
-      title={editing ? "Kênh Breaking" : "Thêm kênh Breaking"}
-      width="2xl"
-      onClose={onClose}
-    >
+    <Modal title={editing ? "Kênh Breaking" : "Thêm kênh Breaking"} width="2xl" onClose={onClose}>
       {editing ? (
         <div className="mb-4 grid grid-cols-3 gap-2 rounded-lg bg-slate-100 p-1">
           {(
@@ -651,9 +660,7 @@ function BreakingDialog({
             </Field>
           </div>
 
-          <Field
-            label="Quốc gia"
-          >
+          <Field label="Quốc gia">
             <Combobox
               value={countryId}
               options={countryOptions}
@@ -675,9 +682,7 @@ function BreakingDialog({
                   ))}
                 </Select>
               </Field>
-              <Field
-                label="Bộ API"
-              >
+              <Field label="Bộ API">
                 <Select value={llmSetId} onChange={(e) => setLlmSetId(e.target.value)}>
                   <option value="">— Không chọn —</option>
                   {llmSets.data?.items.map((set) => (
@@ -722,6 +727,7 @@ function BreakingDialog({
                   value={tuning}
                   onChange={setTuning}
                   backfillDone={Boolean(list?.backfill_done_at)}
+                  platform={list?.platform ?? platformFromURL(sourceUrl)}
                 />
                 <Field
                   label="Khoảng nghỉ giữa 2 vòng"

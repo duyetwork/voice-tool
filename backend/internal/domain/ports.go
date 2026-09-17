@@ -399,4 +399,9 @@ type ChannelScan struct {
 	Enabled  bool     `json:"enabled"`
 	// Reason chỉ có khi Enabled=false: vì sao không, và nên làm gì thay thế.
 	Reason string `json:"reason,omitempty"`
+	// MaxPosts: số bài NHIỀU NHẤT lấy được trong một lượt quét. 0 = không có
+	// trần. Form Thêm kênh đọc đây để KHOÁ ô nhập, xem MaxChannelPosts.
+	MaxPosts int `json:"max_posts"`
+	// MaxPostsReason: vì sao có trần đó — hiện ngay dưới ô nhập.
+	MaxPostsReason string `json:"max_posts_reason,omitempty"`
 }

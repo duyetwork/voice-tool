@@ -3,8 +3,10 @@
 -- ---------------------------------------------------------------------------
 
 -- name: CreateScrapeVia :one
-INSERT INTO scrape_via (platform, label, cookies_encrypted, daily_quota, created_by)
-VALUES ($1, $2, $3, $4, $5)
+-- user_id là CHỦ SỞ HỮU (người thấy và sửa được via này), created_by là người
+-- bấm nút — khác nhau khi admin khai hộ. Cùng ý nghĩa với ai_engine.
+INSERT INTO scrape_via (platform, label, cookies_encrypted, daily_quota, user_id, created_by)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: GetScrapeVia :one
@@ -14,9 +16,16 @@ SELECT * FROM scrape_via WHERE id = $1;
 -- Bảng quản lý trên màn Cài đặt. Sắp theo nền tảng rồi nhãn để danh sách đứng
 -- yên giữa các lần tải — sắp theo trạng thái thì dòng nhảy chỗ mỗi lần một via
 -- vào cooldown, đúng lúc người ta đang nhìn nó.
-SELECT * FROM scrape_via
-WHERE sqlc.narg('platform')::varchar IS NULL OR platform = sqlc.narg('platform')
-ORDER BY platform, label;
+--
+-- `owner` NULL = xem tất cả (chỉ admin). Editor luôn bị service ép owner =
+-- chính mình, nên không đọc được via của người khác dù gọi thẳng API.
+SELECT v.*, owner.email AS user_email, author.email AS created_by_email
+FROM scrape_via v
+JOIN app_user owner  ON owner.id  = v.user_id
+JOIN app_user author ON author.id = v.created_by
+WHERE (sqlc.narg('platform')::varchar IS NULL OR v.platform = sqlc.narg('platform'))
+  AND (sqlc.narg('owner')::uuid IS NULL OR v.user_id = sqlc.narg('owner'))
+ORDER BY v.platform, v.label;
 
 -- name: ClaimScrapeVia :one
 -- Nhận via cho MỘT lượt quét: nghỉ lâu nhất trước (round-robin theo thời gian
@@ -61,6 +70,9 @@ UPDATE scrape_via
 SET label             = COALESCE(sqlc.narg('label'), label),
     daily_quota       = COALESCE(sqlc.narg('daily_quota'), daily_quota),
     cookies_encrypted = COALESCE(sqlc.narg('cookies_encrypted'), cookies_encrypted),
+    -- Gán via cho người khác. Chỉ admin gửi được giá trị này (service chặn);
+    -- NULL = giữ nguyên chủ cũ.
+    user_id           = COALESCE(sqlc.narg('user_id'), user_id),
     status = CASE
                WHEN sqlc.narg('cookies_encrypted') IS NOT NULL THEN 'active'
                ELSE COALESCE(sqlc.narg('status'), status)
@@ -160,6 +172,11 @@ WHERE daily_used_date < CURRENT_DATE;
 
 -- name: CountScrapeViasByStatus :many
 -- Bảng tổng quan trên màn Cài đặt: bao nhiêu via sống/chết theo từng nền tảng.
+--
+-- Đếm theo đúng phạm vi người xem được nhìn (`owner` NULL = cả hệ thống, chỉ
+-- admin): một editor thấy 3 via của mình mà ô tổng quan nói 40 thì con số đó
+-- không trả lời được câu hỏi duy nhất họ có — "via CỦA TÔI còn đủ không".
 SELECT platform, status, COUNT(*)::bigint AS total
 FROM scrape_via
+WHERE sqlc.narg('owner')::uuid IS NULL OR user_id = sqlc.narg('owner')
 GROUP BY platform, status;

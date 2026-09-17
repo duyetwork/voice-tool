@@ -138,6 +138,13 @@ type Config struct {
 	// Bật sớm thì người ta tạo ra hàng loạt kênh im lặng không ra bài, và không
 	// có gì trên giao diện nói vì sao.
 	FacebookChannelScan bool `mapstructure:"FACEBOOK_CHANNEL_SCAN"`
+	// InstagramChannelScan / XChannelScan — cùng ý nghĩa, cho hai nền tảng còn
+	// lại. Ba cờ RIÊNG chứ không phải một cờ chung "bật quét kênh": ba bộ phân
+	// tích bám vào ba thứ khác nhau và hỏng độc lập nhau, nên khi một nền tảng
+	// đổi giao diện thì phải tắt được đúng nó mà không làm đứt hai nền tảng
+	// đang chạy tốt.
+	InstagramChannelScan bool `mapstructure:"INSTAGRAM_CHANNEL_SCAN"`
+	XChannelScan         bool `mapstructure:"X_CHANNEL_SCAN"`
 
 	// Ngôn ngữ mặc định hệ thống — đáy của cascade (business rule #9).
 	// "auto" = để nền tảng nguồn / multime.ai tự nhận diện.
@@ -261,6 +268,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("SCRAPE_CONCURRENCY", 3)
 	v.SetDefault("SCRAPE_MIN_GAP", "5s")
 	v.SetDefault("FACEBOOK_CHANNEL_SCAN", false)
+	v.SetDefault("INSTAGRAM_CHANNEL_SCAN", false)
+	v.SetDefault("X_CHANNEL_SCAN", false)
 	v.SetDefault("DEFAULT_LANGUAGE", "auto")
 	// B/C đã chạy được (TTS 3voices + LLM) nên bật sẵn cả 3 hình thức.
 	v.SetDefault("ENABLED_COLLECT_MODES", "A,B,C")

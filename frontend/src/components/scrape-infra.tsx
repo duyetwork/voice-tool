@@ -2,13 +2,15 @@
 
 import * as React from "react";
 
+import { CreatorFilter } from "@/components/creator-filter";
 import { ErrorNote } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
-import { Field, Input, Select } from "@/components/ui/field";
+import { Field, Input, Select, Toggle } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { EmptyRow, Table, Td, Th } from "@/components/ui/table";
+import { UserPicker } from "@/components/user-picker";
 import {
   useCreateProxy,
   useCreateVia,
@@ -35,6 +37,13 @@ import type { ProxyStatus, ScrapeProxy, Via, ViaHealth, ViaStatus } from "@/type
  * Màn này tồn tại vì cái đàn via đó là thứ SỐNG: via chết dần theo thời gian
  * dùng, và người vận hành phải nhìn thấy nó chết để thay. Quản lý qua file cấu
  * hình thì không ai nhìn thấy gì cho tới lúc mọi kênh cùng ngừng ra bài.
+ */
+
+/**
+ * AI THẤY GÌ: admin thấy via/proxy của mọi người và gán được chủ sở hữu; editor
+ * chỉ thấy của chính mình. Phân định thật nằm ở server (service.ScrapeAdmin) —
+ * `isAdmin` ở đây chỉ quyết định hiện hay ẩn ô chọn người, không phải một lớp
+ * bảo vệ.
  */
 
 /** Nền tảng cần via — đúng thứ tự ưu tiên đã chốt. */
@@ -69,22 +78,99 @@ const PROXY_KIND: Record<string, string> = {
 /** Dưới ngưỡng này thì banner đỏ: đàn via sắp không đủ để quét hết kênh. */
 const HEALTHY_FLOOR = 0.3;
 
-export function ScrapeInfraSection() {
+export function ScrapeInfraSection({ isAdmin }: { isAdmin: boolean }) {
   return (
     <>
-      <ViaHealthCard />
-      <ViaListCard />
-      <ProxyListCard />
-      <HourlyLoadCard />
+      <ViaHealthCard isAdmin={isAdmin} />
+      <ViaListCard isAdmin={isAdmin} />
+      <ProxyListCard isAdmin={isAdmin} />
+      <HourlyLoadCard isAdmin={isAdmin} />
     </>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Cột "Tình trạng"
+// ---------------------------------------------------------------------------
+
+/**
+ * StatusCell — nhãn trạng thái KÈM câu giải thích cụ thể của chính dòng đó.
+ *
+ * Trước đây lý do một via vào nghỉ hay một proxy bị hạ cấp chỉ nằm trong log của
+ * worker. Người vận hành nhìn bảng thấy "Đã chết" rồi phải đi mở log để biết vì
+ * sao — mà họ thường không có quyền vào log, và lúc cần nhất thì log đã cuộn
+ * mất. Câu trả lời phải nằm đúng ở dòng đang hỏng.
+ *
+ * `detail` là câu do giao diện dựng (máy trạng thái nói gì), `error` là nguyên
+ * văn lỗi cuối cùng từ nền tảng. Hiện CẢ HAI và tách nhau: câu đầu cho biết
+ * phải làm gì, câu sau là bằng chứng để đối chiếu khi cách làm đó không ăn thua.
+ */
+function StatusCell({
+  tone,
+  label,
+  detail,
+  error,
+}: {
+  tone: "success" | "warning" | "danger" | "neutral";
+  label: string;
+  detail?: string;
+  error?: string;
+}) {
+  return (
+    <div className="max-w-72 space-y-1">
+      <Badge tone={tone}>{label}</Badge>
+      {detail ? <p className="text-xs text-slate-600">{detail}</p> : null}
+      {error ? (
+        // break-words: lỗi của nền tảng hay là một URL hoặc một chuỗi dài không
+        // có dấu cách, và để nguyên thì nó kéo giãn cả bảng.
+        <p className="break-words text-xs text-red-700">{error}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** viaDetail — vì sao via đang ở trạng thái này, và phải làm gì tiếp. */
+function viaDetail(via: Via): string | undefined {
+  switch (via.status) {
+    case "cooldown":
+      return (
+        `Bị đòi đăng nhập ${via.consecutive_login_errors} lần liên tiếp nên đang nghỉ` +
+        (via.cooldown_until ? ` — thử lại lúc ${formatDateTime(via.cooldown_until)}` : "") +
+        ". Nghỉ xong vẫn hỏng thì hệ thống coi là đã chết."
+      );
+    case "dead":
+      return "Nghỉ xong vẫn bị đòi đăng nhập — dán cookies mới để cứu via này.";
+    case "disabled":
+      return "Đã tắt tay, đang đứng ngoài vòng quét.";
+    default:
+      return via.quota_left === 0
+        ? "Đã dùng hết hạn mức hôm nay — sang ngày mới tự chạy lại."
+        : undefined;
+  }
+}
+
+/** proxyDetail — tương tự cho proxy. */
+function proxyDetail(proxy: ScrapeProxy): string | undefined {
+  switch (proxy.status) {
+    case "degraded":
+      return (
+        `Bị chặn IP ${proxy.consecutive_blocks} lần liên tiếp nên đã ra khỏi vòng chọn. ` +
+        "Proxy KHÔNG tự bật lại — đổi endpoint mới hoặc bật tay khi đã xử lý."
+      );
+    case "dead":
+      return "Vẫn bị chặn sau khi đã hạ cấp — IP này coi như hỏng, cần proxy khác.";
+    case "disabled":
+      return "Đã tắt tay, đang đứng ngoài vòng chọn.";
+    default:
+      return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Tổng quan
 // ---------------------------------------------------------------------------
 
-function ViaHealthCard() {
+function ViaHealthCard({ isAdmin }: { isAdmin: boolean }) {
   const health = useScrapeHealth();
   const items = health.data?.items ?? [];
   // Chỉ cảnh báo những nền tảng ĐÃ có via: "chưa thêm via cho Instagram" không
@@ -94,11 +180,14 @@ function ViaHealthCard() {
   return (
     <Card>
       <CardBody>
-        <h2 className="text-sm font-semibold text-slate-900">Sức khoẻ đàn via</h2>
+        <h2 className="text-sm font-semibold text-slate-900">
+          {isAdmin ? "Sức khoẻ đàn via (toàn hệ thống)" : "Sức khoẻ đàn via của bạn"}
+        </h2>
         <p className="mt-1 max-w-3xl text-sm text-slate-600">
           Facebook, X và Instagram không cho liệt kê bài của một trang nếu không đăng nhập, nên việc
           quét chúng chạy bằng via (phiên đăng nhập) + proxy. Via <strong>chết dần</strong> theo
           thời gian dùng — đây là chi phí vận hành thường xuyên, không phải cài một lần.
+          {isAdmin ? null : " Bạn chỉ thấy via và proxy do mình sở hữu."}
         </p>
 
         <ErrorNote error={health.error} />
@@ -157,15 +246,19 @@ function HealthTile({ health: h }: { health: ViaHealth }) {
 // Via
 // ---------------------------------------------------------------------------
 
-function ViaListCard() {
+function ViaListCard({ isAdmin }: { isAdmin: boolean }) {
   const [platform, setPlatform] = React.useState("");
+  // Bộ lọc chủ sở hữu chỉ có nghĩa với admin: người khác đã bị server ép về
+  // chính họ, nên một ô lọc luôn cho ra cùng một kết quả là ô lọc gây hiểu nhầm.
+  const [owner, setOwner] = React.useState("");
   const [adding, setAdding] = React.useState(false);
   const [editing, setEditing] = React.useState<Via | null>(null);
 
-  const vias = useVias(platform);
+  const vias = useVias(platform, isAdmin ? owner : "");
   const update = useUpdateVia();
   const remove = useDeleteVia();
   const items = vias.data?.items ?? [];
+  const cols = isAdmin ? 8 : 7;
 
   return (
     <Card>
@@ -180,6 +273,15 @@ function ViaListCard() {
             </p>
           </div>
           <div className="flex items-end gap-2">
+            {isAdmin ? (
+              <CreatorFilter
+                value={owner}
+                onChange={setOwner}
+                label="Chủ sở hữu"
+                mineLabel="Của tôi"
+                className="w-44"
+              />
+            ) : null}
             <Select value={platform} onChange={(e) => setPlatform(e.target.value)} className="w-40">
               <option value="">Tất cả nền tảng</option>
               {VIA_PLATFORMS.map((p) => (
@@ -199,7 +301,12 @@ function ViaListCard() {
             <thead>
               <tr>
                 <Th>Via</Th>
-                <Th>Trạng thái</Th>
+                {isAdmin ? <Th>Chủ sở hữu</Th> : null}
+                {/* Hai cột tách nhau có chủ đích: "Bật/Tắt" là công tắc của
+                    người vận hành, "Tình trạng" là kết luận của hệ thống. Gộp
+                    lại thì một via bị tắt tay trông giống một via đã chết. */}
+                <Th>Bật/Tắt</Th>
+                <Th>Tình trạng</Th>
                 <Th className="text-right">Còn lại hôm nay</Th>
                 <Th className="text-right">Lỗi liên tiếp</Th>
                 <Th>Dùng lần cuối</Th>
@@ -208,22 +315,21 @@ function ViaListCard() {
             </thead>
             <tbody>
               {items.length === 0 ? (
-                <EmptyRow colSpan={6}>
-                  Chưa có via nào. Kênh Facebook / X / Instagram sẽ không quét được cho tới khi có
-                  ít nhất một via.
+                <EmptyRow colSpan={cols}>
+                  {owner || !isAdmin
+                    ? "Chưa có via nào thuộc về bạn. Kênh Facebook / X / Instagram sẽ không quét được cho tới khi có ít nhất một via."
+                    : "Chưa có via nào. Kênh Facebook / X / Instagram sẽ không quét được cho tới khi có ít nhất một via."}
                 </EmptyRow>
               ) : (
                 items.map((via) => (
                   <ViaRow
                     key={via.id}
                     via={via}
+                    isAdmin={isAdmin}
                     busy={update.isPending || remove.isPending}
                     onEdit={() => setEditing(via)}
-                    onToggle={() =>
-                      update.mutate({
-                        id: via.id,
-                        status: via.status === "disabled" ? "active" : "disabled",
-                      })
+                    onToggle={(on) =>
+                      update.mutate({ id: via.id, status: on ? "active" : "disabled" })
                     }
                     onDelete={() => {
                       if (confirm(`Xoá via "${via.label}"? Cookies của nó sẽ mất hẳn.`)) {
@@ -238,23 +344,27 @@ function ViaListCard() {
         </div>
       </CardBody>
 
-      {adding ? <ViaDialog onClose={() => setAdding(false)} /> : null}
-      {editing ? <ViaDialog via={editing} onClose={() => setEditing(null)} /> : null}
+      {adding ? <ViaDialog isAdmin={isAdmin} onClose={() => setAdding(false)} /> : null}
+      {editing ? (
+        <ViaDialog via={editing} isAdmin={isAdmin} onClose={() => setEditing(null)} />
+      ) : null}
     </Card>
   );
 }
 
 function ViaRow({
   via,
+  isAdmin,
   busy,
   onEdit,
   onToggle,
   onDelete,
 }: {
   via: Via;
+  isAdmin: boolean;
   busy: boolean;
   onEdit: () => void;
-  onToggle: () => void;
+  onToggle: (on: boolean) => void;
   onDelete: () => void;
 }) {
   const st = VIA_STATUS[via.status] ?? { label: via.status, tone: "neutral" as const };
@@ -264,17 +374,35 @@ function ViaRow({
         <div className="font-medium text-slate-900">{via.label}</div>
         <div className="text-xs text-slate-500">{platformLabel(via.platform)}</div>
       </Td>
+      {isAdmin ? (
+        <Td className="text-xs">
+          <div className="text-slate-700">{via.user_email}</div>
+          {/* Người khai chỉ hiện khi KHÁC chủ sở hữu: bằng nhau là chuyện
+              thường, in ra hai lần chỉ làm cột dày thêm mà không nói gì. */}
+          {via.created_by_email && via.created_by_email !== via.user_email ? (
+            <div className="text-slate-400">khai bởi {via.created_by_email}</div>
+          ) : null}
+        </Td>
+      ) : null}
       <Td>
-        <Badge tone={st.tone}>{st.label}</Badge>
-        {/* Nghỉ tới lúc nào là thứ quyết định có cần thay via ngay hay chờ được. */}
-        {via.status === "cooldown" && via.cooldown_until ? (
-          <div className="mt-1 text-xs text-slate-500">
-            thử lại: {formatDateTime(via.cooldown_until)}
-          </div>
-        ) : null}
-        {via.last_error ? (
-          <p className="mt-1 max-w-64 text-xs text-red-700">{via.last_error}</p>
-        ) : null}
+        {/* `dead` và `cooldown` vẫn bật được công tắc: bật một via đã chết là
+            vô hại (bộ chọn vẫn bỏ qua nó) còn khoá công tắc lại thì người dùng
+            không có cách nào đưa via đã cứu quay về vòng quay — chỉ dán cookies
+            mới mới làm được, mà đó lại là thao tác ở hộp thoại Sửa. */}
+        <Toggle
+          checked={via.status !== "disabled"}
+          disabled={busy}
+          label={via.status === "disabled" ? "Tắt" : "Bật"}
+          onChange={onToggle}
+        />
+      </Td>
+      <Td>
+        <StatusCell
+          tone={st.tone}
+          label={st.label}
+          detail={viaDetail(via)}
+          error={via.last_error}
+        />
       </Td>
       <Td className="text-right tabular-nums">
         <span className={via.quota_left === 0 ? "text-amber-700" : "text-slate-900"}>
@@ -293,9 +421,6 @@ function ViaRow({
           <Button size="sm" variant="secondary" onClick={onEdit}>
             Sửa
           </Button>
-          <Button size="sm" variant="secondary" disabled={busy} onClick={onToggle}>
-            {via.status === "disabled" ? "Bật" : "Tắt"}
-          </Button>
           <Button size="sm" variant="danger" disabled={busy} onClick={onDelete}>
             Xoá
           </Button>
@@ -305,7 +430,15 @@ function ViaRow({
   );
 }
 
-function ViaDialog({ via, onClose }: { via?: Via; onClose: () => void }) {
+function ViaDialog({
+  via,
+  isAdmin,
+  onClose,
+}: {
+  via?: Via;
+  isAdmin: boolean;
+  onClose: () => void;
+}) {
   const editing = via != null;
   const create = useCreateVia();
   const update = useUpdateVia();
@@ -314,6 +447,8 @@ function ViaDialog({ via, onClose }: { via?: Via; onClose: () => void }) {
   const [label, setLabel] = React.useState(via?.label ?? "");
   const [cookies, setCookies] = React.useState("");
   const [quota, setQuota] = React.useState(String(via?.daily_quota ?? 50));
+  // Rỗng = giữ chủ cũ khi sửa, = chính mình khi thêm. Chỉ admin đổi được.
+  const [owner, setOwner] = React.useState<string[]>(via?.user_id ? [via.user_id] : []);
   const pending = create.isPending || update.isPending;
 
   // Mỗi nền tảng cần một bộ cookie khác nhau, và người dán không có cách nào
@@ -341,6 +476,7 @@ function ViaDialog({ via, onClose }: { via?: Via; onClose: () => void }) {
       label: label.trim(),
       cookies: cookies.trim(),
       daily_quota: Number(quota) || undefined,
+      user_id: isAdmin ? owner[0] : undefined,
     };
     if (via) {
       await update.mutateAsync({ id: via.id, ...body });
@@ -437,6 +573,17 @@ function ViaDialog({ via, onClose }: { via?: Via; onClose: () => void }) {
           />
         </Field>
 
+        {/* Chỉ admin: gán via cho người khác. Editor luôn tạo cho chính mình,
+            và server ép như vậy bất kể gửi lên gì. */}
+        {isAdmin ? (
+          <Field
+            label="Chủ sở hữu"
+            hint="Người này sẽ thấy và sửa được via. Bỏ trống = gán cho chính bạn."
+          >
+            <UserPicker selected={owner} onChange={setOwner} single />
+          </Field>
+        ) : null}
+
         <ErrorNote error={create.error ?? update.error} />
 
         <div className="flex justify-end gap-2">
@@ -456,14 +603,16 @@ function ViaDialog({ via, onClose }: { via?: Via; onClose: () => void }) {
 // Proxy
 // ---------------------------------------------------------------------------
 
-function ProxyListCard() {
+function ProxyListCard({ isAdmin }: { isAdmin: boolean }) {
+  const [owner, setOwner] = React.useState("");
   const [adding, setAdding] = React.useState(false);
   const [editing, setEditing] = React.useState<ScrapeProxy | null>(null);
 
-  const proxies = useProxies();
+  const proxies = useProxies("", isAdmin ? owner : "");
   const update = useUpdateProxy();
   const remove = useDeleteProxy();
   const items = proxies.data?.items ?? [];
+  const cols = isAdmin ? 7 : 6;
 
   return (
     <Card>
@@ -477,7 +626,18 @@ function ProxyListCard() {
               <strong>không tự bật lại</strong>: một IP đã bị liệt thì chờ cũng không khỏi.
             </p>
           </div>
-          <Button onClick={() => setAdding(true)}>+ Thêm proxy</Button>
+          <div className="flex items-end gap-2">
+            {isAdmin ? (
+              <CreatorFilter
+                value={owner}
+                onChange={setOwner}
+                label="Chủ sở hữu"
+                mineLabel="Của tôi"
+                className="w-44"
+              />
+            ) : null}
+            <Button onClick={() => setAdding(true)}>+ Thêm proxy</Button>
+          </div>
         </div>
 
         <ErrorNote error={proxies.error ?? update.error ?? remove.error} />
@@ -487,15 +647,17 @@ function ProxyListCard() {
             <thead>
               <tr>
                 <Th>Proxy</Th>
+                {isAdmin ? <Th>Chủ sở hữu</Th> : null}
                 <Th>Loại</Th>
-                <Th>Trạng thái</Th>
+                <Th>Bật/Tắt</Th>
+                <Th>Tình trạng</Th>
                 <Th className="text-right">Hôm nay</Th>
                 <Th className="text-right">Thao tác</Th>
               </tr>
             </thead>
             <tbody>
               {items.length === 0 ? (
-                <EmptyRow colSpan={5}>
+                <EmptyRow colSpan={cols}>
                   Chưa có proxy nào — request sẽ đi thẳng bằng IP máy chủ. Vẫn chạy được, nhưng khả
                   năng bị chặn cao hơn hẳn.
                 </EmptyRow>
@@ -504,13 +666,11 @@ function ProxyListCard() {
                   <ProxyRow
                     key={proxy.id}
                     proxy={proxy}
+                    isAdmin={isAdmin}
                     busy={update.isPending || remove.isPending}
                     onEdit={() => setEditing(proxy)}
-                    onToggle={() =>
-                      update.mutate({
-                        id: proxy.id,
-                        status: proxy.status === "active" ? "disabled" : "active",
-                      })
+                    onToggle={(on) =>
+                      update.mutate({ id: proxy.id, status: on ? "active" : "disabled" })
                     }
                     onDelete={() => {
                       if (confirm(`Xoá proxy "${proxy.label}"?`)) remove.mutate(proxy.id);
@@ -523,23 +683,27 @@ function ProxyListCard() {
         </div>
       </CardBody>
 
-      {adding ? <ProxyDialog onClose={() => setAdding(false)} /> : null}
-      {editing ? <ProxyDialog proxy={editing} onClose={() => setEditing(null)} /> : null}
+      {adding ? <ProxyDialog isAdmin={isAdmin} onClose={() => setAdding(false)} /> : null}
+      {editing ? (
+        <ProxyDialog proxy={editing} isAdmin={isAdmin} onClose={() => setEditing(null)} />
+      ) : null}
     </Card>
   );
 }
 
 function ProxyRow({
   proxy,
+  isAdmin,
   busy,
   onEdit,
   onToggle,
   onDelete,
 }: {
   proxy: ScrapeProxy;
+  isAdmin: boolean;
   busy: boolean;
   onEdit: () => void;
-  onToggle: () => void;
+  onToggle: (on: boolean) => void;
   onDelete: () => void;
 }) {
   const st = PROXY_STATUS[proxy.status] ?? { label: proxy.status, tone: "neutral" as const };
@@ -556,6 +720,14 @@ function ProxyRow({
           {proxy.platform ? platformLabel(proxy.platform) : "dùng chung mọi nền tảng"}
         </div>
       </Td>
+      {isAdmin ? (
+        <Td className="text-xs">
+          <div className="text-slate-700">{proxy.user_email}</div>
+          {proxy.created_by_email && proxy.created_by_email !== proxy.user_email ? (
+            <div className="text-slate-400">khai bởi {proxy.created_by_email}</div>
+          ) : null}
+        </Td>
+      ) : null}
       <Td className="whitespace-nowrap text-xs">
         {PROXY_KIND[proxy.kind] ?? proxy.kind}
         {/* Nói thẳng ngay tại dòng đó, không giấu trong tài liệu: đây là nguyên
@@ -565,15 +737,22 @@ function ProxyRow({
         ) : null}
       </Td>
       <Td>
-        <Badge tone={st.tone}>{st.label}</Badge>
-        {proxy.status === "degraded" || proxy.status === "dead" ? (
-          <div className="mt-1 text-xs text-slate-500">
-            {proxy.consecutive_blocks} lần bị chặn liên tiếp
-          </div>
-        ) : null}
-        {proxy.last_error ? (
-          <p className="mt-1 max-w-56 text-xs text-red-700">{proxy.last_error}</p>
-        ) : null}
+        {/* Bật một proxy đang `degraded`/`dead` là đường DUY NHẤT đưa nó trở
+            lại vòng chọn — hệ thống cố tình không tự hồi sinh proxy. */}
+        <Toggle
+          checked={proxy.status !== "disabled"}
+          disabled={busy}
+          label={proxy.status === "disabled" ? "Tắt" : "Bật"}
+          onChange={onToggle}
+        />
+      </Td>
+      <Td>
+        <StatusCell
+          tone={st.tone}
+          label={st.label}
+          detail={proxyDetail(proxy)}
+          error={proxy.last_error}
+        />
       </Td>
       <Td className="text-right text-xs tabular-nums">
         <div className="text-slate-900">{proxy.used_today} lượt</div>
@@ -588,9 +767,6 @@ function ProxyRow({
           <Button size="sm" variant="secondary" onClick={onEdit}>
             Sửa
           </Button>
-          <Button size="sm" variant="secondary" disabled={busy} onClick={onToggle}>
-            {proxy.status === "active" ? "Tắt" : "Bật lại"}
-          </Button>
           <Button size="sm" variant="danger" disabled={busy} onClick={onDelete}>
             Xoá
           </Button>
@@ -600,7 +776,15 @@ function ProxyRow({
   );
 }
 
-function ProxyDialog({ proxy, onClose }: { proxy?: ScrapeProxy; onClose: () => void }) {
+function ProxyDialog({
+  proxy,
+  isAdmin,
+  onClose,
+}: {
+  proxy?: ScrapeProxy;
+  isAdmin: boolean;
+  onClose: () => void;
+}) {
   const editing = proxy != null;
   const create = useCreateProxy();
   const update = useUpdateProxy();
@@ -609,11 +793,17 @@ function ProxyDialog({ proxy, onClose }: { proxy?: ScrapeProxy; onClose: () => v
   const [platform, setPlatform] = React.useState(proxy?.platform ?? "");
   const [endpoint, setEndpoint] = React.useState("");
   const [kind, setKind] = React.useState(proxy?.kind ?? "residential");
+  const [owner, setOwner] = React.useState<string[]>(proxy?.user_id ? [proxy.user_id] : []);
   const pending = create.isPending || update.isPending;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const body = { label: label.trim(), endpoint: endpoint.trim(), kind };
+    const body = {
+      label: label.trim(),
+      endpoint: endpoint.trim(),
+      kind,
+      user_id: isAdmin ? owner[0] : undefined,
+    };
     if (proxy) {
       await update.mutateAsync({ id: proxy.id, ...body });
     } else {
@@ -697,6 +887,15 @@ function ProxyDialog({ proxy, onClose }: { proxy?: ScrapeProxy; onClose: () => v
           ) : null}
         </div>
 
+        {isAdmin ? (
+          <Field
+            label="Chủ sở hữu"
+            hint="Người này sẽ thấy và sửa được proxy. Bỏ trống = gán cho chính bạn."
+          >
+            <UserPicker selected={owner} onChange={setOwner} single />
+          </Field>
+        ) : null}
+
         <ErrorNote error={create.error ?? update.error} />
 
         <div className="flex justify-end gap-2">
@@ -723,7 +922,7 @@ function ProxyDialog({ proxy, onClose }: { proxy?: ScrapeProxy; onClose: () => v
  * tảng nhìn thấy một đợt tấn công. Bảng "bị chặn" chỉ nói RẰNG bị chặn; cột giờ
  * này mới nói VÌ SAO.
  */
-function HourlyLoadCard() {
+function HourlyLoadCard({ isAdmin }: { isAdmin: boolean }) {
   const [days, setDays] = React.useState(7);
   const load = useScrapeLoad(days);
   const rows = load.data?.items;
@@ -750,7 +949,9 @@ function HourlyLoadCard() {
       <CardBody>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-sm font-semibold text-slate-900">Lượt quét theo giờ</h2>
+            <h2 className="text-sm font-semibold text-slate-900">
+              {isAdmin ? "Lượt quét theo giờ" : "Lượt quét theo giờ (qua via của bạn)"}
+            </h2>
             <p className="mt-1 max-w-3xl text-sm text-slate-600">
               Kiểm tra lịch quét có bị dồn cục không. Cột cao chót vót ở một giờ nghĩa là hàng loạt
               kênh cùng chạy một lúc — nền tảng nhìn thấy điều đó rõ hơn bất kỳ thứ gì khác.

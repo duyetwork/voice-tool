@@ -99,13 +99,14 @@ func (s *Scan) finishRun(ctx context.Context, runID *uuid.UUID, res ScanResult, 
 	}
 
 	if err := s.q.FinishScanRun(writeCtx, repository.FinishScanRunParams{
-		ID:            *runID,
-		Status:        status,
-		Fetched:       int32(res.Fetched),
-		PostsCreated:  int32(res.Created),
-		VoicesCreated: int32(res.Voices),
-		Skipped:       int32(res.Skipped),
-		Error:         msg,
+		ID:             *runID,
+		Status:         status,
+		Fetched:        int32(res.Fetched),
+		PostsCreated:   int32(res.Created),
+		VoicesCreated:  int32(res.Voices),
+		Skipped:        int32(res.Skipped),
+		RequestedLimit: int32(res.RequestedLimit),
+		Error:          msg,
 	}); err != nil {
 		s.log.WarnContext(ctx, "không đóng được lịch sử vòng quét", "error", err, "run_id", *runID)
 	}
@@ -121,6 +122,9 @@ type ScanRunEntry struct {
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at"`
 	Status     string     `json:"status"`
+	// RequestedLimit: số bài vòng này xin nền tảng, sau khi ép về trần của nền
+	// tảng. 0 = dòng lịch sử có từ trước khi cột này tồn tại.
+	RequestedLimit int32 `json:"requested_limit"`
 	// TriggerKind: `auto` = lịch chạy, `manual` = có người bấm.
 	TriggerKind string `json:"trigger_kind"`
 	// TriggeredByEmail rỗng ở vòng tự động, và cũng rỗng khi tài khoản đã bị
@@ -213,6 +217,7 @@ func (l *List) scanHistory(
 			PostsCreated:     r.PostsCreated,
 			VoicesCreated:    r.VoicesCreated,
 			Skipped:          r.Skipped,
+			RequestedLimit:   r.RequestedLimit,
 			Error:            deref(r.Error),
 		})
 	}

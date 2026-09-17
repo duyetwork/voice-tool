@@ -7,6 +7,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -26,7 +27,7 @@ WHERE id = (
   LIMIT 1
   FOR UPDATE SKIP LOCKED
 )
-RETURNING id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at
+RETURNING id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id
 `
 
 // Nhận via cho MỘT lượt quét: nghỉ lâu nhất trước (round-robin theo thời gian
@@ -68,6 +69,7 @@ func (q *Queries) ClaimScrapeVia(ctx context.Context, platform string) (ScrapeVi
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }
@@ -75,6 +77,7 @@ func (q *Queries) ClaimScrapeVia(ctx context.Context, platform string) (ScrapeVi
 const countScrapeViasByStatus = `-- name: CountScrapeViasByStatus :many
 SELECT platform, status, COUNT(*)::bigint AS total
 FROM scrape_via
+WHERE $1::uuid IS NULL OR user_id = $1
 GROUP BY platform, status
 `
 
@@ -85,8 +88,12 @@ type CountScrapeViasByStatusRow struct {
 }
 
 // Bảng tổng quan trên màn Cài đặt: bao nhiêu via sống/chết theo từng nền tảng.
-func (q *Queries) CountScrapeViasByStatus(ctx context.Context) ([]CountScrapeViasByStatusRow, error) {
-	rows, err := q.db.Query(ctx, countScrapeViasByStatus)
+//
+// Đếm theo đúng phạm vi người xem được nhìn (`owner` NULL = cả hệ thống, chỉ
+// admin): một editor thấy 3 via của mình mà ô tổng quan nói 40 thì con số đó
+// không trả lời được câu hỏi duy nhất họ có — "via CỦA TÔI còn đủ không".
+func (q *Queries) CountScrapeViasByStatus(ctx context.Context, owner *uuid.UUID) ([]CountScrapeViasByStatusRow, error) {
+	rows, err := q.db.Query(ctx, countScrapeViasByStatus, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -107,9 +114,9 @@ func (q *Queries) CountScrapeViasByStatus(ctx context.Context) ([]CountScrapeVia
 
 const createScrapeVia = `-- name: CreateScrapeVia :one
 
-INSERT INTO scrape_via (platform, label, cookies_encrypted, daily_quota, created_by)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at
+INSERT INTO scrape_via (platform, label, cookies_encrypted, daily_quota, user_id, created_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id
 `
 
 type CreateScrapeViaParams struct {
@@ -117,18 +124,22 @@ type CreateScrapeViaParams struct {
 	Label            string    `json:"label"`
 	CookiesEncrypted string    `json:"cookies_encrypted"`
 	DailyQuota       int32     `json:"daily_quota"`
+	UserID           uuid.UUID `json:"user_id"`
 	CreatedBy        uuid.UUID `json:"created_by"`
 }
 
 // ---------------------------------------------------------------------------
 // Via (phiên đăng nhập dùng để quét trang công khai)
 // ---------------------------------------------------------------------------
+// user_id là CHỦ SỞ HỮU (người thấy và sửa được via này), created_by là người
+// bấm nút — khác nhau khi admin khai hộ. Cùng ý nghĩa với ai_engine.
 func (q *Queries) CreateScrapeVia(ctx context.Context, arg CreateScrapeViaParams) (ScrapeVia, error) {
 	row := q.db.QueryRow(ctx, createScrapeVia,
 		arg.Platform,
 		arg.Label,
 		arg.CookiesEncrypted,
 		arg.DailyQuota,
+		arg.UserID,
 		arg.CreatedBy,
 	)
 	var i ScrapeVia
@@ -149,6 +160,7 @@ func (q *Queries) CreateScrapeVia(ctx context.Context, arg CreateScrapeViaParams
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }
@@ -166,7 +178,7 @@ func (q *Queries) DeleteScrapeVia(ctx context.Context, id uuid.UUID) (int64, err
 }
 
 const getScrapeVia = `-- name: GetScrapeVia :one
-SELECT id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at FROM scrape_via WHERE id = $1
+SELECT id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id FROM scrape_via WHERE id = $1
 `
 
 func (q *Queries) GetScrapeVia(ctx context.Context, id uuid.UUID) (ScrapeVia, error) {
@@ -189,28 +201,63 @@ func (q *Queries) GetScrapeVia(ctx context.Context, id uuid.UUID) (ScrapeVia, er
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }
 
 const listScrapeVias = `-- name: ListScrapeVias :many
-SELECT id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at FROM scrape_via
-WHERE $1::varchar IS NULL OR platform = $1
-ORDER BY platform, label
+SELECT v.id, v.platform, v.label, v.cookies_encrypted, v.status, v.consecutive_login_errors, v.cooldown_until, v.daily_quota, v.daily_used, v.daily_used_date, v.last_used_at, v.last_error_at, v.last_error, v.created_by, v.created_at, v.updated_at, v.user_id, owner.email AS user_email, author.email AS created_by_email
+FROM scrape_via v
+JOIN app_user owner  ON owner.id  = v.user_id
+JOIN app_user author ON author.id = v.created_by
+WHERE ($1::varchar IS NULL OR v.platform = $1)
+  AND ($2::uuid IS NULL OR v.user_id = $2)
+ORDER BY v.platform, v.label
 `
+
+type ListScrapeViasParams struct {
+	Platform *string    `json:"platform"`
+	Owner    *uuid.UUID `json:"owner"`
+}
+
+type ListScrapeViasRow struct {
+	ID                     uuid.UUID   `json:"id"`
+	Platform               string      `json:"platform"`
+	Label                  string      `json:"label"`
+	CookiesEncrypted       string      `json:"cookies_encrypted"`
+	Status                 string      `json:"status"`
+	ConsecutiveLoginErrors int32       `json:"consecutive_login_errors"`
+	CooldownUntil          *time.Time  `json:"cooldown_until"`
+	DailyQuota             int32       `json:"daily_quota"`
+	DailyUsed              int32       `json:"daily_used"`
+	DailyUsedDate          pgtype.Date `json:"daily_used_date"`
+	LastUsedAt             *time.Time  `json:"last_used_at"`
+	LastErrorAt            *time.Time  `json:"last_error_at"`
+	LastError              *string     `json:"last_error"`
+	CreatedBy              uuid.UUID   `json:"created_by"`
+	CreatedAt              time.Time   `json:"created_at"`
+	UpdatedAt              time.Time   `json:"updated_at"`
+	UserID                 uuid.UUID   `json:"user_id"`
+	UserEmail              string      `json:"user_email"`
+	CreatedByEmail         string      `json:"created_by_email"`
+}
 
 // Bảng quản lý trên màn Cài đặt. Sắp theo nền tảng rồi nhãn để danh sách đứng
 // yên giữa các lần tải — sắp theo trạng thái thì dòng nhảy chỗ mỗi lần một via
 // vào cooldown, đúng lúc người ta đang nhìn nó.
-func (q *Queries) ListScrapeVias(ctx context.Context, platform *string) ([]ScrapeVia, error) {
-	rows, err := q.db.Query(ctx, listScrapeVias, platform)
+//
+// `owner` NULL = xem tất cả (chỉ admin). Editor luôn bị service ép owner =
+// chính mình, nên không đọc được via của người khác dù gọi thẳng API.
+func (q *Queries) ListScrapeVias(ctx context.Context, arg ListScrapeViasParams) ([]ListScrapeViasRow, error) {
+	rows, err := q.db.Query(ctx, listScrapeVias, arg.Platform, arg.Owner)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ScrapeVia{}
+	items := []ListScrapeViasRow{}
 	for rows.Next() {
-		var i ScrapeVia
+		var i ListScrapeViasRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Platform,
@@ -228,6 +275,9 @@ func (q *Queries) ListScrapeVias(ctx context.Context, platform *string) ([]Scrap
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.UserID,
+			&i.UserEmail,
+			&i.CreatedByEmail,
 		); err != nil {
 			return nil, err
 		}
@@ -263,7 +313,7 @@ SET consecutive_login_errors = consecutive_login_errors + 1,
              END,
     updated_at = now()
 WHERE id = $4
-RETURNING id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at
+RETURNING id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id
 `
 
 type MarkScrapeViaLoginErrorParams struct {
@@ -311,6 +361,7 @@ func (q *Queries) MarkScrapeViaLoginError(ctx context.Context, arg MarkScrapeVia
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }
@@ -396,9 +447,12 @@ UPDATE scrape_via
 SET label             = COALESCE($1, label),
     daily_quota       = COALESCE($2, daily_quota),
     cookies_encrypted = COALESCE($3, cookies_encrypted),
+    -- Gán via cho người khác. Chỉ admin gửi được giá trị này (service chặn);
+    -- NULL = giữ nguyên chủ cũ.
+    user_id           = COALESCE($4, user_id),
     status = CASE
                WHEN $3 IS NOT NULL THEN 'active'
-               ELSE COALESCE($4, status)
+               ELSE COALESCE($5, status)
              END,
     consecutive_login_errors =
       CASE WHEN $3 IS NULL THEN consecutive_login_errors ELSE 0 END,
@@ -407,16 +461,17 @@ SET label             = COALESCE($1, label),
     last_error =
       CASE WHEN $3 IS NULL THEN last_error ELSE NULL END,
     updated_at = now()
-WHERE id = $5
-RETURNING id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at
+WHERE id = $6
+RETURNING id, platform, label, cookies_encrypted, status, consecutive_login_errors, cooldown_until, daily_quota, daily_used, daily_used_date, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id
 `
 
 type UpdateScrapeViaParams struct {
-	Label            *string   `json:"label"`
-	DailyQuota       *int32    `json:"daily_quota"`
-	CookiesEncrypted *string   `json:"cookies_encrypted"`
-	Status           *string   `json:"status"`
-	ID               uuid.UUID `json:"id"`
+	Label            *string    `json:"label"`
+	DailyQuota       *int32     `json:"daily_quota"`
+	CookiesEncrypted *string    `json:"cookies_encrypted"`
+	UserID           *uuid.UUID `json:"user_id"`
+	Status           *string    `json:"status"`
+	ID               uuid.UUID  `json:"id"`
 }
 
 // Sửa via. Dán cookies mới cũng là RESET SỨC KHOẺ: người vào đây là vì via
@@ -427,6 +482,7 @@ func (q *Queries) UpdateScrapeVia(ctx context.Context, arg UpdateScrapeViaParams
 		arg.Label,
 		arg.DailyQuota,
 		arg.CookiesEncrypted,
+		arg.UserID,
 		arg.Status,
 		arg.ID,
 	)
@@ -448,6 +504,7 @@ func (q *Queries) UpdateScrapeVia(ctx context.Context, arg UpdateScrapeViaParams
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }

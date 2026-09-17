@@ -88,6 +88,54 @@ func firstRunLimit(backfill int32) int {
 	return int(backfill)
 }
 
+// noteBackfillShortfall ghi lại khi vòng quét ĐẦU không lấy đủ số bài cũ.
+//
+// Không phải lúc nào cũng là lỗi: ba nền tảng chạy bằng via đều có TRẦN CỨNG ở
+// một lần gọi và không có đường phân trang — đo trực tiếp ngày 17/09/2026:
+//
+//	Facebook   chỉ những bài Facebook dựng sẵn trong HTML trang (1–10)
+//	Instagram  12 bài mỗi lần gọi web_profile_info
+//	X          ~100 tweet mỗi lần gọi syndication
+//
+// Xin nhiều hơn chừng đó thì phần thiếu KHÔNG có cách nào lấy được, và trước
+// dòng log này thì triệu chứng duy nhất là một con số nhỏ hơn mong đợi trong
+// bảng lịch sử quét, không kèm lời giải thích nào. YouTube/TikTok không dính
+// vì yt-dlp phân trang được (--playlist-end).
+func (s *Scan) noteBackfillShortfall(ctx context.Context, platform, url string, want, got int) {
+	if got >= want {
+		return
+	}
+	s.log.InfoContext(ctx, "vòng quét đầu lấy được ít hơn số bài cũ đã xin",
+		"platform", platform, "channel", url, "xin", want, "được", got,
+		"lý_do", "nền tảng chỉ trả chừng đó trong một lần gọi và không phân trang")
+}
+
+// skipRoundReason nhận ra những lỗi mà cách xử lý đúng là BỎ QUA VÒNG NÀY, chứ
+// không phải ghi kênh lỗi. Trả chuỗi rỗng = lỗi thật, xử lý như thường.
+//
+// Hai lỗi đó không nói gì về kênh đang quét, và cả hai đều tự khỏi theo thời
+// gian — nên biến chúng thành lỗi của kênh là sai ở cả ba mặt: bảng kênh hiện
+// đỏ cho một kênh không có vấn đề gì, asynq retry ba lần, và mẻ quét của các
+// kênh còn lại bị kéo theo.
+//
+//   - ErrNoViaAvailable: hạn mức ngày đã cạn hoặc cả đàn via đang nghỉ.
+//   - FetchBlockRateLimit: nền tảng bảo "chờ vài phút". Retry ngay chính là
+//     thứ nó vừa yêu cầu đừng làm — ba lần thử dồn trong ~36 giây (đã thấy
+//     thật với Instagram) chỉ kéo dài thêm khoảng phạt.
+//
+// Lỗi vẫn được đếm vào fetch_error_stat ở latestPosts trước khi tới đây, nên
+// tab "Bị chặn" vẫn thấy — bỏ qua ở đây là bỏ qua việc RETRY, không phải bỏ
+// qua việc ghi nhận.
+func skipRoundReason(err error) string {
+	if errors.Is(err, domain.ErrNoViaAvailable) {
+		return "hết via khả dụng"
+	}
+	if kind, ok := domain.FetchBlockKindOf(err); ok && kind == domain.FetchBlockRateLimit {
+		return "nền tảng đang giới hạn tần suất, chờ lượt sau"
+	}
+	return ""
+}
+
 // latestPosts gọi adapter qua PlatformGate: mỗi nền tảng 1 yt-dlp tại một thời
 // điểm, có khoảng nghỉ giữa hai lần — và mọi lỗi bị chặn đều được đếm.
 func (s *Scan) latestPosts(
@@ -131,6 +179,10 @@ type ScanResult struct {
 	// "kênh bắt được bài nhưng không ai bảo nó đọc".
 	Voices  int
 	Skipped int
+	// RequestedLimit: số bài vòng này XIN nền tảng, sau khi đã ép về trần của
+	// nền tảng đó. Đi vào lịch sử quét để cột "lấy được" có mẫu số — không có
+	// nó thì "được 12" là một con số không nói lên điều gì.
+	RequestedLimit int
 }
 
 // add cộng kết quả của 1 bài vào tổng của vòng quét.
@@ -200,16 +252,32 @@ func (s *Scan) scanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 	if list.BackfillDoneAt == nil {
 		limit = firstRunLimit(list.BackfillLimit)
 	}
+	// Ép về trần của nền tảng NGAY TẠI ĐÂY, không chỉ ở form: kênh thêm từ
+	// trước khi có trần vẫn đang giữ con số cũ, và xin 50 ở một nơi chỉ trả về
+	// 12 thì số ghi vào lịch sử là một lời hứa không ai giữ được.
+	limit = domain.ClampChannelLimit(domain.Platform(list.Platform), limit)
+	res.RequestedLimit = limit
+
 	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, limit)
+	if err == nil && list.BackfillDoneAt == nil {
+		s.noteBackfillShortfall(ctx, list.Platform, list.SourceUrl, limit, len(posts))
+	}
 	if err != nil {
-		// Hết via KHÔNG phải sự cố của kênh này: hạn mức ngày đã cạn, hoặc cả
-		// đàn via đang nghỉ. Trả nil để vòng quét kết thúc SẠCH — kênh không bị
-		// ghi lỗi, asynq không retry ba lần, và mẻ quét của các kênh còn lại
-		// không bị kéo theo. Lượt sau tới hạn thì thử lại.
-		if errors.Is(err, domain.ErrNoViaAvailable) {
-			s.log.WarnContext(ctx, "bỏ qua vòng quét — hết via khả dụng",
+		if why := skipRoundReason(err); why != "" {
+			s.log.WarnContext(ctx, "bỏ qua vòng quét — "+why,
 				"list_id", list.ID, "platform", list.Platform)
-			return res, nil
+			// GHI LẠI LÀ LỖI, không phải thành công-với-0-bài.
+			//
+			// Trước đây vòng bị bỏ qua trả về nil, nên lịch sử quét hiện
+			// "thành công, lấy được 0 bài" mà không có một chữ nào nói vì sao —
+			// và đó đúng là thứ người vận hành báo lại: "Instagram đã quét xong
+			// nhưng không lấy ra được bài nào". Một vòng không làm được việc của
+			// nó là một vòng hỏng, dù lỗi không phải của kênh.
+			//
+			// Permanent: nói một lần rồi thôi. Không để asynq thử lại ba lần
+			// cho một lỗi mà chính nền tảng vừa bảo hãy chờ — retry ngay là
+			// cách làm khoảng phạt dài thêm.
+			return res, domain.Permanent(err)
 		}
 		return res, fmt.Errorf("quét kênh %s: %w", list.SourceUrl, err)
 	}
@@ -358,16 +426,32 @@ func (s *Scan) scanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 	if list.BackfillDoneAt == nil {
 		limit = firstRunLimit(list.BackfillLimit)
 	}
+	// Ép về trần của nền tảng NGAY TẠI ĐÂY, không chỉ ở form: kênh thêm từ
+	// trước khi có trần vẫn đang giữ con số cũ, và xin 50 ở một nơi chỉ trả về
+	// 12 thì số ghi vào lịch sử là một lời hứa không ai giữ được.
+	limit = domain.ClampChannelLimit(domain.Platform(list.Platform), limit)
+	res.RequestedLimit = limit
+
 	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, limit)
+	if err == nil && list.BackfillDoneAt == nil {
+		s.noteBackfillShortfall(ctx, list.Platform, list.SourceUrl, limit, len(posts))
+	}
 	if err != nil {
-		// Hết via KHÔNG phải sự cố của kênh này: hạn mức ngày đã cạn, hoặc cả
-		// đàn via đang nghỉ. Trả nil để vòng quét kết thúc SẠCH — kênh không bị
-		// ghi lỗi, asynq không retry ba lần, và mẻ quét của các kênh còn lại
-		// không bị kéo theo. Lượt sau tới hạn thì thử lại.
-		if errors.Is(err, domain.ErrNoViaAvailable) {
-			s.log.WarnContext(ctx, "bỏ qua vòng quét — hết via khả dụng",
+		if why := skipRoundReason(err); why != "" {
+			s.log.WarnContext(ctx, "bỏ qua vòng quét — "+why,
 				"list_id", list.ID, "platform", list.Platform)
-			return res, nil
+			// GHI LẠI LÀ LỖI, không phải thành công-với-0-bài.
+			//
+			// Trước đây vòng bị bỏ qua trả về nil, nên lịch sử quét hiện
+			// "thành công, lấy được 0 bài" mà không có một chữ nào nói vì sao —
+			// và đó đúng là thứ người vận hành báo lại: "Instagram đã quét xong
+			// nhưng không lấy ra được bài nào". Một vòng không làm được việc của
+			// nó là một vòng hỏng, dù lỗi không phải của kênh.
+			//
+			// Permanent: nói một lần rồi thôi. Không để asynq thử lại ba lần
+			// cho một lỗi mà chính nền tảng vừa bảo hãy chờ — retry ngay là
+			// cách làm khoảng phạt dài thêm.
+			return res, domain.Permanent(err)
 		}
 		return res, fmt.Errorf("quét kênh %s: %w", list.SourceUrl, err)
 	}

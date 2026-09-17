@@ -2,42 +2,44 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/strongbody/voice-tool/backend/internal/pkg/httpx"
 	"github.com/strongbody/voice-tool/backend/internal/service"
-	"github.com/strongbody/voice-tool/backend/internal/transport/http/middleware"
 )
 
 // Scrape là mặt HTTP của hạ tầng via/proxy — toàn bộ nằm dưới màn Cài đặt.
 //
-// Mọi route đều là route ADMIN: via là bí mật đăng nhập và proxy là lối ra mạng
-// của cả hệ thống, không phải dữ liệu nghiệp vụ của từng người dùng.
+// Route nằm sau middleware.RequireOperate (admin + editor), KHÔNG phải nhóm
+// admin nữa: via và proxy giờ có chủ sở hữu, và editor nuôi via của chính họ.
+// Ai thấy được bản ghi nào do ScrapeAdmin quyết định theo chủ sở hữu — cùng
+// cách API key TTS đang làm, nên route chỉ cần chặn tới mức vai trò.
 type Scrape struct {
 	svc *service.ScrapeAdmin
 }
 
 func NewScrape(svc *service.ScrapeAdmin) *Scrape { return &Scrape{svc: svc} }
 
-// Register gắn toàn bộ route vào nhóm admin.
-func (h *Scrape) Register(admin *gin.RouterGroup) {
-	admin.GET("/settings/vias", h.ListVias)
-	admin.POST("/settings/vias", h.CreateVia)
-	admin.PATCH("/settings/vias/:id", h.UpdateVia)
-	admin.DELETE("/settings/vias/:id", h.DeleteVia)
+// Register gắn toàn bộ route vào nhóm Vận hành (admin + editor).
+func (h *Scrape) Register(g *gin.RouterGroup) {
+	g.GET("/settings/vias", h.ListVias)
+	g.POST("/settings/vias", h.CreateVia)
+	g.PATCH("/settings/vias/:id", h.UpdateVia)
+	g.DELETE("/settings/vias/:id", h.DeleteVia)
 
-	admin.GET("/settings/proxies", h.ListProxies)
-	admin.POST("/settings/proxies", h.CreateProxy)
-	admin.PATCH("/settings/proxies/:id", h.UpdateProxy)
-	admin.DELETE("/settings/proxies/:id", h.DeleteProxy)
+	g.GET("/settings/proxies", h.ListProxies)
+	g.POST("/settings/proxies", h.CreateProxy)
+	g.PATCH("/settings/proxies/:id", h.UpdateProxy)
+	g.DELETE("/settings/proxies/:id", h.DeleteProxy)
 
 	// Bảng tổng quan: bao nhiêu via còn sống theo từng nền tảng, và lượt quét
 	// rải ra sao trong ngày.
 	// Nền tảng nào cần cookie gì — form thêm via đọc đây để hiện đúng mẫu.
 	// Đi từ server vì chính server là bên từ chối khi thiếu.
-	admin.GET("/settings/via-cookie-specs", h.CookieSpecs)
+	g.GET("/settings/via-cookie-specs", h.CookieSpecs)
 
-	admin.GET("/settings/scrape-health", h.Health)
-	admin.GET("/settings/scrape-load", h.HourlyLoad)
+	g.GET("/settings/scrape-health", h.Health)
+	g.GET("/settings/scrape-load", h.HourlyLoad)
 }
 
 // ---------------------------------------------------------------------------
@@ -57,10 +59,19 @@ type viaRequest struct {
 	// Status: chỉ `active` / `disabled`. `cooldown` và `dead` là kết luận của
 	// hệ thống, đặt tay được thì bảng tổng quan hết ý nghĩa.
 	Status *string `json:"status" binding:"omitempty,oneof=active disabled"`
+	// UserID: gán via cho người này. Chỉ admin — service từ chối người khác.
+	UserID *uuid.UUID `json:"user_id"`
 }
 
 func (h *Scrape) ListVias(c *gin.Context) {
-	items, err := h.svc.ListVias(c.Request.Context(), queryString(c, "platform"))
+	// `owner` chỉ có tác dụng với admin: service ép mọi vai trò khác về chính
+	// họ, nên một tham số cố tình không phải là đường đi vòng.
+	owner, err := queryUUID(c, "owner")
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	items, err := h.svc.ListVias(c.Request.Context(), actorOf(c), queryString(c, "platform"), owner)
 	if err != nil {
 		httpx.Fail(c, err)
 		return
@@ -74,11 +85,12 @@ func (h *Scrape) CreateVia(c *gin.Context) {
 		httpx.BadRequest(c, err)
 		return
 	}
-	out, err := h.svc.CreateVia(c.Request.Context(), middleware.ActorID(c), service.ViaInput{
+	out, err := h.svc.CreateVia(c.Request.Context(), actorOf(c), service.ViaInput{
 		Platform:   req.Platform,
 		Label:      req.Label,
 		Cookies:    req.Cookies,
 		DailyQuota: req.DailyQuota,
+		Owner:      req.UserID,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -98,11 +110,12 @@ func (h *Scrape) UpdateVia(c *gin.Context) {
 		httpx.BadRequest(c, err)
 		return
 	}
-	out, err := h.svc.UpdateVia(c.Request.Context(), middleware.ActorID(c), id, service.ViaInput{
+	out, err := h.svc.UpdateVia(c.Request.Context(), actorOf(c), id, service.ViaInput{
 		Label:      req.Label,
 		Cookies:    req.Cookies,
 		DailyQuota: req.DailyQuota,
 		Status:     req.Status,
+		Owner:      req.UserID,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -117,7 +130,7 @@ func (h *Scrape) DeleteVia(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	if err := h.svc.DeleteVia(c.Request.Context(), middleware.ActorID(c), id); err != nil {
+	if err := h.svc.DeleteVia(c.Request.Context(), actorOf(c), id); err != nil {
 		httpx.Fail(c, err)
 		return
 	}
@@ -136,6 +149,8 @@ type proxyRequest struct {
 	Endpoint string `json:"endpoint"`
 	Kind     string `json:"kind" binding:"omitempty,oneof=residential mobile datacenter"`
 	Status   *string
+	// UserID: gán proxy cho người này. Chỉ admin.
+	UserID *uuid.UUID `json:"user_id"`
 }
 
 // proxyUpdateRequest tách riêng vì chỉ lúc SỬA mới đặt được trạng thái — và đó
@@ -147,7 +162,12 @@ type proxyUpdateRequest struct {
 }
 
 func (h *Scrape) ListProxies(c *gin.Context) {
-	items, err := h.svc.ListProxies(c.Request.Context(), queryString(c, "platform"))
+	owner, err := queryUUID(c, "owner")
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	items, err := h.svc.ListProxies(c.Request.Context(), actorOf(c), queryString(c, "platform"), owner)
 	if err != nil {
 		httpx.Fail(c, err)
 		return
@@ -161,11 +181,12 @@ func (h *Scrape) CreateProxy(c *gin.Context) {
 		httpx.BadRequest(c, err)
 		return
 	}
-	out, err := h.svc.CreateProxy(c.Request.Context(), middleware.ActorID(c), service.ProxyInput{
+	out, err := h.svc.CreateProxy(c.Request.Context(), actorOf(c), service.ProxyInput{
 		Label:    req.Label,
 		Platform: req.Platform,
 		Endpoint: req.Endpoint,
 		Kind:     req.Kind,
+		Owner:    req.UserID,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -185,11 +206,12 @@ func (h *Scrape) UpdateProxy(c *gin.Context) {
 		httpx.BadRequest(c, err)
 		return
 	}
-	out, err := h.svc.UpdateProxy(c.Request.Context(), middleware.ActorID(c), id, service.ProxyInput{
+	out, err := h.svc.UpdateProxy(c.Request.Context(), actorOf(c), id, service.ProxyInput{
 		Label:    req.Label,
 		Endpoint: req.Endpoint,
 		Kind:     req.Kind,
 		Status:   req.Status,
+		Owner:    req.UserID,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -204,7 +226,7 @@ func (h *Scrape) DeleteProxy(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	if err := h.svc.DeleteProxy(c.Request.Context(), middleware.ActorID(c), id); err != nil {
+	if err := h.svc.DeleteProxy(c.Request.Context(), actorOf(c), id); err != nil {
 		httpx.Fail(c, err)
 		return
 	}
@@ -220,7 +242,7 @@ func (h *Scrape) CookieSpecs(c *gin.Context) {
 }
 
 func (h *Scrape) Health(c *gin.Context) {
-	items, err := h.svc.Health(c.Request.Context())
+	items, err := h.svc.Health(c.Request.Context(), actorOf(c))
 	if err != nil {
 		httpx.Fail(c, err)
 		return
@@ -234,7 +256,7 @@ func (h *Scrape) HourlyLoad(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	items, err := h.svc.HourlyLoad(c.Request.Context(), days)
+	items, err := h.svc.HourlyLoad(c.Request.Context(), actorOf(c), days)
 	if err != nil {
 		httpx.Fail(c, err)
 		return
