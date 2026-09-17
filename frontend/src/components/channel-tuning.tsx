@@ -1,6 +1,9 @@
 "use client";
 
+import * as React from "react";
+
 import { Field, Input } from "@/components/ui/field";
+import { useChannelPostCap } from "@/hooks/use-api";
 
 /**
  * Ba con số hay bị nhầm với nhau, nên gom một chỗ và gọi tên theo đúng việc
@@ -82,12 +85,52 @@ export function ChannelTuning({
   onChange,
   /** Vòng quét đầu đã chạy xong -> số bài cũ không còn tác dụng gì nữa. */
   backfillDone = false,
+  /** Nền tảng của kênh — để KHOÁ ô nhập theo trần của nó. */
+  platform = "",
 }: {
   value: TuningDraft;
   onChange: (next: TuningDraft) => void;
   backfillDone?: boolean;
+  platform?: string;
 }) {
+  // Trần số bài/lượt quét của nền tảng này, lấy từ backend. null = không có
+  // trần (YouTube, TikTok — yt-dlp phân trang được).
+  const cap = useChannelPostCap(platform);
+
+  /**
+   * KHOÁ ô nhập thay vì cảnh báo.
+   *
+   * Trước đây form giữ nguyên con số 50 và hiện một dòng đỏ "nền tảng chỉ trả
+   * về 12". Người dùng vẫn lưu được 50, vòng quét vẫn chỉ mang về 12, và cảnh
+   * báo đó biến thành thứ đọc một lần rồi bỏ qua. Một con số không bao giờ đạt
+   * được thì không nên nhập vào được ngay từ đầu.
+   */
+  const clamp = (raw: string) => {
+    if (!cap) return raw;
+    const n = numOr(raw);
+    return n > cap.max_posts ? String(cap.max_posts) : raw;
+  };
+
   const set = (patch: Partial<TuningDraft>) => onChange({ ...value, ...patch });
+
+  // Nền tảng chỉ biết được sau khi người dùng gõ URL, nên giá trị điền sẵn (50)
+  // và giá trị của kênh cũ có thể đang vượt trần. Ép chúng xuống ngay khi biết
+  // trần là gì — nếu không, người dùng bấm Lưu mà không hề đụng vào hai ô này
+  // và con số quá trần vẫn đi thẳng xuống DB.
+  React.useEffect(() => {
+    if (!cap) return;
+    const scan = numOr(value.scanLimit);
+    // Backfill đã chạy xong thì KHÔNG đụng vào: con số đó chỉ còn là ghi chép
+    // về việc đã xảy ra, và sửa nó ở đây là lặng lẽ viết lại lịch sử của kênh
+    // trong lúc người dùng chỉ định sửa một thứ khác.
+    const backfill = backfillDone ? 0 : numOr(value.backfillLimit);
+    if (scan <= cap.max_posts && backfill <= cap.max_posts) return;
+    onChange({
+      ...value,
+      scanLimit: scan > cap.max_posts ? String(cap.max_posts) : value.scanLimit,
+      backfillLimit: backfill > cap.max_posts ? String(cap.max_posts) : value.backfillLimit,
+    });
+  }, [cap, value, onChange, backfillDone]);
 
   // Cửa sổ quét là TRẦN CỨNG của trần Bài Post: một vòng không thể tạo ra nhiều
   // bài hơn số bài nó nhìn thấy, nên số lớn hơn chỉ im lặng không có tác dụng.
@@ -101,14 +144,18 @@ export function ChannelTuning({
     <div className="grid gap-3 sm:grid-cols-3">
       <Field
         label="Số bài mỗi lần quét"
-        hint="Mỗi vòng quét nhìn bấy nhiêu bài mới nhất của kênh để dò bài mới. Xoá trắng = 0 = dùng mặc định hệ thống."
+        hint={
+          cap
+            ? `Tối đa ${cap.max_posts} với nền tảng này. ${cap.max_posts_reason ?? ""}`
+            : "Mỗi vòng quét nhìn bấy nhiêu bài mới nhất của kênh để dò bài mới. Xoá trắng = 0 = dùng mặc định hệ thống."
+        }
       >
         <Input
           type="number"
           min={0}
-          max={200}
+          max={cap ? cap.max_posts : 200}
           value={value.scanLimit}
-          onChange={(e) => set({ scanLimit: e.target.value })}
+          onChange={(e) => set({ scanLimit: clamp(e.target.value) })}
         />
       </Field>
 
@@ -117,16 +164,18 @@ export function ChannelTuning({
         hint={
           backfillDone
             ? "Đã lấy xong ở vòng quét đầu — đổi số này không còn tác dụng."
-            : "Lúc thêm kênh, lấy về bấy nhiêu bài đã đăng từ trước (mới nhất trước). 0 = chỉ lấy bài đăng sau khi thêm kênh."
+            : cap
+              ? `Tối đa ${cap.max_posts} với nền tảng này. ${cap.max_posts_reason ?? ""}`
+              : "Lúc thêm kênh, lấy về bấy nhiêu bài đã đăng từ trước (mới nhất trước). 0 = chỉ lấy bài đăng sau khi thêm kênh."
         }
       >
         <Input
           type="number"
           min={0}
-          max={200}
+          max={cap ? cap.max_posts : 200}
           disabled={backfillDone}
           value={value.backfillLimit}
-          onChange={(e) => set({ backfillLimit: e.target.value })}
+          onChange={(e) => set({ backfillLimit: clamp(e.target.value) })}
         />
       </Field>
 

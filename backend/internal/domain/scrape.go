@@ -260,3 +260,65 @@ type ScrapeOwner struct {
 	Breaking  *string
 	Scheduled *string
 }
+
+// ---------------------------------------------------------------------------
+// Trần số bài lấy được trong MỘT lượt quét
+// ---------------------------------------------------------------------------
+
+// channelPostCap — số bài nhiều nhất một lượt quét lấy được, theo từng nền tảng.
+//
+// Ba nền tảng chạy bằng via KHÔNG phân trang được: một lần gọi trả bấy nhiêu là
+// hết, và phần thiếu không có đường nào lấy. Đã đo trực tiếp ngày 17/09/2026:
+//
+//	Facebook   1–10 bài  — chỉ những bài Facebook dựng sẵn trong HTML trang;
+//	                       phần còn lại trang tự tải thêm khi cuộn.
+//	Instagram  12 bài    — web_profile_info trả đúng 12 và không nhận tham số
+//	                       xin thêm.
+//	X          ~20 bài   — endpoint syndication bỏ qua MỌI tham số phân trang
+//	                       (đã thử max_id / until_id / cursor / max_position /
+//	                       count=200: cùng một cửa sổ, cùng bài cũ nhất).
+//
+// Con số của X là số đo trên PHIÊN THẬT (hai tài khoản khác nhau cho 19 và 20).
+// Gọi cùng endpoint mà không có cookies thì trả về một bản đệm ~100 bài trộn
+// lẫn nhiều năm — đừng lấy con số đó làm trần, nó không phải thứ vòng quét nhận
+// được.
+//
+// YouTube và TikTok không có trần: yt-dlp phân trang được (`--playlist-end`).
+//
+// VÌ SAO LÀ DỮ LIỆU Ở ĐÂY chứ không phải một phương thức của adapter: giao diện
+// cần con số này để KHOÁ ô nhập ngay lúc thêm kênh, tức là trước khi có bất kỳ
+// lượt quét nào. Một giá trị tra được mà không cần dựng adapter là đúng hình
+// dạng của nhu cầu đó.
+var channelPostCap = map[Platform]struct {
+	max    int
+	reason string
+}{
+	PlatformFacebook: {10,
+		"Facebook chỉ dựng sẵn vài bài trong HTML của trang; phần còn lại trang tự tải thêm khi cuộn, không lấy được."},
+	PlatformInstagram: {12,
+		"Instagram trả đúng 12 bài mỗi lần gọi và không cho xin thêm."},
+	PlatformX: {20,
+		"X trả khoảng 20 bài mỗi lần gọi và bỏ qua mọi tham số phân trang."},
+}
+
+// MaxChannelPosts trả trần của một nền tảng, và lý do. 0 = không có trần.
+func MaxChannelPosts(p Platform) (int, string) {
+	limit, ok := channelPostCap[p]
+	if !ok {
+		return 0, ""
+	}
+	return limit.max, limit.reason
+}
+
+// ClampChannelLimit ép một con số người dùng đặt về đúng trần của nền tảng.
+//
+// Gọi ở ĐƯỜNG QUÉT chứ không chỉ ở form: kênh thêm từ trước khi có trần vẫn
+// đang giữ giá trị cũ (50), và xin 50 ở một nơi chỉ trả về 12 thì con số ghi
+// vào lịch sử quét là một lời hứa không ai giữ được.
+func ClampChannelLimit(p Platform, limit int) int {
+	max, _ := MaxChannelPosts(p)
+	if max > 0 && limit > max {
+		return max
+	}
+	return limit
+}

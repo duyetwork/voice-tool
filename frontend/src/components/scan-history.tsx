@@ -95,6 +95,11 @@ export function ScanHistoryPanel({ kind, listId }: { kind: ChannelKind; listId: 
             <Th>Bắt đầu</Th>
             <Th>Trạng thái</Th>
             <Th>Ai quét</Th>
+            {/* "Xin" đứng NGAY TRƯỚC "xét": câu hỏi đầu tiên khi thấy một con
+                số nhỏ luôn là "xin bao nhiêu", và hai cột cạnh nhau thì đọc
+                một lượt là hiểu, không phải đi tra cấu hình hiện tại của kênh
+                — vốn có thể đã bị sửa sau vòng quét đó. */}
+            <Th className="text-right">Bài xin</Th>
             <Th className="text-right">Bài xét</Th>
             <Th className="text-right">Bài post</Th>
             <Th className="text-right">Voice</Th>
@@ -102,7 +107,7 @@ export function ScanHistoryPanel({ kind, listId }: { kind: ChannelKind; listId: 
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <EmptyRow colSpan={6}>
+            <EmptyRow colSpan={7}>
               Kênh này chưa chạy vòng quét nào. Lịch sử chỉ giữ 30 ngày.
             </EmptyRow>
           ) : (
@@ -139,7 +144,22 @@ function ScanRunRow({ run }: { run: ScanRun }) {
           <span className="text-slate-500">Hệ thống (theo lịch)</span>
         )}
       </Td>
-      <Td className="text-right tabular-nums text-slate-600">{run.fetched}</Td>
+      <Td className="text-right tabular-nums text-slate-500">
+        {/* 0 = dòng có từ trước khi cột này tồn tại. Hiện dấu gạch chứ không
+            hiện số 0: "xin 0 bài" và "không rõ" là hai chuyện khác nhau. */}
+        {run.requested_limit > 0 ? run.requested_limit : "—"}
+      </Td>
+      <Td className="text-right tabular-nums text-slate-600">
+        {run.fetched}
+        {/* Xin nhiều mà lấy được ít là thứ cần thấy ngay: nền tảng không trả
+            đủ. Chỉ hiện khi vòng đó CHẠY ĐƯỢC — vòng lỗi thì đã có câu lỗi
+            riêng rồi, thêm dòng này chỉ làm nhiễu. */}
+        {run.status === "success" && run.requested_limit > run.fetched ? (
+          <div className="text-xs font-normal text-amber-700">
+            thiếu {run.requested_limit - run.fetched}
+          </div>
+        ) : null}
+      </Td>
       <Td className="text-right tabular-nums font-medium text-slate-900">{run.posts_created}</Td>
       <Td className="text-right tabular-nums text-slate-900">{run.voices_created}</Td>
     </tr>

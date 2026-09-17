@@ -9,9 +9,19 @@ import { Button } from "@/components/ui/button";
 import { useHealth } from "@/hooks/use-api";
 import { tokenStore } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { User } from "@/types/api";
+import type { Permissions, User } from "@/types/api";
 
-const NAV = [
+/**
+ * NAV — nhóm nào hiện với ai.
+ *
+ * `permission` là khoá trong Permissions của /me; không khai thì nhóm hiện với
+ * mọi vai trò đã đăng nhập.
+ */
+const NAV: {
+  group: string;
+  permission?: keyof Permissions;
+  items: { href: string; label: string }[];
+}[] = [
   {
     group: "Danh sách kênh",
     items: [
@@ -35,12 +45,20 @@ const NAV = [
   },
   {
     group: "Vận hành",
+    // Cả NHÓM ẩn với vai trò `user`. Ẩn theo nhóm chứ không theo từng mục:
+    // user không có việc gì ở đây, và một nhóm chỉ còn một mục lẻ thì tiêu đề
+    // "Vận hành" đứng trên nó không còn nghĩa gì.
+    //
+    // Editor thấy ĐỦ cả ba mục kể cả mục họ không sửa được — trang tự nói ra
+    // rằng cần quyền admin (xem NoPermission). Ẩn bớt thì họ không biết là có
+    // thứ đó tồn tại để mà đi xin quyền.
+    permission: "can_operate",
     items: [
       { href: "/audit-log", label: "Nhật ký thao tác" },
-      { href: "/users", label: "Tài khoản", adminOnly: true },
-      // Chuỗi dự phòng LLM + batch: cấu hình ảnh hưởng hạn mức và chi phí của
-      // cả hệ thống, nên chỉ admin.
-      { href: "/settings", label: "Cài đặt", adminOnly: true },
+      { href: "/users", label: "Tài khoản" },
+      // Via/proxy của chính mình: editor dùng được. Chuỗi dự phòng LLM, chi phí
+      // AI và thống kê bị chặn thì vẫn chỉ admin — chặn theo từng tab bên trong.
+      { href: "/settings", label: "Cài đặt" },
     ],
   },
   {
@@ -131,19 +149,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* Menu dài hơn màn hình thì tự cuộn TRONG sidebar, không kéo theo cả trang. */}
         <nav className={cn("flex-1 overflow-y-auto py-4", collapsed ? "px-1" : "px-3")}>
-          {NAV.map((section) => (
-            <div key={section.group} className="mb-5">
-              {collapsed ? (
-                // Thu gọn thì chỉ còn vạch ngăn giữa các nhóm: chữ nhóm không
-                // lọt vào 56px mà cắt cụt thì đọc thành chữ vô nghĩa.
-                <div className="mx-2 mb-2 border-t border-slate-200" />
-              ) : (
-                <p className="px-2 pb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                  {section.group}
-                </p>
-              )}
-              {section.items.map((item) =>
-                "adminOnly" in item && item.adminOnly && !perms.can_manage_users ? null : (
+          {NAV.filter((section) => !section.permission || perms[section.permission]).map(
+            (section) => (
+              <div key={section.group} className="mb-5">
+                {collapsed ? (
+                  // Thu gọn thì chỉ còn vạch ngăn giữa các nhóm: chữ nhóm không
+                  // lọt vào 56px mà cắt cụt thì đọc thành chữ vô nghĩa.
+                  <div className="mx-2 mb-2 border-t border-slate-200" />
+                ) : (
+                  <p className="px-2 pb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    {section.group}
+                  </p>
+                )}
+                {section.items.map((item) => (
                   <Link
                     key={item.href}
                     href={item.href}
@@ -157,13 +175,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     )}
                   >
                     {/* Thu gọn: 2 chữ cái đầu là đủ để nhận ra mục đang ở, còn
-                        tên đầy đủ nằm ở tooltip. */}
+                      tên đầy đủ nằm ở tooltip. */}
                     {collapsed ? item.label.slice(0, 2) : item.label}
                   </Link>
-                ),
-              )}
-            </div>
-          ))}
+                ))}
+              </div>
+            ),
+          )}
         </nav>
       </aside>
 

@@ -70,7 +70,7 @@ func (c *Catalog) UpdatePrompt(ctx context.Context, id uuid.UUID, name, content 
 func (c *Catalog) DeletePrompt(ctx context.Context, id uuid.UUID) error {
 	rows, err := c.q.DeletePrompt(ctx, id)
 	if err != nil {
-		return fmt.Errorf("xoá prompt: %w", err)
+		return wrapDB(err, "xoá prompt")
 	}
 	if rows == 0 {
 		return fmt.Errorf("%w: prompt %s", domain.ErrNotFound, id)

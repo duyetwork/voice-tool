@@ -21,10 +21,15 @@ export function CreatorFilter({
   value,
   onChange,
   className = "w-44",
+  label = "Người tạo",
+  mineLabel = "Của tôi",
 }: {
   value: string;
   onChange: (userID: string) => void;
   className?: string;
+  /** Đổi khi cột không gọi là "người tạo" — vd "Chủ sở hữu" ở bảng via/proxy. */
+  label?: string;
+  mineLabel?: string;
 }) {
   const me = useMe();
   const { perms } = usePermissions();
@@ -40,10 +45,10 @@ export function CreatorFilter({
 
   return (
     <div className={className}>
-      <label className="mb-1 block text-xs font-medium text-slate-500">Người tạo</label>
+      <label className="mb-1 block text-xs font-medium text-slate-500">{label}</label>
       <Select value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">Tất cả</option>
-        {myID ? <option value={myID}>Của tôi</option> : null}
+        {myID ? <option value={myID}>{mineLabel}</option> : null}
         {others.map((u) => (
           <option key={u.id} value={u.id}>
             {u.email}

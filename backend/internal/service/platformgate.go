@@ -40,13 +40,29 @@ type KeyGate struct {
 	gap   time.Duration
 	slots int
 
+	// overrides: nhịp riêng cho một vài khoá. Khai lúc dựng, không đổi sau đó,
+	// nên đọc không cần khoá.
+	//
+	// Có mặt vì "mỗi nền tảng một hạn mức" không có nghĩa là các hạn mức đó
+	// bằng nhau: Instagram siết chặt hơn hẳn Facebook và X (xem app.go). Hạ
+	// nhịp chung xuống mức của nền tảng khắt khe nhất thì hai nền tảng còn lại
+	// chậm đi mà chẳng vì lý do gì.
+	overrides map[string]gateSetting
+
 	mu    sync.Mutex
 	lanes map[string]*gateLane
 }
 
+type gateSetting struct {
+	gap   time.Duration
+	slots int
+}
+
 type gateLane struct {
 	// token sức chứa = số lần gọi đồng thời cho phép trên khoá này.
-	token  chan struct{}
+	token chan struct{}
+	// gap của riêng làn này — mặc định là gap của gate, trừ khi có override.
+	gap    time.Duration
 	mu     sync.Mutex
 	lastAt time.Time
 }
@@ -108,7 +124,7 @@ func (g *KeyGate) Acquire(ctx context.Context, key string) (func(), error) {
 
 	// Giữ nhịp: chưa đủ khoảng nghỉ kể từ lần trước thì chờ nốt phần còn thiếu.
 	lane.mu.Lock()
-	wait := g.gap - time.Since(lane.lastAt)
+	wait := lane.gap - time.Since(lane.lastAt)
 	lane.mu.Unlock()
 
 	if wait > 0 {
@@ -140,10 +156,35 @@ func (g *KeyGate) lane(key string) *gateLane {
 	defer g.mu.Unlock()
 	lane, ok := g.lanes[key]
 	if !ok {
-		lane = &gateLane{token: make(chan struct{}, g.slots)}
+		gap, slots := g.gap, g.slots
+		if o, has := g.overrides[key]; has {
+			gap, slots = o.gap, o.slots
+		}
+		lane = &gateLane{token: make(chan struct{}, slots), gap: gap}
 		g.lanes[key] = lane
 	}
 	return lane
+}
+
+// SetKeyPace đặt nhịp riêng cho một khoá. Gọi TRƯỚC khi gate được dùng — làn
+// đã dựng thì giữ nguyên nhịp cũ, vì đổi nhịp giữa chừng nghĩa là những request
+// đang xếp hàng chờ theo một luật khác với những request vừa vào.
+func (g *KeyGate) SetKeyPace(key string, gap time.Duration, slots int) {
+	if g == nil {
+		return
+	}
+	if gap < 0 {
+		gap = 0
+	}
+	if slots <= 0 {
+		slots = 1
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.overrides == nil {
+		g.overrides = map[string]gateSetting{}
+	}
+	g.overrides[key] = gateSetting{gap: gap, slots: slots}
 }
 
 // ---------------------------------------------------------------------------

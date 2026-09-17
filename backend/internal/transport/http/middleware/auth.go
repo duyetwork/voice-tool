@@ -110,6 +110,14 @@ func RequireDelete() gin.HandlerFunc {
 		"xoá dữ liệu cần quyền editor hoặc admin")
 }
 
+// RequireOperate: nhóm "Vận hành" — nhật ký thao tác, cài đặt, hạ tầng
+// via/proxy. Admin và editor; user thường không thấy nhóm này trên giao diện
+// và cũng không gọi thẳng API được.
+func RequireOperate() gin.HandlerFunc {
+	return requirePermission(func(r domain.Role) bool { return r.CanOperate() },
+		"mục Vận hành cần quyền editor hoặc admin")
+}
+
 // RequireAdmin dành cho quản lý tài khoản.
 func RequireAdmin() gin.HandlerFunc {
 	return requirePermission(func(r domain.Role) bool { return r.CanManageUsers() },

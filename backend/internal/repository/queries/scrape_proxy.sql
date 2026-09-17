@@ -3,19 +3,29 @@
 -- ---------------------------------------------------------------------------
 
 -- name: CreateScrapeProxy :one
-INSERT INTO scrape_proxy (label, platform, endpoint_encrypted, endpoint_masked, kind, created_by)
-VALUES ($1, sqlc.narg('platform'), $2, $3, $4, $5)
+-- user_id là CHỦ SỞ HỮU, created_by là người khai — xem CreateScrapeVia.
+INSERT INTO scrape_proxy (label, platform, endpoint_encrypted, endpoint_masked, kind, user_id, created_by)
+VALUES ($1, sqlc.narg('platform'), $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: GetScrapeProxy :one
 SELECT * FROM scrape_proxy WHERE id = $1;
 
 -- name: ListScrapeProxies :many
-SELECT * FROM scrape_proxy
-WHERE sqlc.narg('platform')::varchar IS NULL
-   OR platform IS NULL
-   OR platform = sqlc.narg('platform')
-ORDER BY label;
+-- `owner` NULL = xem tất cả (chỉ admin) — xem ListScrapeVias.
+--
+-- Bộ lọc nền tảng nằm trong DẤU NGOẶC riêng: không có nó thì `OR platform IS
+-- NULL` cũng nuốt luôn điều kiện chủ sở hữu, và mọi proxy dùng chung của người
+-- khác lọt vào danh sách của một editor.
+SELECT p.*, owner.email AS user_email, author.email AS created_by_email
+FROM scrape_proxy p
+JOIN app_user owner  ON owner.id  = p.user_id
+JOIN app_user author ON author.id = p.created_by
+WHERE (sqlc.narg('platform')::varchar IS NULL
+       OR p.platform IS NULL
+       OR p.platform = sqlc.narg('platform'))
+  AND (sqlc.narg('owner')::uuid IS NULL OR p.user_id = sqlc.narg('owner'))
+ORDER BY p.label;
 
 -- name: ClaimScrapeProxy :one
 -- Nhận proxy cho MỘT request: nghỉ lâu nhất trước. Chọn-và-đánh-dấu trong một
@@ -45,6 +55,8 @@ RETURNING *;
 UPDATE scrape_proxy
 SET label              = COALESCE(sqlc.narg('label'), label),
     kind               = COALESCE(sqlc.narg('kind'), kind),
+    -- Gán proxy cho người khác; chỉ admin gửi được (service chặn).
+    user_id            = COALESCE(sqlc.narg('user_id'), user_id),
     endpoint_encrypted = COALESCE(sqlc.narg('endpoint_encrypted'), endpoint_encrypted),
     endpoint_masked    = COALESCE(sqlc.narg('endpoint_masked'), endpoint_masked),
     status = CASE
@@ -149,12 +161,18 @@ WHERE (sqlc.narg('via_id')::uuid IS NULL OR l.via_id = sqlc.narg('via_id'))
 -- kênh quét 1 lần/ngày mà tất cả rơi vào cùng một khung giờ thì nền tảng nhìn
 -- thấy một đợt tấn công, còn bảng thống kê lỗi thì chỉ nói "bị chặn" mà không
 -- nói vì sao — cột giờ này mới nói ra.
-SELECT EXTRACT(HOUR FROM created_at)::int AS hour,
-       platform,
+--
+-- `owner` NULL = cả hệ thống (chỉ admin); ngược lại chỉ đếm lượt đi qua via của
+-- người đó. Biểu đồ nói về NHỊP QUÉT, và nhịp của cả hệ thống không phải thứ
+-- một editor sửa được — họ chỉ rải lại lịch các kênh mình quét.
+SELECT EXTRACT(HOUR FROM l.created_at)::int AS hour,
+       l.platform,
        COUNT(*)::bigint AS total,
-       COUNT(*) FILTER (WHERE result <> 'success')::bigint AS failed
-FROM via_usage_log
-WHERE created_at >= now() - (sqlc.arg('days')::int * interval '1 day')
+       COUNT(*) FILTER (WHERE l.result <> 'success')::bigint AS failed
+FROM via_usage_log l
+JOIN scrape_via v ON v.id = l.via_id
+WHERE l.created_at >= now() - (sqlc.arg('days')::int * interval '1 day')
+  AND (sqlc.narg('owner')::uuid IS NULL OR v.user_id = sqlc.narg('owner'))
 GROUP BY 1, 2
 ORDER BY 1, 2;
 

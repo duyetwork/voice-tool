@@ -166,7 +166,7 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 		CountryID:      in.CountryID,
 	})
 	if err != nil {
-		return repository.ListBreaking{}, fmt.Errorf("tạo list_breaking: %w", err)
+		return repository.ListBreaking{}, wrapDB(err, "tạo list_breaking")
 	}
 
 	l.audit.Record(ctx, actor, domain.AuditCreate, domain.ObjectListBreaking, list.ID, map[string]any{
@@ -433,7 +433,7 @@ func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in Break
 func (l *List) DeleteBreaking(ctx context.Context, actor, id uuid.UUID) error {
 	rows, err := l.q.DeleteListBreaking(ctx, id)
 	if err != nil {
-		return fmt.Errorf("xoá list_breaking: %w", err)
+		return wrapDB(err, "xoá list_breaking")
 	}
 	if rows == 0 {
 		return fmt.Errorf("%w: list_breaking %s", domain.ErrNotFound, id)
@@ -534,7 +534,7 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 		CountryID:      in.CountryID,
 	})
 	if err != nil {
-		return repository.ListScheduled{}, fmt.Errorf("tạo list_scheduled: %w", err)
+		return repository.ListScheduled{}, wrapDB(err, "tạo list_scheduled")
 	}
 
 	// Quét NGAY, không chờ vòng đầu theo lịch: "Số bài cũ của kênh" là thứ
@@ -829,7 +829,7 @@ func (l *List) RunScheduled(ctx context.Context, actor, id uuid.UUID) error {
 func (l *List) DeleteScheduled(ctx context.Context, actor, id uuid.UUID) error {
 	rows, err := l.q.DeleteListScheduled(ctx, id)
 	if err != nil {
-		return fmt.Errorf("xoá list_scheduled: %w", err)
+		return wrapDB(err, "xoá list_scheduled")
 	}
 	if rows == 0 {
 		return fmt.Errorf("%w: list_scheduled %s", domain.ErrNotFound, id)

@@ -75,6 +75,23 @@ func (r channelCountryRequest) country() (*int64, bool) {
 	return r.CountryID, true
 }
 
+// countryOnCreate là giá trị ghi xuống DB lúc TẠO kênh. Lúc tạo không có gì để
+// "ghi đè" nên cờ của country() là thừa, chỉ cần giá trị.
+//
+// PHẢI đi qua đây chứ không dùng thẳng req.CountryID. Giao diện gửi
+// `country_id: 0` khi người dùng không chọn nước — 0 là quy ước "không có
+// nước", không phải một id. Đưa thẳng 0 xuống INSERT thì Postgres từ chối bằng
+//
+//	insert or update on table "list_scheduled" violates foreign key
+//	constraint "list_scheduled_country_id_fkey" — Key (country_id)=(0)
+//
+// và người dùng không tạo được kênh nào nếu họ bỏ trống ô Quốc gia. Đường SỬA
+// đã gọi country() từ đầu nên không dính; chỉ hai đường TẠO quên gọi.
+func (r channelCountryRequest) countryOnCreate() *int64 {
+	value, _ := r.country()
+	return value
+}
+
 // clearMaxPosts dịch giá trị max_posts_per_run nhận từ client thành cặp
 // (giá trị, cờ xoá).
 //
@@ -152,7 +169,7 @@ func (h *List) CreateBreaking(c *gin.Context) {
 		MaxPostsPerRun: req.MaxPostsPerRun,
 		LLMAPISetID:    req.LLMAPISetID,
 		Schedule:       req.Schedule.schedule(),
-		CountryID:      req.CountryID,
+		CountryID:      req.countryOnCreate(),
 	}
 	if req.ScanInterval != nil {
 		d, err := parseDuration(*req.ScanInterval)
@@ -426,7 +443,7 @@ func (h *List) CreateScheduled(c *gin.Context) {
 		BackfillLimit:  req.BackfillLimit,
 		LLMAPISetID:    req.LLMAPISetID,
 		Schedule:       req.Schedule.schedule(),
-		CountryID:      req.CountryID,
+		CountryID:      req.countryOnCreate(),
 	})
 	if err != nil {
 		httpx.Fail(c, err)

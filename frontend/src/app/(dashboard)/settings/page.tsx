@@ -4,7 +4,7 @@ import * as React from "react";
 
 import { AIUsageSection } from "@/components/ai-usage";
 import { ErrorNote, PageHeader } from "@/components/page-header";
-import { usePermissions } from "@/components/permission";
+import { NoPermission, usePermissions } from "@/components/permission";
 import { ScrapeInfraSection } from "@/components/scrape-infra";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,23 +16,26 @@ import { platformLabel } from "@/lib/utils";
 import type { LLMBatchConfig, LLMChainStep, LLMProvider } from "@/types/api";
 
 /**
- * Cài đặt — cấu hình ảnh hưởng HẠN MỨC VÀ CHI PHÍ của cả hệ thống, nên chỉ
- * admin vào được (backend chặn bằng middleware, đây chỉ là lớp hiển thị).
- *
- * Bốn tab, bốn mối quan tâm tách rời nhau:
+ * Cài đặt — bốn tab, bốn mối quan tâm tách rời nhau:
  *
  *   1. LLM        — chuỗi dự phòng khi một nhà hết hạn mức, và cấu hình batch.
  *   2. Chi phí AI — token/ký tự đã tiêu, để biết mục trên có rẻ đi thật không.
  *   3. Via & Proxy— phiên đăng nhập + lối ra mạng để quét Facebook/X/Instagram.
  *   4. Bị chặn    — số lần nền tảng chặn ta, dữ liệu để quyết định mua proxy.
- */
-/**
- * Bốn nhóm cài đặt, mỗi nhóm một tab.
  *
- * Trước đây cả bốn xếp dọc trên một trang: bảng chi phí AI và biểu đồ lượt quét
- * đều dài, nên thứ cần xem gần như luôn nằm dưới màn hình và phải cuộn đi tìm.
- * Tệ hơn, chúng thuộc bốn mối quan tâm khác hẳn nhau — không ai vào đây để xem
- * cả bốn cùng lúc.
+ * QUYỀN VÀO KHÔNG CÒN LÀ "chỉ admin" mà xét theo TỪNG TAB, vì bốn tab này trả
+ * lời cho hai loại câu hỏi khác nhau:
+ *
+ *   - Via & Proxy là tài sản CỦA TỪNG NGƯỜI: editor nuôi via của chính họ, và
+ *     bắt họ nhờ admin mỗi lần một via chết là biến admin thành nút thắt cổ chai
+ *     ở đúng việc phải làm hằng ngày.
+ *   - Ba tab còn lại là cấu hình và số liệu của CẢ HỆ THỐNG — vẫn chỉ admin.
+ *
+ * Tab bị chặn vẫn HIỆN chứ không biến mất: một hàng tab đổi số lượng theo vai
+ * trò khiến hai người nói chuyện với nhau về "tab thứ ba" mà không cùng nghĩa.
+ *
+ * Vì sao TÁCH TAB chứ không xếp dọc một trang như trước: bảng chi phí AI và
+ * biểu đồ lượt quét đều dài, nên thứ cần xem gần như luôn nằm dưới màn hình.
  *
  * `description` đi kèm từng tab chứ không phải một câu chung ở đầu trang: câu
  * chung phải gộp bốn việc lại và cuối cùng không mô tả đúng việc nào.
@@ -42,11 +45,13 @@ const TABS = [
     id: "llm",
     label: "LLM",
     description: "Chuỗi dự phòng khi một nhà cung cấp hết hạn mức, và cấu hình gom batch.",
+    adminOnly: true,
   },
   {
     id: "cost",
     label: "Chi phí AI",
     description: "Token và ký tự đã tiêu, theo model và theo người dùng.",
+    adminOnly: true,
   },
   {
     id: "scrape",
@@ -54,40 +59,49 @@ const TABS = [
     description:
       "Phiên đăng nhập và lối ra mạng dùng để quét kênh Facebook / X / Instagram. " +
       "Via chết dần theo thời gian dùng — đây là chỗ để nhìn thấy nó và thay.",
+    adminOnly: false,
   },
   {
     id: "blocked",
     label: "Bị chặn",
     description: "Số lần từng nền tảng chặn hệ thống, đếm theo ngày.",
+    adminOnly: true,
   },
 ] as const;
 
 type TabID = (typeof TABS)[number]["id"];
 
 export default function SettingsPage() {
-  const { role, loading } = usePermissions();
-  const [tab, setTab] = React.useState<TabID>("llm");
+  const { role, perms, loading } = usePermissions();
+  const isAdmin = role === "admin";
+  // Editor mở trang là vào thẳng tab duy nhất họ dùng được. Để mặc định ở "LLM"
+  // thì thứ họ thấy đầu tiên là một dòng từ chối, và mục hữu ích thì phải tự đi
+  // tìm.
+  const [tab, setTab] = React.useState<TabID>(() => (isAdmin ? "llm" : "scrape"));
+  const pickedTab = React.useRef(false);
+  React.useEffect(() => {
+    // `role` về sau lần render đầu (đang chờ /me), nên chốt lại một lần khi đã
+    // biết vai trò. Cờ `pickedTab` để việc này không giẫm lên lựa chọn của
+    // người dùng ở những lần render sau.
+    if (loading || pickedTab.current) return;
+    pickedTab.current = true;
+    setTab(role === "admin" ? "llm" : "scrape");
+  }, [loading, role]);
 
   if (loading) {
     return <p className="text-sm text-slate-500">Đang tải…</p>;
   }
-  if (role !== "admin") {
+  if (!perms.can_operate) {
     return (
       <>
         <PageHeader title="Cài đặt" />
-        <Card>
-          <CardBody>
-            <p className="text-sm text-slate-600">
-              Mục này chỉ dành cho admin: chuỗi dự phòng và batch quyết định hạn mức và chi phí của
-              cả hệ thống, không phải cấu hình của riêng ai.
-            </p>
-          </CardBody>
-        </Card>
+        <NoPermission>Cài đặt thuộc mục Vận hành — cần quyền editor hoặc admin.</NoPermission>
       </>
     );
   }
 
   const current = TABS.find((t) => t.id === tab) ?? TABS[0];
+  const blocked = current.adminOnly && !isAdmin;
 
   return (
     <>
@@ -115,10 +129,19 @@ export default function SettingsPage() {
           mà vẫn gọi API là ba lượt gọi không ai nhìn — trong đó có hai bảng tự
           làm mới mỗi 30 giây. */}
       <div className="space-y-6">
-        {tab === "llm" ? <LLMSection /> : null}
-        {tab === "cost" ? <AIUsageSection /> : null}
-        {tab === "scrape" ? <ScrapeInfraSection /> : null}
-        {tab === "blocked" ? <FetchStatsSection /> : null}
+        {blocked ? (
+          <NoPermission title={`Mục "${current.label}" chỉ dành cho admin`}>
+            Đây là cấu hình và số liệu của cả hệ thống — hạn mức, chi phí, mức độ bị nền tảng chặn —
+            không phải cấu hình của riêng ai. Via và proxy của bạn nằm ở tab “Via &amp; Proxy”.
+          </NoPermission>
+        ) : (
+          <>
+            {tab === "llm" ? <LLMSection /> : null}
+            {tab === "cost" ? <AIUsageSection /> : null}
+            {tab === "scrape" ? <ScrapeInfraSection isAdmin={isAdmin} /> : null}
+            {tab === "blocked" ? <FetchStatsSection /> : null}
+          </>
+        )}
       </div>
     </>
   );

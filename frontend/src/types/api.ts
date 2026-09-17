@@ -40,6 +40,14 @@ export interface Permissions {
   can_write: boolean;
   can_delete: boolean;
   can_manage_users: boolean;
+  /**
+   * Mở nhóm "Vận hành" trên sidebar (nhật ký thao tác, cài đặt, via/proxy).
+   * Admin và editor.
+   *
+   * Đi từ server chứ không suy từ `role` ở đây: luật phân quyền có đúng một
+   * nơi định nghĩa, và khi nó đổi thì giao diện không phải sửa theo.
+   */
+  can_operate: boolean;
 }
 
 export interface Me {
@@ -768,6 +776,11 @@ export interface ScanRun {
    * mới là thứ phân biệt hai trường hợp đó.
    */
   triggered_by_email: string;
+  /**
+   * Số bài vòng này XIN nền tảng, sau khi đã ép về trần của nền tảng đó.
+   * 0 = dòng lịch sử có từ trước khi cột này tồn tại.
+   */
+  requested_limit: number;
   /** Số bài vòng này thật sự đem ra xét. */
   fetched: number;
   posts_created: number;
@@ -819,6 +832,12 @@ export interface Via {
   platform: string;
   label: string;
   status: ViaStatus;
+  /** CHỦ SỞ HỮU — người thấy và sửa được via này. Admin thấy của mọi người. */
+  user_id: string;
+  user_email: string;
+  /** NGƯỜI KHAI — khác chủ sở hữu khi admin thêm hộ. */
+  created_by: string;
+  created_by_email: string;
   /** Số lỗi "đòi đăng nhập" liên tiếp; đủ ngưỡng thì via vào cooldown. */
   consecutive_login_errors: number;
   cooldown_until: string | null;
@@ -841,6 +860,10 @@ export interface ScrapeProxy {
   endpoint: string;
   kind: ProxyKind;
   status: ProxyStatus;
+  user_id: string;
+  user_email: string;
+  created_by: string;
+  created_by_email: string;
   consecutive_blocks: number;
   used_today: number;
   errors_today: number;

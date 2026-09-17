@@ -215,6 +215,16 @@ func (r Role) CanDelete() bool { return r == RoleAdmin || r == RoleEditor }
 // nhất phân biệt admin với editor.
 func (r Role) CanManageUsers() bool { return r == RoleAdmin }
 
+// CanOperate: vào được nhóm "Vận hành" — nhật ký thao tác, cài đặt, hạ tầng
+// via/proxy. Admin và editor.
+//
+// Vì sao KHÔNG dùng lại CanDelete dù hiện tại hai hàm trả về cùng một thứ: hai
+// câu hỏi khác nhau chỉ đang tình cờ có cùng câu trả lời. Ngày nào đó cho user
+// xoá voice của chính họ thì CanDelete phải mở ra, và nếu route vận hành bám
+// vào nó thì user cũng vào luôn nhật ký thao tác — một sự nới quyền không ai
+// chủ ý làm và không ai thấy trong diff.
+func (r Role) CanOperate() bool { return r == RoleAdmin || r == RoleEditor }
+
 // PostTitle chuẩn hoá tiêu đề Bài Post. Giữ nguyên xuống dòng: đây là nội dung
 // bài chứ không phải một dòng tiêu đề, ngắt dòng là một phần của nội dung.
 func PostTitle(title string) string {

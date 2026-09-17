@@ -73,18 +73,23 @@ SET finished_at    = now(),
     posts_created  = $3,
     voices_created = $4,
     skipped        = $5,
-    error          = $6
-WHERE id = $7
+    -- Số bài vòng này ĐÃ XIN nền tảng, sau khi đã ép về trần của nền tảng đó.
+    -- Ghi lúc đóng vòng chứ không lúc mở: lúc mở chưa biết đây là vòng quét đầu
+    -- (dùng backfill_limit) hay vòng thường (dùng scan_limit).
+    requested_limit = $6,
+    error          = $7
+WHERE id = $8
 `
 
 type FinishScanRunParams struct {
-	Status        string    `json:"status"`
-	Fetched       int32     `json:"fetched"`
-	PostsCreated  int32     `json:"posts_created"`
-	VoicesCreated int32     `json:"voices_created"`
-	Skipped       int32     `json:"skipped"`
-	Error         *string   `json:"error"`
-	ID            uuid.UUID `json:"id"`
+	Status         string    `json:"status"`
+	Fetched        int32     `json:"fetched"`
+	PostsCreated   int32     `json:"posts_created"`
+	VoicesCreated  int32     `json:"voices_created"`
+	Skipped        int32     `json:"skipped"`
+	RequestedLimit int32     `json:"requested_limit"`
+	Error          *string   `json:"error"`
+	ID             uuid.UUID `json:"id"`
 }
 
 // Đóng vòng quét kèm kết quả. Ghi một lần ở cuối chứ không cộng dồn từng bài:
@@ -97,6 +102,7 @@ func (q *Queries) FinishScanRun(ctx context.Context, arg FinishScanRunParams) er
 		arg.PostsCreated,
 		arg.VoicesCreated,
 		arg.Skipped,
+		arg.RequestedLimit,
 		arg.Error,
 		arg.ID,
 	)
@@ -104,7 +110,7 @@ func (q *Queries) FinishScanRun(ctx context.Context, arg FinishScanRunParams) er
 }
 
 const listScanRuns = `-- name: ListScanRuns :many
-SELECT r.id, r.list_breaking_id, r.list_scheduled_id, r.started_at, r.finished_at, r.status, r.trigger_kind, r.triggered_by, r.fetched, r.posts_created, r.voices_created, r.skipped, r.error, u.email AS triggered_by_email
+SELECT r.id, r.list_breaking_id, r.list_scheduled_id, r.started_at, r.finished_at, r.status, r.trigger_kind, r.triggered_by, r.fetched, r.posts_created, r.voices_created, r.skipped, r.error, r.requested_limit, u.email AS triggered_by_email
 FROM scan_run r
 LEFT JOIN app_user u ON u.id = r.triggered_by
 WHERE ($1::uuid  IS NOT NULL AND r.list_breaking_id  = $1)
@@ -134,6 +140,7 @@ type ListScanRunsRow struct {
 	VoicesCreated    int32      `json:"voices_created"`
 	Skipped          int32      `json:"skipped"`
 	Error            *string    `json:"error"`
+	RequestedLimit   int32      `json:"requested_limit"`
 	TriggeredByEmail *string    `json:"triggered_by_email"`
 }
 
@@ -166,6 +173,7 @@ func (q *Queries) ListScanRuns(ctx context.Context, arg ListScanRunsParams) ([]L
 			&i.VoicesCreated,
 			&i.Skipped,
 			&i.Error,
+			&i.RequestedLimit,
 			&i.TriggeredByEmail,
 		); err != nil {
 			return nil, err
@@ -185,7 +193,7 @@ INSERT INTO scan_run (
   $1, $2,
   $3, $4
 )
-RETURNING id, list_breaking_id, list_scheduled_id, started_at, finished_at, status, trigger_kind, triggered_by, fetched, posts_created, voices_created, skipped, error
+RETURNING id, list_breaking_id, list_scheduled_id, started_at, finished_at, status, trigger_kind, triggered_by, fetched, posts_created, voices_created, skipped, error, requested_limit
 `
 
 type StartScanRunParams struct {
@@ -219,6 +227,7 @@ func (q *Queries) StartScanRun(ctx context.Context, arg StartScanRunParams) (Sca
 		&i.VoicesCreated,
 		&i.Skipped,
 		&i.Error,
+		&i.RequestedLimit,
 	)
 	return i, err
 }

@@ -151,25 +151,41 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		ViaCooldown:    cfg.ViaCooldown,
 		ProxyBlocks:    cfg.ProxyBlockThreshold,
 	})
-	var facebookPool domain.ScrapePool
-	if cfg.FacebookChannelScan {
-		facebookPool = scrapePool
-	} else {
-		log.Info("FACEBOOK_CHANNEL_SCAN=false — chưa cho thêm kênh Facebook; " +
-			"bật sau khi đã thử via thật trên một trang thật")
+	// poolIf trả pool khi cờ của nền tảng đó đang bật, nil khi tắt — và nil
+	// chính là thứ giữ nguyên cờ chặn thêm kênh. Một hàm dùng chung cho cả ba
+	// để không có nền tảng nào lỡ được bật bằng một nhánh if viết thiếu.
+	fetcher := platformadapter.NewScrapeFetcher()
+	poolIf := func(enabled bool, flag string, p domain.Platform) domain.ScrapePool {
+		if enabled {
+			return scrapePool
+		}
+		log.Info(flag + "=false — chưa cho thêm kênh " + string(p) +
+			"; bật sau khi đã thử via thật trên một trang thật")
+		return nil
 	}
+
 	facebook := platformadapter.NewFacebookScrape(
 		platformadapter.NewFacebook(runner, "", proxyFor(domain.PlatformFacebook)),
-		facebookPool,
-		platformadapter.NewScrapeFetcher(),
+		poolIf(cfg.FacebookChannelScan, "FACEBOOK_CHANNEL_SCAN", domain.PlatformFacebook),
+		fetcher,
+	)
+	instagram := platformadapter.NewInstagramScrape(
+		platformadapter.NewInstagram(runner, "", proxyFor(domain.PlatformInstagram)),
+		poolIf(cfg.InstagramChannelScan, "INSTAGRAM_CHANNEL_SCAN", domain.PlatformInstagram),
+		fetcher,
+	)
+	x := platformadapter.NewXScrape(
+		platformadapter.NewX(runner, "", proxyFor(domain.PlatformX)),
+		poolIf(cfg.XChannelScan, "X_CHANNEL_SCAN", domain.PlatformX),
+		fetcher,
 	)
 
 	platforms := platformadapter.NewRegistry(
 		platformadapter.NewYouTube(runner, "", proxyFor(domain.PlatformYouTube)),
 		facebook,
 		platformadapter.NewTikTok(runner, "", proxyFor(domain.PlatformTikTok)),
-		platformadapter.NewInstagram(runner, "", proxyFor(domain.PlatformInstagram)),
-		platformadapter.NewX(runner, "", proxyFor(domain.PlatformX)),
+		instagram,
+		x,
 	)
 	prober := audio.NewProber(runner, "")
 
@@ -236,6 +252,19 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// Một lần tải trang ở đây mang theo cookies của tài khoản thật, nên nó bị
 	// soi kỹ hơn hẳn một lần yt-dlp lấy video ẩn danh.
 	scrapeGate := service.NewKeyGate(cfg.ScrapeMinGap, cfg.ScrapeConcurrency)
+	// Instagram đi làn CHẬM RIÊNG: 1 request tại một thời điểm, nghỉ 30 giây.
+	//
+	// Số đo ngày 17/09/2026: với nhịp chung (3 request song song, nghỉ 5 giây)
+	// endpoint web_profile_info trả 429 "Please wait a few minutes before you
+	// try again" gần như mọi lượt — 7 lần liên tiếp trong nhật ký. Facebook và
+	// X cùng nhịp đó thì không sao, nên hạ nhịp chung là phạt nhầm hai nền tảng
+	// đang chạy được.
+	//
+	// 30 giây không phải con số thiêng: nó là mức đủ thưa để một vòng quét vài
+	// kênh Instagram không còn trông như một đợt dồn dập, mà vẫn quét hết trong
+	// ngày. Hạn mức thật của Instagram không công bố, nên đây là mức khởi đầu
+	// phải đo lại — nếu vẫn 429 thì thưa thêm, hoặc nuôi thêm via để chia tải.
+	scrapeGate.SetKeyPace(string(domain.PlatformInstagram), 30*time.Second, 1)
 	fetchStats := service.NewFetchStats(queries, log)
 	multimeCreds := service.NewMultimeCreds(queries, multimeAuth, box, log)
 	multimeUsers := service.NewMultimeUsers(multimeDir, multimeCreds)

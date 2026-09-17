@@ -101,6 +101,10 @@ func NewRouter(d RouterDeps) *gin.Engine {
 				"can_write":        role.CanWrite(),
 				"can_delete":       role.CanDelete(),
 				"can_manage_users": role.CanManageUsers(),
+				// can_operate mở nhóm "Vận hành" trên sidebar. Gửi xuống thay vì
+				// để frontend suy từ role: một chỗ duy nhất định nghĩa quyền, và
+				// khi luật đổi thì giao diện không cần biết.
+				"can_operate": role.CanOperate(),
 			},
 		})
 	})
@@ -213,6 +217,17 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	remover := api.Group("", middleware.Auth(d.Tokens), middleware.RequireDelete())
 	registerDelete(remover, d)
 
+	// admin + editor: nhóm "Vận hành" — nhật ký thao tác và hạ tầng via/proxy.
+	//
+	// Nhật ký thao tác chuyển từ "mọi vai trò đọc được" sang đây cùng lúc với
+	// via/proxy: cả nhóm Vận hành bị ẩn khỏi sidebar của vai trò `user`, và một
+	// mục bị ẩn mà gọi thẳng URL vẫn ra dữ liệu thì việc ẩn đó chỉ là trang trí.
+	operate := api.Group("", middleware.Auth(d.Tokens), middleware.RequireOperate())
+	handler.NewAuditLog(d.Audit).Register(operate)
+	// Via/proxy có CHỦ SỞ HỮU: editor quản lý của chính mình, admin thấy tất
+	// cả. Phân định nằm trong ScrapeAdmin, không phải ở đây.
+	handler.NewScrape(d.ScrapeAdmin).Register(operate)
+
 	// admin: quản lý tài khoản + cấu hình chung.
 	admin := api.Group("", middleware.Auth(d.Tokens), middleware.RequireAdmin())
 	handler.NewUser(d.User).Register(admin)
@@ -220,8 +235,6 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	// Cài đặt: chuỗi dự phòng LLM + batch. Chặn bằng middleware được vì đây là
 	// cấu hình của cả hệ thống, không có "chủ sở hữu" nào để so như API key.
 	settings := handler.NewSettings(d.Settings, d.FetchStats, d.AIUsage)
-	// Via/proxy: bí mật đăng nhập và lối ra mạng của cả hệ thống — admin.
-	handler.NewScrape(d.ScrapeAdmin).Register(admin)
 
 	admin.GET("/settings", settings.Get)
 	admin.PATCH("/settings", settings.Update)
@@ -274,7 +287,6 @@ func registerReadOnly(g *gin.RouterGroup, d RouterDeps) {
 	g.GET("/llm-api-sets", llmSets.List)
 	g.GET("/llm-api-sets/:id", llmSets.Get)
 
-	handler.NewAuditLog(d.Audit).Register(g)
 }
 
 // registerWrite gắn các route tạo/sửa/chạy/đăng — cần role user hoặc admin.

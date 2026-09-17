@@ -24,15 +24,24 @@ access token của người tạo ra voice đó, nên bài xuất hiện trên m
 
 ## Phân quyền
 
-| Role | Xem | Tạo/sửa/chạy/đăng voice | Xoá | Cấp quyền |
-|---|---|---|---|---|
-| `user` | ✅ | ✅ | ❌ | ❌ |
-| `editor` | ✅ | ✅ | ✅ | ❌ |
-| `admin` | ✅ | ✅ | ✅ | ✅ |
+| Role | Xem | Tạo/sửa/chạy/đăng voice | Xoá | Vận hành | Cấp quyền |
+|---|---|---|---|---|---|
+| `user` | ✅ | ✅ | ❌ | ❌ | ❌ |
+| `editor` | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `admin` | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 Không có vai trò chỉ-xem: hệ thống không có đăng ký, đăng nhập được bằng tài
-khoản multime nghĩa là dùng được. `editor` khác `admin` duy nhất ở quyền cấp
-quyền.
+khoản multime nghĩa là dùng được.
+
+**Vận hành** (`can_operate`) mở nhật ký thao tác và hạ tầng via/proxy. `user`
+không vào được, và trên giao diện cả nhóm "Vận hành" bị ẩn khỏi sidebar — ẩn ở
+UI đi kèm chặn ở API (`middleware.RequireOperate`), vì một mục bị ẩn mà gõ thẳng
+URL vẫn ra dữ liệu thì việc ẩn đó chỉ là trang trí.
+
+`editor` khác `admin` ở hai chỗ: cấp quyền, và phạm vi nhìn thấy via/proxy
+(editor chỉ thấy của chính mình). Trong màn Cài đặt, editor dùng được tab "Via &
+Proxy"; ba tab còn lại (LLM, Chi phí AI, Bị chặn) là cấu hình/số liệu của cả hệ
+thống nên vẫn chỉ admin — tab vẫn hiện, bên trong là dòng báo không có quyền.
 
 Tài khoản đăng nhập lần đầu nhận role `DEFAULT_USER_ROLE` (mặc định `user`).
 Email trong `BOOTSTRAP_ADMIN_EMAIL` luôn được nâng lên `admin`.
@@ -87,7 +96,7 @@ Cùng bộ tham số cho mọi endpoint danh sách: `sort` (cột) + `dir` (`asc
 |---|---|---|---|
 | POST | `/auth/login` | `email`, `password` (tài khoản multime) | `{ token: {access_token, refresh_token, expires_in}, user: {id, email, full_name, avatar, role} }` |
 | POST | `/auth/refresh` | `refresh_token` | `{ token }` — làm mới JWT của voice-tool, không liên quan token multime |
-| GET | `/me` | — | `{ id, role, permissions: {can_write, can_delete, can_manage_users} }` |
+| GET | `/me` | — | `{ id, role, permissions: {can_write, can_delete, can_operate, can_manage_users} }` |
 
 Không có `POST /auth/register`. Lỗi đăng nhập:
 
@@ -597,21 +606,63 @@ Việc quét chúng chạy bằng **via** (phiên đăng nhập) đi qua **proxy
 > biệt hoàn toàn với Business account dùng để đăng bài: nếu hai bên chạm nhau,
 > Meta khoá luôn tài khoản đăng bài.
 
-Toàn bộ route đều **chỉ admin**.
+Toàn bộ route cần quyền **Vận hành** (editor hoặc admin).
+
+**Via và proxy có CHỦ SỞ HỮU** (`user_id`), y như API key TTS: admin thấy và sửa
+của mọi người, editor chỉ thấy và sửa của chính mình. Phân định nằm ở service,
+không phải ở route — gọi thẳng API cũng không đọc được via của người khác.
+`created_by` là người khai, khác chủ khi admin thêm hộ.
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| GET | `/settings/vias` | Query `platform`. **Không bao giờ trả về cookies** |
-| POST | `/settings/vias` | Body: `platform`, `label`, `cookies`, `daily_quota?` |
-| PATCH | `/settings/vias/:id` | `label?`, `cookies?`, `daily_quota?`, `status?`. Dán cookies mới cũng RESET sức khoẻ về `active` |
+| GET | `/settings/vias` | Query `platform`, `owner`. **Không bao giờ trả về cookies**. `owner` chỉ có tác dụng với admin |
+| POST | `/settings/vias` | Body: `platform`, `label`, `cookies`, `daily_quota?`, `user_id?` |
+| PATCH | `/settings/vias/:id` | `label?`, `cookies?`, `daily_quota?`, `status?`, `user_id?`. Dán cookies mới cũng RESET sức khoẻ về `active` |
 | DELETE | `/settings/vias/:id` | |
-| GET | `/settings/proxies` | `endpoint` đã cắt user/pass |
-| POST | `/settings/proxies` | Body: `label`, `endpoint`, `kind?`, `platform?` |
-| PATCH | `/settings/proxies/:id` | `label?`, `endpoint?`, `kind?`, `status?` |
+| GET | `/settings/proxies` | Query `platform`, `owner`. `endpoint` đã cắt user/pass |
+| POST | `/settings/proxies` | Body: `label`, `endpoint`, `kind?`, `platform?`, `user_id?` |
+| PATCH | `/settings/proxies/:id` | `label?`, `endpoint?`, `kind?`, `status?`, `user_id?` |
 | DELETE | `/settings/proxies/:id` | |
 | GET | `/settings/via-cookie-specs` | Nền tảng nào cần cookie gì + mẫu để dán |
 | GET | `/settings/scrape-health` | Số via theo trạng thái, từng nền tảng |
 | GET | `/settings/scrape-load` | Lượt quét theo giờ trong ngày. Query `days` |
+
+`user_id` trong body = **gán bản ghi cho người khác**, và chỉ admin gửi được:
+khi tạo thì giá trị của vai trò khác bị bỏ qua (form của họ không có ô đó), khi
+sửa thì bị từ chối `403` — ở đó một chủ sở hữu khác là thay đổi người dùng cố ý
+yêu cầu, và im lặng nuốt nó sẽ báo "đã lưu" cho một việc không hề xảy ra.
+
+`/settings/scrape-health` và `/settings/scrape-load` cũng theo phạm vi đó: admin
+thấy số của cả hệ thống, editor thấy số của riêng via mình.
+
+### Lỗi nào là lỗi của kênh, lỗi nào chỉ là chờ lượt sau
+
+| Nhãn | Xử lý | Vì sao |
+|---|---|---|
+| `ErrNoViaAvailable` | bỏ qua vòng, không ghi lỗi kênh | hạn mức ngày cạn / cả đàn via đang nghỉ |
+| `rate_limit` | bỏ qua vòng, không retry | nền tảng vừa bảo "chờ vài phút"; retry chính là thứ nó cấm |
+| `bot_block` | lỗi thật | không tự khỏi — đây là tín hiệu đi đổi proxy |
+| `login_required` | lỗi thật | via phải được dán cookies mới |
+
+Hai trường hợp đầu ghi vào `scan_run` là **lỗi kèm lý do**, không phải
+"thành công, 0 bài" — dạng `Permanent` nên nói một lần, không retry. Trước đây
+chúng trả về `nil` và lịch sử quét hiện một vòng thành công không lấy được bài
+nào, không kèm một chữ giải thích; đó đúng là thứ người vận hành báo lại với
+Instagram. Một vòng không làm được việc của nó là một vòng hỏng, dù lỗi không
+phải của kênh.
+
+Cả bốn đều được đếm vào `fetch_error_stat` nên tab "Bị chặn" vẫn thấy — bỏ qua
+ở đây là bỏ qua việc RETRY, không phải bỏ qua việc ghi nhận.
+
+Riêng **HTTP 401 kèm `require_login`**: Instagram trả mã này khi phiên của via
+hỏng, nên phải đọc thân phản hồi trước khi kết luận. Quy hết 401/403 về "IP bị
+chặn" nghĩa là hạ cấp rồi khai tử một proxy tốt, còn via hỏng — thứ thật sự cần
+thay — vẫn nằm nguyên trong vòng xoay ở trạng thái khoẻ.
+
+> **Bộ chọn của worker KHÔNG theo chủ sở hữu.** `ScrapePool` vẫn lấy via/proxy
+> trên toàn hệ thống. Chủ sở hữu trả lời "ai được nhìn và sửa bản ghi này", không
+> phải "lượt quét của ai được dùng via nào" — ghép hai thứ lại sẽ làm kênh của
+> người chưa nuôi via im lặng ngừng ra bài.
 
 `cookies` và `endpoint` đi **một chiều**: gửi lên được, không bao giờ trả về.
 Cả hai được mã hoá AES-256-GCM bằng `TOKEN_ENCRYPTION_KEY` trước khi vào DB, y
@@ -701,12 +752,77 @@ lại bộ đếm ngày, dọn `via_usage_log` quá hạn. Mỗi giờ chứ kh�
 cooldown mặc định chỉ 6 tiếng — chạy theo ngày thì via nghỉ xong vẫn nằm ngoài
 vòng xoay gần trọn một ngày nữa.
 
-### Thêm kênh Facebook
+### Thêm kênh Facebook / Instagram / X
 
-Bị chặn cho tới khi `FACEBOOK_CHANNEL_SCAN=true`. Bộ phân tích trang bám vào cấu
-trúc JSON nội bộ của Facebook — không có tài liệu, không có cam kết tương thích
-— nên phải đối chiếu với một trang thật, bằng via thật, trước khi mở khoá. Bật
-sớm thì người dùng tạo ra hàng loạt kênh im lặng không ra bài.
+Ba nền tảng này quét được cả kênh, mỗi nền tảng sau một cờ riêng:
+
+| Nền tảng | Cờ | Nguồn dữ liệu |
+|---|---|---|
+| Facebook | `FACEBOOK_CHANNEL_SCAN` | HTML trang, moi khối JSON Relay |
+| Instagram | `INSTAGRAM_CHANNEL_SCAN` | `/api/v1/users/web_profile_info` (JSON) |
+| X | `X_CHANNEL_SCAN` | `syndication.twitter.com/srv/timeline-profile` |
+
+Cả ba mặc định **tắt**, và form Thêm kênh vẫn hiện lý do chặn cho tới khi bật.
+Ba cờ riêng chứ không một cờ chung: ba bộ phân tích bám vào ba thứ khác nhau và
+hỏng độc lập nhau, nên khi một nền tảng đổi giao diện thì phải tắt được đúng nó
+mà không làm đứt hai nền tảng đang chạy tốt.
+
+Lý do mặc định tắt: các bộ phân tích bám vào cấu trúc nội bộ của những nền tảng
+đó — không có tài liệu, không có cam kết tương thích — nên phải đối chiếu với
+một trang thật, bằng via thật, trước khi mở khoá. Bật sớm thì người dùng tạo ra
+hàng loạt kênh im lặng không ra bài.
+
+#### Trần số bài lấy được mỗi lần quét
+
+Ba nền tảng này **không phân trang được**. Một lần gọi trả bấy nhiêu là hết, và
+phần thiếu không có đường nào lấy — đo trực tiếp ngày 17/09/2026:
+
+| Nền tảng | Trần / lần gọi | Vì sao |
+|---|---|---|
+| Facebook | 10 | Chỉ những bài Facebook dựng sẵn trong HTML trang; phần còn lại trang tự tải thêm khi cuộn |
+| Instagram | 12 | `web_profile_info` trả đúng 12 và không nhận tham số xin thêm |
+| X | 20 | syndication bỏ qua **mọi** tham số phân trang — đã thử `max_id`, `until_id`, `cursor`, `max_position`, `count=200`: cùng một cửa sổ, cùng bài cũ nhất |
+| YouTube / TikTok | không có trần | yt-dlp phân trang được (`--playlist-end`) |
+
+Con số của X là số đo trên **phiên thật** (hai tài khoản cho 19 và 20). Gọi cùng
+endpoint mà không có cookies thì trả về một bản đệm ~100 bài trộn lẫn nhiều năm
+— đó không phải thứ vòng quét nhận được, đừng lấy làm trần.
+
+Trần đi ra giao diện qua `/meta/platforms` → `channel_scan[].max_posts`, và form
+Thêm kênh **khoá** ô nhập bằng nó (`max` + ép giá trị xuống khi biết nền tảng),
+chứ không còn cho nhập 50 rồi cảnh báo — một con số không bao giờ đạt được thì
+không nên nhập vào được. Đường quét cũng ép lại một lần nữa
+(`domain.ClampChannelLimit`) để kênh thêm từ trước khi có trần không xin một
+con số không ai giữ được.
+
+**Thứ tự KHÔNG tin được, cả X lẫn Instagram.** Cả hai bộ phân tích sắp lại
+theo thời gian đăng, giảm dần, TRƯỚC khi cắt `limit`:
+
+- **X** — `entries` của syndication có biến thể trả 100 tweet mà 5 phần tử đầu
+  lần lượt từ 2022, 2020, 2025, 2025, 2022 (đo trên @TF1Info). Lấy N phần tử đầu
+  ra một nhúm bài ngẫu nhiên rải suốt 10 năm. Khoá xếp là `created_at`, dự phòng
+  là snowflake trong `id_str`. **Không dùng `sort_index`** dù nó có mặt và trông
+  như khoá xếp hạng: giá trị của nó là snowflake của *thời điểm trả lời*, giảm
+  đúng 1 đơn vị mỗi phần tử — nó đánh số vị trí, không nói gì về tweet.
+- **Instagram** — bài ghim nằm đầu mà không có cờ phân biệt; với trần 12 bài/lần
+  gọi thì 3 bài ghim cũ chiếm 1/4 số suất của một vòng quét. Khoá xếp là
+  `taken_at_timestamp`. Hệ quả: thứ tự ở đây khác thứ tự nhìn thấy trên trang
+  thật, đổi lại "N bài mới nhất" đúng nghĩa là N bài mới nhất.
+
+**URL bài Facebook** phải mang tên trang: `facebook.com/<trang>/posts/<id>`.
+Dạng trần `facebook.com/<id>` chạy được với id của video/reel nên nhìn qua
+tưởng đúng, nhưng với bài thường thì Facebook chuyển hướng sang một URL `pfbid…`
+rồi trả 404 — triệu chứng là "Bài đăng không còn tồn tại trên nền tảng" cho một
+bài vẫn đang sống. Không liên quan tới việc Facebook đổi tên miền:
+`web.facebook.com/<id>` cũng 404 y hệt.
+
+**Riêng X:** đường liệt kê dùng endpoint syndication (widget nhúng tweet) chứ
+không phải GraphQL của x.com. GraphQL đòi ba thứ rotate độc lập — mã truy vấn
+trong URL, khối `features`, bearer của web client — nên adapter bám vào chúng sẽ
+hỏng vài tuần một lần và mỗi lần đều cần sửa code. Đổi lại, endpoint syndication
+chỉ trả ~20 tweet gần nhất và chỉ với tài khoản công khai, đúng bằng nhu cầu ở
+đây. Vẫn phải khai một via X để mở khoá vì `ScrapePool` là chỗ cấp proxy và đếm
+hạn mức, dù cookies của via đó không được dùng để đọc danh sách.
 
 ## Danh mục
 
@@ -1041,7 +1157,42 @@ chuẩn của ngôn ngữ đã chọn.
 Ngôn ngữ đọc **không** nằm trong `tts_config`: nó đã là trường `language` của
 Voice. Hai ô ngôn ngữ trong một form là hai nguồn sự thật.
 
+### Lịch sử quét ghi lại SỐ BÀI ĐÃ XIN
+
+`scan_run.requested_limit` = số bài vòng đó xin nền tảng, sau khi ép về trần.
+Không suy ngược được từ kênh: `scan_limit` / `backfill_limit` là cấu hình hiện
+tại và sửa lúc nào cũng được, còn lịch sử nói về quá khứ. Bảng hiện hai cột
+cạnh nhau — "Bài xin" và "Bài xét" — vì câu hỏi đầu tiên khi thấy một con số
+nhỏ luôn là "xin bao nhiêu". 0 = dòng có từ trước khi cột này tồn tại, giao
+diện hiện dấu gạch chứ không hiện số 0.
+
+### Xoá kênh, xoá Prompt mẫu
+
+Xoá một kênh **không xoá** Bài Post và Voice của nó: `source_post.list_*_id`
+chuyển về NULL, còn `source_type` vẫn nói đúng bài đó sinh ra từ đâu. Nhật ký
+quét và `via_usage_log` của kênh thì xoá theo (CASCADE) — chúng chỉ có nghĩa khi
+kênh còn.
+
+Xoá **Prompt mẫu** bị chặn khi còn kênh hoặc Bài Post dùng nó (khoá ngoại NO
+ACTION), nhưng KHÔNG bị chặn bởi voice đã tạo — voice giữ lại `prompt_id` NULL,
+đúng tiền lệ `voice.ai_engine_id`.
+
+> Ràng buộc CHECK phải **hợp với** quy tắc xoá của chính khoá ngoại nó canh.
+> `ck_source_post_origin` và `ck_voice_prompt` từng đòi cột phải khác NULL trong
+> khi khoá ngoại khai `ON DELETE SET NULL` — hai điều đó không thể cùng đúng, và
+> hậu quả là không xoá được kênh nào, không xoá được prompt nào. Xem migration
+> 000034. Thêm CHECK mới trên một cột có `ON DELETE SET NULL` thì phải tự hỏi
+> câu này trước.
+
+Lỗi ràng buộc của Postgres được **dịch thành câu nói rõ phải làm gì** trước khi
+lên giao diện (`service.wrapDB`); nguyên văn vẫn nằm trong log. Ràng buộc chưa
+có câu dịch thì giữ nguyên văn — tên ràng buộc là manh mối duy nhất để tra.
+
 ## Nhật ký thao tác
+
+Cần quyền **Vận hành** (editor hoặc admin) — trước đây mọi vai trò đọc được.
+Chuyển cùng lúc với via/proxy vì cả nhóm "Vận hành" bị ẩn khỏi sidebar của
+`user`, và một mục bị ẩn mà API vẫn trả dữ liệu thì việc ẩn đó không có nghĩa.
 
 | Method | Path | Query |
 |---|---|---|

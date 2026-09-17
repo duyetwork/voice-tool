@@ -104,7 +104,7 @@ func (a *FacebookScrapeAdapter) FetchLatestPosts(
 		return nil, err
 	}
 
-	posts = parseFacebookPage(string(body), limit)
+	posts = parseFacebookPage(string(body), facebookPageSlug(target), limit)
 	if len(posts) == 0 {
 		// Không gắn nhãn chặn: trang đọc được, chỉ là không moi ra bài nào.
 		// Gắn `bot_block` ở đây sẽ giết proxy vì một lần Facebook đổi giao diện.
@@ -132,6 +132,52 @@ func facebookPageURL(raw string) (string, error) {
 	u.RawQuery, u.Fragment = "", ""
 	u.Path = strings.TrimRight(u.Path, "/")
 	return u.String(), nil
+}
+
+// facebookPageSlug lấy phần định danh trang khỏi URL đã chuẩn hoá
+// (`https://www.facebook.com/<slug>` -> `<slug>`). Rỗng khi không có.
+func facebookPageSlug(pageURL string) string {
+	u, err := url.Parse(pageURL)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[0]
+}
+
+// facebookPostURL dựng permalink của một bài.
+//
+// PHẢI có tên trang trong đường dẫn: `https://www.facebook.com/<slug>/posts/<id>`.
+//
+// Dạng trần `https://www.facebook.com/<id>` — thứ hàm này thay thế — là một cái
+// bẫy đã cắn thật. Nó CHẠY ĐƯỢC với id của video/reel (Facebook tự giải ra bài),
+// nên nhìn qua tưởng đúng; nhưng với id của một bài thường thì Facebook chuyển
+// hướng sang một URL `pfbid…` rồi trả 404, và yt-dlp báo về đúng một câu
+// "Bài đăng không còn tồn tại trên nền tảng" cho một bài vẫn đang sống.
+//
+// Đã đo trên yt-dlp 2026.08.19 với bài 926217157223123 của trang dailystarvideos:
+//
+//	facebook.com/926217157223123                  -> 404 (qua pfbid)
+//	facebook.com/dailystarvideos/posts/9262171…   -> đọc được bài
+//	web.facebook.com/926217157223123              -> cũng 404
+//
+// Dòng cuối trả lời luôn một nghi vấn tự nhiên: KHÔNG phải do Facebook đổi tên
+// miền sang web.facebook.com — hai tên miền hành xử y hệt nhau, lỗi nằm ở chỗ
+// URL thiếu ngữ cảnh trang.
+//
+// Dạng `/posts/` cũng đúng cho reel và video (đã đo), nên chỉ cần một dạng duy
+// nhất — không phải đoán loại nội dung trước khi dựng link.
+func facebookPostURL(pageSlug, postID string) string {
+	if pageSlug == "" {
+		// Không biết trang thì đành quay về dạng trần. Kém hơn, nhưng một URL
+		// có khả năng sai vẫn hơn không có URL nào: scan coi bài thiếu URL là
+		// bài không hợp lệ và bỏ luôn.
+		return "https://www.facebook.com/" + postID
+	}
+	return "https://www.facebook.com/" + pageSlug + "/posts/" + postID
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +215,7 @@ var fbPostFields = regexp.MustCompile(
 // parseFacebookPage moi danh sách bài ra khỏi HTML của trang.
 //
 // Trả về mới-nhất-trước, đúng hợp đồng mà service.Scan trông đợi.
-func parseFacebookPage(body string, limit int) []domain.RemotePost {
+func parseFacebookPage(body, pageSlug string, limit int) []domain.RemotePost {
 	type draft struct {
 		id   string
 		text string
@@ -223,7 +269,7 @@ func parseFacebookPage(body string, limit int) []domain.RemotePost {
 		}
 		post := domain.RemotePost{
 			PostID:      d.id,
-			URL:         "https://www.facebook.com/" + d.id,
+			URL:         facebookPostURL(pageSlug, d.id),
 			ContentType: domain.ContentPost,
 			Text:        d.text,
 		}

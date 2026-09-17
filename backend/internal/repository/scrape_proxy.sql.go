@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const claimScrapeProxy = `-- name: ClaimScrapeProxy :one
@@ -24,7 +25,7 @@ WHERE id = (
   LIMIT 1
   FOR UPDATE SKIP LOCKED
 )
-RETURNING id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at
+RETURNING id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id
 `
 
 // Nhận proxy cho MỘT request: nghỉ lâu nhất trước. Chọn-và-đánh-dấu trong một
@@ -57,6 +58,7 @@ func (q *Queries) ClaimScrapeProxy(ctx context.Context, platform *string) (Scrap
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }
@@ -81,9 +83,9 @@ func (q *Queries) CountViaUsageLogs(ctx context.Context, arg CountViaUsageLogsPa
 
 const createScrapeProxy = `-- name: CreateScrapeProxy :one
 
-INSERT INTO scrape_proxy (label, platform, endpoint_encrypted, endpoint_masked, kind, created_by)
-VALUES ($1, $6, $2, $3, $4, $5)
-RETURNING id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at
+INSERT INTO scrape_proxy (label, platform, endpoint_encrypted, endpoint_masked, kind, user_id, created_by)
+VALUES ($1, $7, $2, $3, $4, $5, $6)
+RETURNING id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id
 `
 
 type CreateScrapeProxyParams struct {
@@ -91,6 +93,7 @@ type CreateScrapeProxyParams struct {
 	EndpointEncrypted string    `json:"endpoint_encrypted"`
 	EndpointMasked    string    `json:"endpoint_masked"`
 	Kind              string    `json:"kind"`
+	UserID            uuid.UUID `json:"user_id"`
 	CreatedBy         uuid.UUID `json:"created_by"`
 	Platform          *string   `json:"platform"`
 }
@@ -98,12 +101,14 @@ type CreateScrapeProxyParams struct {
 // ---------------------------------------------------------------------------
 // Proxy (lối ra mạng cho các request quét)
 // ---------------------------------------------------------------------------
+// user_id là CHỦ SỞ HỮU, created_by là người khai — xem CreateScrapeVia.
 func (q *Queries) CreateScrapeProxy(ctx context.Context, arg CreateScrapeProxyParams) (ScrapeProxy, error) {
 	row := q.db.QueryRow(ctx, createScrapeProxy,
 		arg.Label,
 		arg.EndpointEncrypted,
 		arg.EndpointMasked,
 		arg.Kind,
+		arg.UserID,
 		arg.CreatedBy,
 		arg.Platform,
 	)
@@ -126,6 +131,7 @@ func (q *Queries) CreateScrapeProxy(ctx context.Context, arg CreateScrapeProxyPa
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }
@@ -194,7 +200,7 @@ func (q *Queries) DeleteViaUsageLogsBefore(ctx context.Context, before time.Time
 }
 
 const getScrapeProxy = `-- name: GetScrapeProxy :one
-SELECT id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at FROM scrape_proxy WHERE id = $1
+SELECT id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id FROM scrape_proxy WHERE id = $1
 `
 
 func (q *Queries) GetScrapeProxy(ctx context.Context, id uuid.UUID) (ScrapeProxy, error) {
@@ -218,27 +224,65 @@ func (q *Queries) GetScrapeProxy(ctx context.Context, id uuid.UUID) (ScrapeProxy
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }
 
 const listScrapeProxies = `-- name: ListScrapeProxies :many
-SELECT id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at FROM scrape_proxy
-WHERE $1::varchar IS NULL
-   OR platform IS NULL
-   OR platform = $1
-ORDER BY label
+SELECT p.id, p.label, p.platform, p.endpoint_encrypted, p.endpoint_masked, p.kind, p.status, p.consecutive_blocks, p.errors_today, p.used_today, p.today, p.last_used_at, p.last_error_at, p.last_error, p.created_by, p.created_at, p.updated_at, p.user_id, owner.email AS user_email, author.email AS created_by_email
+FROM scrape_proxy p
+JOIN app_user owner  ON owner.id  = p.user_id
+JOIN app_user author ON author.id = p.created_by
+WHERE ($1::varchar IS NULL
+       OR p.platform IS NULL
+       OR p.platform = $1)
+  AND ($2::uuid IS NULL OR p.user_id = $2)
+ORDER BY p.label
 `
 
-func (q *Queries) ListScrapeProxies(ctx context.Context, platform *string) ([]ScrapeProxy, error) {
-	rows, err := q.db.Query(ctx, listScrapeProxies, platform)
+type ListScrapeProxiesParams struct {
+	Platform *string    `json:"platform"`
+	Owner    *uuid.UUID `json:"owner"`
+}
+
+type ListScrapeProxiesRow struct {
+	ID                uuid.UUID   `json:"id"`
+	Label             string      `json:"label"`
+	Platform          *string     `json:"platform"`
+	EndpointEncrypted string      `json:"endpoint_encrypted"`
+	EndpointMasked    string      `json:"endpoint_masked"`
+	Kind              string      `json:"kind"`
+	Status            string      `json:"status"`
+	ConsecutiveBlocks int32       `json:"consecutive_blocks"`
+	ErrorsToday       int32       `json:"errors_today"`
+	UsedToday         int32       `json:"used_today"`
+	Today             pgtype.Date `json:"today"`
+	LastUsedAt        *time.Time  `json:"last_used_at"`
+	LastErrorAt       *time.Time  `json:"last_error_at"`
+	LastError         *string     `json:"last_error"`
+	CreatedBy         uuid.UUID   `json:"created_by"`
+	CreatedAt         time.Time   `json:"created_at"`
+	UpdatedAt         time.Time   `json:"updated_at"`
+	UserID            uuid.UUID   `json:"user_id"`
+	UserEmail         string      `json:"user_email"`
+	CreatedByEmail    string      `json:"created_by_email"`
+}
+
+// `owner` NULL = xem tất cả (chỉ admin) — xem ListScrapeVias.
+//
+// Bộ lọc nền tảng nằm trong DẤU NGOẶC riêng: không có nó thì `OR platform IS
+// NULL` cũng nuốt luôn điều kiện chủ sở hữu, và mọi proxy dùng chung của người
+// khác lọt vào danh sách của một editor.
+func (q *Queries) ListScrapeProxies(ctx context.Context, arg ListScrapeProxiesParams) ([]ListScrapeProxiesRow, error) {
+	rows, err := q.db.Query(ctx, listScrapeProxies, arg.Platform, arg.Owner)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ScrapeProxy{}
+	items := []ListScrapeProxiesRow{}
 	for rows.Next() {
-		var i ScrapeProxy
+		var i ListScrapeProxiesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Label,
@@ -257,6 +301,9 @@ func (q *Queries) ListScrapeProxies(ctx context.Context, platform *string) ([]Sc
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.UserID,
+			&i.UserEmail,
+			&i.CreatedByEmail,
 		); err != nil {
 			return nil, err
 		}
@@ -354,7 +401,7 @@ SET consecutive_blocks = consecutive_blocks + 1,
              END,
     updated_at = now()
 WHERE id = $3
-RETURNING id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at
+RETURNING id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id
 `
 
 type MarkScrapeProxyBlockedParams struct {
@@ -393,6 +440,7 @@ func (q *Queries) MarkScrapeProxyBlocked(ctx context.Context, arg MarkScrapeProx
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }
@@ -450,15 +498,22 @@ func (q *Queries) ResetScrapeProxyDaily(ctx context.Context) (int64, error) {
 }
 
 const scrapeHourlyLoad = `-- name: ScrapeHourlyLoad :many
-SELECT EXTRACT(HOUR FROM created_at)::int AS hour,
-       platform,
+SELECT EXTRACT(HOUR FROM l.created_at)::int AS hour,
+       l.platform,
        COUNT(*)::bigint AS total,
-       COUNT(*) FILTER (WHERE result <> 'success')::bigint AS failed
-FROM via_usage_log
-WHERE created_at >= now() - ($1::int * interval '1 day')
+       COUNT(*) FILTER (WHERE l.result <> 'success')::bigint AS failed
+FROM via_usage_log l
+JOIN scrape_via v ON v.id = l.via_id
+WHERE l.created_at >= now() - ($1::int * interval '1 day')
+  AND ($2::uuid IS NULL OR v.user_id = $2)
 GROUP BY 1, 2
 ORDER BY 1, 2
 `
+
+type ScrapeHourlyLoadParams struct {
+	Days  int32      `json:"days"`
+	Owner *uuid.UUID `json:"owner"`
+}
 
 type ScrapeHourlyLoadRow struct {
 	Hour     int32  `json:"hour"`
@@ -473,8 +528,12 @@ type ScrapeHourlyLoadRow struct {
 // kênh quét 1 lần/ngày mà tất cả rơi vào cùng một khung giờ thì nền tảng nhìn
 // thấy một đợt tấn công, còn bảng thống kê lỗi thì chỉ nói "bị chặn" mà không
 // nói vì sao — cột giờ này mới nói ra.
-func (q *Queries) ScrapeHourlyLoad(ctx context.Context, days int32) ([]ScrapeHourlyLoadRow, error) {
-	rows, err := q.db.Query(ctx, scrapeHourlyLoad, days)
+//
+// `owner` NULL = cả hệ thống (chỉ admin); ngược lại chỉ đếm lượt đi qua via của
+// người đó. Biểu đồ nói về NHỊP QUÉT, và nhịp của cả hệ thống không phải thứ
+// một editor sửa được — họ chỉ rải lại lịch các kênh mình quét.
+func (q *Queries) ScrapeHourlyLoad(ctx context.Context, arg ScrapeHourlyLoadParams) ([]ScrapeHourlyLoadRow, error) {
+	rows, err := q.db.Query(ctx, scrapeHourlyLoad, arg.Days, arg.Owner)
 	if err != nil {
 		return nil, err
 	}
@@ -502,28 +561,31 @@ const updateScrapeProxy = `-- name: UpdateScrapeProxy :one
 UPDATE scrape_proxy
 SET label              = COALESCE($1, label),
     kind               = COALESCE($2, kind),
-    endpoint_encrypted = COALESCE($3, endpoint_encrypted),
-    endpoint_masked    = COALESCE($4, endpoint_masked),
+    -- Gán proxy cho người khác; chỉ admin gửi được (service chặn).
+    user_id            = COALESCE($3, user_id),
+    endpoint_encrypted = COALESCE($4, endpoint_encrypted),
+    endpoint_masked    = COALESCE($5, endpoint_masked),
     status = CASE
-               WHEN $3 IS NOT NULL THEN 'active'
-               ELSE COALESCE($5, status)
+               WHEN $4 IS NOT NULL THEN 'active'
+               ELSE COALESCE($6, status)
              END,
     consecutive_blocks =
-      CASE WHEN $3 IS NULL THEN consecutive_blocks ELSE 0 END,
+      CASE WHEN $4 IS NULL THEN consecutive_blocks ELSE 0 END,
     last_error =
-      CASE WHEN $3 IS NULL THEN last_error ELSE NULL END,
+      CASE WHEN $4 IS NULL THEN last_error ELSE NULL END,
     updated_at = now()
-WHERE id = $6
-RETURNING id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at
+WHERE id = $7
+RETURNING id, label, platform, endpoint_encrypted, endpoint_masked, kind, status, consecutive_blocks, errors_today, used_today, today, last_used_at, last_error_at, last_error, created_by, created_at, updated_at, user_id
 `
 
 type UpdateScrapeProxyParams struct {
-	Label             *string   `json:"label"`
-	Kind              *string   `json:"kind"`
-	EndpointEncrypted *string   `json:"endpoint_encrypted"`
-	EndpointMasked    *string   `json:"endpoint_masked"`
-	Status            *string   `json:"status"`
-	ID                uuid.UUID `json:"id"`
+	Label             *string    `json:"label"`
+	Kind              *string    `json:"kind"`
+	UserID            *uuid.UUID `json:"user_id"`
+	EndpointEncrypted *string    `json:"endpoint_encrypted"`
+	EndpointMasked    *string    `json:"endpoint_masked"`
+	Status            *string    `json:"status"`
+	ID                uuid.UUID  `json:"id"`
 }
 
 // Dán endpoint mới cũng là reset sức khoẻ — cùng lý do với UpdateScrapeVia.
@@ -531,6 +593,7 @@ func (q *Queries) UpdateScrapeProxy(ctx context.Context, arg UpdateScrapeProxyPa
 	row := q.db.QueryRow(ctx, updateScrapeProxy,
 		arg.Label,
 		arg.Kind,
+		arg.UserID,
 		arg.EndpointEncrypted,
 		arg.EndpointMasked,
 		arg.Status,
@@ -555,6 +618,7 @@ func (q *Queries) UpdateScrapeProxy(ctx context.Context, arg UpdateScrapeProxyPa
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }

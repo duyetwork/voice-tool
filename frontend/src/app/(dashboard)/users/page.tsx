@@ -1,7 +1,7 @@
 "use client";
 
 import { ErrorNote, PageHeader } from "@/components/page-header";
-import { ROLE_LABELS, ROLE_ORDER, usePermissions } from "@/components/permission";
+import { NoPermission, ROLE_LABELS, ROLE_ORDER, usePermissions } from "@/components/permission";
 import { Card, CardBody } from "@/components/ui/card";
 import { Select, Toggle } from "@/components/ui/field";
 import { Pagination, usePaging } from "@/components/ui/pagination";
@@ -28,11 +28,10 @@ export default function UsersPage() {
     return (
       <>
         <PageHeader title="Quản lý tài khoản" />
-        <Card>
-          <CardBody>
-            <p className="text-sm text-slate-600">Chỉ admin xem được trang này.</p>
-          </CardBody>
-        </Card>
+        <NoPermission title="Bạn không có quyền quản lý tài khoản">
+          Cấp quyền và bật/tắt tài khoản là việc của admin — đây là ranh giới duy nhất giữa admin và
+          editor. Cần đổi quyền cho ai thì nhờ một admin.
+        </NoPermission>
       </>
     );
   }

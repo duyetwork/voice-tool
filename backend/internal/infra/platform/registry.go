@@ -65,6 +65,11 @@ func (r *Registry) ChannelScanSupport() []domain.ChannelScan {
 			item.Enabled = false
 			item.Reason = domain.UserMessage(err)
 		}
+		// Trần số bài/lượt quét đi kèm luôn: form Thêm kênh cần nó để KHOÁ ô
+		// nhập, và nó phải tới cùng lúc với "nền tảng này quét kênh được không"
+		// — hai câu trả lời cho cùng một ô, tách ra hai lượt gọi thì có lúc ô
+		// đó dựng xong mà chưa biết trần của chính nó.
+		item.MaxPosts, item.MaxPostsReason = domain.MaxChannelPosts(a.Name())
 		out = append(out, item)
 	}
 	return out

@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { BulkBar, SelectAllBox, useSelection } from "@/components/bulk";
+import { CreatorFilter } from "@/components/creator-filter";
 import { ErrorNote, PageHeader } from "@/components/page-header";
 import {
   ChannelTuning,
@@ -30,6 +31,7 @@ import { Pagination, usePaging } from "@/components/ui/pagination";
 import { EmptyRow, RowActions, SortableTh, Table, Td, Th, useSorting } from "@/components/ui/table";
 import {
   useCatalog,
+  platformFromURL,
   useChannelScanSupport,
   useCollectModes,
   useCreateScheduledList,
@@ -81,6 +83,7 @@ export default function ScheduledListsPage() {
   const [search, setSearch] = React.useState("");
   const [platform, setPlatform] = React.useState("");
   const [status, setStatus] = React.useState("");
+  const [createdBy, setCreatedBy] = React.useState("");
   const [creating, setCreating] = React.useState(false);
   // Kênh đang sửa. Giữ cả object chứ không chỉ id: dialog cần giá trị hiện tại
   // để đổ vào form, và bảng đã có sẵn chúng rồi.
@@ -91,12 +94,13 @@ export default function ScheduledListsPage() {
   const paging = usePaging();
   const sorting = useSorting("created_at", paging.reset);
   // Nút "Xoá lọc" chỉ hiện khi thực sự có gì để xoá.
-  const hasFilters = Boolean(search || platform || status);
+  const hasFilters = Boolean(search || platform || status || createdBy);
 
   const lists = useScheduledLists({
     search: search || undefined,
     platform: platform || undefined,
     status: status || undefined,
+    created_by: createdBy || undefined,
     ...sorting.params,
     limit: paging.limit,
     offset: paging.offset,
@@ -153,6 +157,14 @@ export default function ScheduledListsPage() {
             </Select>
           </div>
 
+          <CreatorFilter
+            value={createdBy}
+            onChange={(id) => {
+              setCreatedBy(id);
+              paging.reset();
+            }}
+          />
+
           <div className="w-64">
             <label className="mb-1 block text-xs font-medium text-slate-500">Tìm theo URL</label>
             <Input
@@ -175,6 +187,7 @@ export default function ScheduledListsPage() {
                 setSearch("");
                 setPlatform("");
                 setStatus("");
+                setCreatedBy("");
                 paging.reset();
               }}
             >
@@ -576,10 +589,7 @@ function ScheduledDialog({
           </Field>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field
-              label="Tần suất quét"
-              required
-            >
+            <Field label="Tần suất quét" required>
               <Select value={frequency} onChange={(e) => setFrequency(e.target.value)}>
                 {FREQUENCIES.map((f) => (
                   <option key={f.value} value={f.value}>
@@ -620,9 +630,7 @@ function ScheduledDialog({
                   ))}
                 </Select>
               </Field>
-              <Field
-                label="Bộ API"
-              >
+              <Field label="Bộ API">
                 <Select value={llmSetId} onChange={(e) => setLlmSetId(e.target.value)}>
                   <option value="">— Không chọn —</option>
                   {llmSets.data?.items.map((set) => (
@@ -646,9 +654,7 @@ function ScheduledDialog({
               </Select>
             </Field>
 
-            <Field
-              label="Quốc gia"
-            >
+            <Field label="Quốc gia">
               <Combobox
                 value={countryId}
                 options={countryOptions}
@@ -698,6 +704,7 @@ function ScheduledDialog({
                   value={tuning}
                   onChange={setTuning}
                   backfillDone={Boolean(list?.backfill_done_at)}
+                  platform={list?.platform ?? platformFromURL(sourceUrl)}
                 />
               </div>
             ) : null}

@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { ErrorNote, PageHeader } from "@/components/page-header";
+import { NoPermission, usePermissions } from "@/components/permission";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
@@ -28,6 +29,7 @@ const ACTION_TONES: Record<string, "info" | "success" | "warning" | "danger" | "
 
 /** L1/L2/L3 — Nhật ký thao tác. Append-only, chỉ đọc. */
 export default function AuditLogPage() {
+  const { perms, loading } = usePermissions();
   const [objectType, setObjectType] = React.useState("");
   const paging = usePaging();
   const sorting = useSorting("created_at", paging.reset);
@@ -37,6 +39,23 @@ export default function AuditLogPage() {
     limit: paging.limit,
     offset: paging.offset,
   });
+
+  // Vai trò `user` không thấy mục này trên sidebar, nhưng URL thì gõ tay được —
+  // và API cũng chặn (middleware.RequireOperate). Đây là lớp giải thích, không
+  // phải lớp bảo vệ.
+  if (loading) {
+    return <p className="text-sm text-slate-500">Đang tải…</p>;
+  }
+  if (!perms.can_operate) {
+    return (
+      <>
+        <PageHeader title="Nhật ký thao tác" />
+        <NoPermission>
+          Nhật ký thao tác thuộc mục Vận hành — cần quyền editor hoặc admin.
+        </NoPermission>
+      </>
+    );
+  }
 
   return (
     <>

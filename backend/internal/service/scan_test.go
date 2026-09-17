@@ -1,6 +1,8 @@
 package service
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/strongbody/voice-tool/backend/internal/domain"
@@ -111,5 +113,49 @@ func TestRolePermissions(t *testing.T) {
 		if invalid.Valid() {
 			t.Errorf("role %q phải bị từ chối", invalid)
 		}
+	}
+}
+
+// TestSkipRoundReason khoá lại ranh giới "lỗi của kênh" vs "chờ lượt sau".
+//
+// Hai lỗi dưới đây không nói gì về kênh đang quét và đều tự khỏi theo thời
+// gian. Biến chúng thành lỗi của kênh là sai ở cả ba mặt: bảng kênh hiện đỏ cho
+// một kênh không có vấn đề gì, asynq retry ba lần, và riêng với rate limit thì
+// chính việc retry là thứ nền tảng vừa bảo đừng làm.
+func TestSkipRoundReason(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		skip bool
+	}{
+		{"hết via", domain.ErrNoViaAvailable, true},
+		{
+			"hết via, đã bọc thêm ngữ cảnh",
+			fmt.Errorf("quét kênh: %w", domain.ErrNoViaAvailable), true,
+		},
+		{
+			"nền tảng giới hạn tần suất",
+			domain.FetchBlocked(domain.FetchBlockRateLimit, errors.New("HTTP 429")), true,
+		},
+		{
+			// Bị chặn IP thì phải ghi là lỗi: nó KHÔNG tự khỏi, và đó chính là
+			// tín hiệu để người vận hành đi đổi proxy.
+			"bị chặn IP vẫn là lỗi thật",
+			domain.FetchBlocked(domain.FetchBlockBot, errors.New("checkpoint")), false,
+		},
+		{
+			"via hỏng vẫn là lỗi thật",
+			domain.FetchBlocked(domain.FetchBlockLogin, errors.New("login")), false,
+		},
+		{"lỗi thường", errors.New("mạng đứt"), false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := skipRoundReason(tc.err) != ""
+			if got != tc.skip {
+				t.Errorf("skipRoundReason = %v, muốn %v", got, tc.skip)
+			}
+		})
 	}
 }
