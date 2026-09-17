@@ -112,6 +112,33 @@ type Config struct {
 	// Giữ lịch sử quét (scan_run) bao lâu trước khi job dọn dẹp xoá.
 	ScanRunRetention time.Duration `mapstructure:"SCAN_RUN_RETENTION"`
 
+	// --- Hạ tầng via/proxy quét Facebook / X / Instagram ---
+	//
+	// Bao nhiêu lỗi "đòi đăng nhập" LIÊN TIẾP thì via vào cooldown.
+	ViaLoginErrorThreshold int `mapstructure:"VIA_LOGIN_ERROR_THRESHOLD"`
+	// Via nghỉ bao lâu rồi được thử lại. Còn hỏng sau đó thì coi như chết.
+	ViaCooldown time.Duration `mapstructure:"VIA_COOLDOWN"`
+	// Bao nhiêu lần bị chặn IP LIÊN TIẾP thì proxy bị hạ cấp.
+	ProxyBlockThreshold int `mapstructure:"PROXY_BLOCK_THRESHOLD"`
+	// Giữ nhật ký dùng via bao lâu.
+	ViaUsageLogRetention time.Duration `mapstructure:"VIA_USAGE_LOG_RETENTION"`
+	// Số kênh quét đồng thời TRÊN MỖI nền tảng cần via. Thấp là cố ý: vài trăm
+	// kênh quét mỗi ngày không cần nhanh, mà mỗi request song song thêm là một
+	// lần nữa cùng một dải hạ tầng xuất hiện trước mặt nền tảng.
+	ScrapeConcurrency int `mapstructure:"SCRAPE_CONCURRENCY"`
+	// Khoảng nghỉ tối thiểu giữa 2 request quét tới cùng một nền tảng.
+	ScrapeMinGap time.Duration `mapstructure:"SCRAPE_MIN_GAP"`
+	// FacebookChannelScan mở khoá việc THÊM KÊNH Facebook.
+	//
+	// Mặc định TẮT, và đó là điều kiện đã chốt: bộ phân tích trang Facebook bám
+	// vào cấu trúc JSON nội bộ của họ — không có tài liệu, không có cam kết
+	// tương thích — nên nó phải được đối chiếu với một trang thật, bằng via
+	// thật, trước khi người dùng được phép tạo kênh.
+	//
+	// Bật sớm thì người ta tạo ra hàng loạt kênh im lặng không ra bài, và không
+	// có gì trên giao diện nói vì sao.
+	FacebookChannelScan bool `mapstructure:"FACEBOOK_CHANNEL_SCAN"`
+
 	// Ngôn ngữ mặc định hệ thống — đáy của cascade (business rule #9).
 	// "auto" = để nền tảng nguồn / multime.ai tự nhận diện.
 	DefaultLanguage string `mapstructure:"DEFAULT_LANGUAGE"`
@@ -217,6 +244,23 @@ func setDefaults(v *viper.Viper) {
 	// ngày không trả lời được câu đó. Vẫn phải xoá: kênh Breaking quét mỗi phút
 	// là ~43k dòng một tháng cho MỖI kênh.
 	v.SetDefault("SCAN_RUN_RETENTION", "720h")
+
+	// Ngưỡng 3, không phải 1: một lỗi "đòi đăng nhập" lẻ tẻ có thể do chính bài
+	// đó bị giới hạn chứ không phải phiên hỏng, và cất via đi vì một bài như vậy
+	// là vứt một tài khoản còn tốt.
+	v.SetDefault("VIA_LOGIN_ERROR_THRESHOLD", 3)
+	// 6 tiếng: đủ dài để một đợt kiểm tra tạm thời của nền tảng đi qua, đủ ngắn
+	// để via sống lại trong cùng một ngày làm việc.
+	v.SetDefault("VIA_COOLDOWN", "6h")
+	v.SetDefault("PROXY_BLOCK_THRESHOLD", 3)
+	// 30 ngày: đủ để nhìn ra một via đang xấu dần, đủ ngắn để bảng không phình.
+	v.SetDefault("VIA_USAGE_LOG_RETENTION", "720h")
+	// 3 kênh đồng thời mỗi nền tảng, nghỉ 5 giây giữa hai request. Vài trăm kênh
+	// quét 1 lần/ngày thì đây vẫn thừa sức chạy hết trong ngày, mà nền tảng
+	// không thấy một chùm request dồn cục.
+	v.SetDefault("SCRAPE_CONCURRENCY", 3)
+	v.SetDefault("SCRAPE_MIN_GAP", "5s")
+	v.SetDefault("FACEBOOK_CHANNEL_SCAN", false)
 	v.SetDefault("DEFAULT_LANGUAGE", "auto")
 	// B/C đã chạy được (TTS 3voices + LLM) nên bật sẵn cả 3 hình thức.
 	v.SetDefault("ENABLED_COLLECT_MODES", "A,B,C")
@@ -252,6 +296,9 @@ var allKeys = []string{
 	"BREAKING_SCAN_INTERVAL", "SCAN_LIMIT_DEFAULT", "MAX_POSTS_PER_RUN_DEFAULT",
 	"BREAKING_SCAN_PARALLELISM", "SCHEDULER_SYNC_INTERVAL", "SKIPPED_LOG_RETENTION", "PLATFORM_MIN_GAP",
 	"TTS_MIN_GAP", "TTS_MAX_CONCURRENT", "AI_USAGE_RETENTION", "SCAN_RUN_RETENTION",
+	"VIA_LOGIN_ERROR_THRESHOLD", "VIA_COOLDOWN", "PROXY_BLOCK_THRESHOLD",
+	"VIA_USAGE_LOG_RETENTION", "SCRAPE_CONCURRENCY", "SCRAPE_MIN_GAP",
+	"FACEBOOK_CHANNEL_SCAN",
 	"DEFAULT_LANGUAGE", "ENABLED_COLLECT_MODES", "BOOTSTRAP_ADMIN_EMAIL", "DEFAULT_USER_ROLE",
 	"TOKEN_ENCRYPTION_KEY",
 	"THREEVOICES_API_KEY", "THREEVOICES_BASE_URL", "THREEVOICES_VOICE_ID",

@@ -585,6 +585,129 @@ vừa chết, nên nó sẽ kẹt ở "đang quét" đúng lúc cần tin nó nh
 Lịch sử giữ theo `SCAN_RUN_RETENTION` (mặc định 30 ngày). Vòng quét treo ở
 `running` quá 2 giờ được job dọn dẹp hằng ngày đóng lại thành `error`.
 
+## Via / proxy quét Facebook · X · Instagram
+
+Ba nền tảng này không liệt kê được bài của một trang qua `yt-dlp`, và kênh nguồn
+là trang **công khai của người khác** nên không có API chính thức nào dùng được.
+Việc quét chúng chạy bằng **via** (phiên đăng nhập) đi qua **proxy**.
+
+> ⚠️ Cách làm này vi phạm điều khoản sử dụng của cả ba nền tảng và mang rủi ro
+> pháp lý về scraping dữ liệu công khai. Chi phí thật của nó là **via chết liên
+> tục phải thay** — chi phí vận hành, không phải một lần. Giữ hạ tầng này tách
+> biệt hoàn toàn với Business account dùng để đăng bài: nếu hai bên chạm nhau,
+> Meta khoá luôn tài khoản đăng bài.
+
+Toàn bộ route đều **chỉ admin**.
+
+| Method | Path | Ghi chú |
+|---|---|---|
+| GET | `/settings/vias` | Query `platform`. **Không bao giờ trả về cookies** |
+| POST | `/settings/vias` | Body: `platform`, `label`, `cookies`, `daily_quota?` |
+| PATCH | `/settings/vias/:id` | `label?`, `cookies?`, `daily_quota?`, `status?`. Dán cookies mới cũng RESET sức khoẻ về `active` |
+| DELETE | `/settings/vias/:id` | |
+| GET | `/settings/proxies` | `endpoint` đã cắt user/pass |
+| POST | `/settings/proxies` | Body: `label`, `endpoint`, `kind?`, `platform?` |
+| PATCH | `/settings/proxies/:id` | `label?`, `endpoint?`, `kind?`, `status?` |
+| DELETE | `/settings/proxies/:id` | |
+| GET | `/settings/via-cookie-specs` | Nền tảng nào cần cookie gì + mẫu để dán |
+| GET | `/settings/scrape-health` | Số via theo trạng thái, từng nền tảng |
+| GET | `/settings/scrape-load` | Lượt quét theo giờ trong ngày. Query `days` |
+
+`cookies` và `endpoint` đi **một chiều**: gửi lên được, không bao giờ trả về.
+Cả hai được mã hoá AES-256-GCM bằng `TOKEN_ENCRYPTION_KEY` trước khi vào DB, y
+như token multime và API key LLM. Bỏ trống khi PATCH = giữ giá trị cũ (giao diện
+không có bản thật để gửi lại).
+
+### Cookies cần lấy, theo từng nền tảng
+
+Server **từ chối** via thiếu cookie mang danh tính — báo ngay lúc dán, không để
+vòng quét phát hiện sau vài tiếng.
+
+| Nền tảng | Bắt buộc | Vì sao |
+|---|---|---|
+| Facebook | `c_user`, `xs` | `c_user` là id tài khoản, `xs` là chính phiên. Thiếu một trong hai thì Facebook coi như khách |
+| X | `auth_token`, `ct0` | `auth_token` là phiên; `ct0` là token CSRF mà mọi request đọc dữ liệu đều đòi |
+| Instagram | `sessionid`, `ds_user_id` | `sessionid` là phiên; `ds_user_id` là id tài khoản đi kèm |
+
+Cookie khác (`datr`, `sb`, `fr`, `csrftoken`, `guest_id`…) chép kèm cũng được,
+**không bắt buộc**: thiếu chúng phiên vẫn chạy, và bắt buộc chúng chỉ làm người
+dùng bị từ chối vì một thứ không quan trọng.
+
+Lấy ở đâu: mở nền tảng trên trình duyệt đã đăng nhập → DevTools (F12) →
+Application/Storage → Cookies.
+
+`GET /settings/via-cookie-specs` trả đúng danh sách này kèm mẫu — form thêm via
+đọc từ đó thay vì chép cứng, để hướng dẫn trên form và điều kiện server kiểm
+không bao giờ lệch nhau.
+
+### Định dạng endpoint proxy
+
+Nhận **ba dạng**, vì đó là ba dạng thật sự tồn tại ngoài đời:
+
+```
+23.95.45.5:10356:u3qvdrto:9w6w0mc8c5     dạng nhà bán proxy hay giao — dán nguyên dòng
+23.95.45.5:10356                          proxy không cần đăng nhập
+socks5://user:pass@23.95.45.5:1080        khai scheme khi KHÔNG phải http
+```
+
+Dạng đầu là lý do việc chuẩn hoá tồn tại: gần như mọi nhà bán proxy residential
+đều giao một danh sách `ip:port:user:pass`, và bắt người vận hành tự ghép tay
+thành URL cho từng dòng là vừa mất thời gian vừa dễ sai — sai ở đây thì proxy
+lặng lẽ không dùng được, mà triệu chứng lại giống hệt proxy bị chặn.
+
+Không có scheme thì mặc định `http`. Mật khẩu chứa `@` hoặc `/` vẫn đúng: server
+ghép bằng `url.UserPassword` chứ không nối chuỗi.
+
+`status` chỉ nhận `active` | `disabled`. `cooldown` và `dead` là **kết luận của
+hệ thống**, không đặt tay được — cho phép đặt tay thì con số trên bảng tổng quan
+không còn nói lên điều gì về sức khoẻ thật của đàn via.
+
+### Máy trạng thái
+
+```
+via:    active --(N lỗi login liên tiếp)--> cooldown --(hết giờ)--> active
+        cooldown --(lỗi login ngay sau khi hồi)--> dead
+        active <-> disabled                        (bật/tắt tay)
+
+proxy:  active --(N lần bot_block liên tiếp)--> degraded --(vẫn bị chặn)--> dead
+        active <-> disabled                        (bật/tắt tay)
+```
+
+Hai bệnh khác nhau, chữa bằng hai thứ khác nhau — và đây là phần dễ sai nhất:
+
+| Nhãn lỗi | Nghĩa | Ai bị trách |
+|---|---|---|
+| `login_required` | nền tảng đòi đăng nhập | **via** (phiên hỏng) |
+| `bot_block` | nền tảng nghi IP | **proxy** |
+| `rate_limit`, còn lại | tần suất, mạng, bài bị xoá | không ai — chỉ ghi lại |
+
+Đánh via chết vì một IP bị chặn là thay nhầm thứ đang hỏng, và ta vừa vứt đi một
+tài khoản còn dùng được.
+
+Proxy **không tự hồi sinh** theo thời gian, khác via: một IP đã bị Meta/X liệt
+thì chờ bao lâu cũng vậy. Bật lại bằng tay qua PATCH là đường duy nhất.
+
+### Hạn mức và lịch
+
+`daily_quota` đếm theo **lượt quét kênh**: 1 lượt = 1 lần `FetchLatestPosts`
+hoàn tất cho 1 kênh, kể cả khi bên trong phải tải nhiều trang nối tiếp. Không
+đếm theo số bài, không đếm theo request HTTP con.
+
+Hạn mức chỉ bị trừ khi lượt quét **thành công**: một request bị proxy làm hỏng
+không phải lỗi của via và không đáng lấy mất một suất của nó.
+
+Job `scrape:sweep` chạy **mỗi giờ** (phút thứ 7): hồi sinh via hết cooldown, đặt
+lại bộ đếm ngày, dọn `via_usage_log` quá hạn. Mỗi giờ chứ không mỗi ngày vì
+cooldown mặc định chỉ 6 tiếng — chạy theo ngày thì via nghỉ xong vẫn nằm ngoài
+vòng xoay gần trọn một ngày nữa.
+
+### Thêm kênh Facebook
+
+Bị chặn cho tới khi `FACEBOOK_CHANNEL_SCAN=true`. Bộ phân tích trang bám vào cấu
+trúc JSON nội bộ của Facebook — không có tài liệu, không có cam kết tương thích
+— nên phải đối chiếu với một trang thật, bằng via thật, trước khi mở khoá. Bật
+sớm thì người dùng tạo ra hàng loạt kênh im lặng không ra bài.
+
 ## Danh mục
 
 | Method | Path |

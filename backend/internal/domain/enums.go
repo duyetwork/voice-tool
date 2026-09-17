@@ -161,12 +161,18 @@ const (
 	ScanTriggerManual = "manual"
 )
 
-// ObjectType — 4 entity bắt buộc audit.
+// ObjectType — 4 entity bắt buộc audit, cộng hạ tầng via/proxy.
+//
+// Via và proxy vào audit vì chúng là BÍ MẬT ĐĂNG NHẬP và lối ra mạng: ai thêm,
+// ai tắt, ai xoá là những câu phải trả lời được. Nội dung cookie/endpoint thì
+// không bao giờ đi vào audit — chỉ nhãn và trạng thái.
 const (
 	ObjectListBreaking  = "list_breaking"
 	ObjectListScheduled = "list_scheduled"
 	ObjectSourcePost    = "source_post"
 	ObjectVoice         = "voice"
+	ObjectScrapeVia     = "scrape_via"
+	ObjectScrapeProxy   = "scrape_proxy"
 )
 
 // ---------------------------------------------------------------------------

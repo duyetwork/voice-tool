@@ -5,6 +5,7 @@ import * as React from "react";
 import { AIUsageSection } from "@/components/ai-usage";
 import { ErrorNote, PageHeader } from "@/components/page-header";
 import { usePermissions } from "@/components/permission";
+import { ScrapeInfraSection } from "@/components/scrape-infra";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
@@ -18,16 +19,54 @@ import type { LLMBatchConfig, LLMChainStep, LLMProvider } from "@/types/api";
  * Cài đặt — cấu hình ảnh hưởng HẠN MỨC VÀ CHI PHÍ của cả hệ thống, nên chỉ
  * admin vào được (backend chặn bằng middleware, đây chỉ là lớp hiển thị).
  *
- * Ba phần:
+ * Bốn tab, bốn mối quan tâm tách rời nhau:
  *
- *   1. Chuỗi dự phòng LLM — thứ tự thử model khi tạo voice hình thức C.
- *   2. Batch — gộp N mẩu text vào 1 request.
- *   3. Chi phí AI — token/ký tự đã tiêu + đơn giá, để biết hai mục trên có
- *      đang rẻ đi thật không.
- *   4. Thống kê bị nền tảng chặn — dữ liệu để quyết định có cần proxy không.
+ *   1. LLM        — chuỗi dự phòng khi một nhà hết hạn mức, và cấu hình batch.
+ *   2. Chi phí AI — token/ký tự đã tiêu, để biết mục trên có rẻ đi thật không.
+ *   3. Via & Proxy— phiên đăng nhập + lối ra mạng để quét Facebook/X/Instagram.
+ *   4. Bị chặn    — số lần nền tảng chặn ta, dữ liệu để quyết định mua proxy.
  */
+/**
+ * Bốn nhóm cài đặt, mỗi nhóm một tab.
+ *
+ * Trước đây cả bốn xếp dọc trên một trang: bảng chi phí AI và biểu đồ lượt quét
+ * đều dài, nên thứ cần xem gần như luôn nằm dưới màn hình và phải cuộn đi tìm.
+ * Tệ hơn, chúng thuộc bốn mối quan tâm khác hẳn nhau — không ai vào đây để xem
+ * cả bốn cùng lúc.
+ *
+ * `description` đi kèm từng tab chứ không phải một câu chung ở đầu trang: câu
+ * chung phải gộp bốn việc lại và cuối cùng không mô tả đúng việc nào.
+ */
+const TABS = [
+  {
+    id: "llm",
+    label: "LLM",
+    description: "Chuỗi dự phòng khi một nhà cung cấp hết hạn mức, và cấu hình gom batch.",
+  },
+  {
+    id: "cost",
+    label: "Chi phí AI",
+    description: "Token và ký tự đã tiêu, theo model và theo người dùng.",
+  },
+  {
+    id: "scrape",
+    label: "Via & Proxy",
+    description:
+      "Phiên đăng nhập và lối ra mạng dùng để quét kênh Facebook / X / Instagram. " +
+      "Via chết dần theo thời gian dùng — đây là chỗ để nhìn thấy nó và thay.",
+  },
+  {
+    id: "blocked",
+    label: "Bị chặn",
+    description: "Số lần từng nền tảng chặn hệ thống, đếm theo ngày.",
+  },
+] as const;
+
+type TabID = (typeof TABS)[number]["id"];
+
 export default function SettingsPage() {
   const { role, loading } = usePermissions();
+  const [tab, setTab] = React.useState<TabID>("llm");
 
   if (loading) {
     return <p className="text-sm text-slate-500">Đang tải…</p>;
@@ -48,16 +87,38 @@ export default function SettingsPage() {
     );
   }
 
+  const current = TABS.find((t) => t.id === tab) ?? TABS[0];
+
   return (
     <>
-      <PageHeader
-        title="Cài đặt"
-        description="Chuỗi dự phòng LLM, batch, chi phí AI, và số lần bị nền tảng chặn."
-      />
+      <PageHeader title="Cài đặt" description={current.description} />
+
+      <div className="mb-4 flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            className={
+              "rounded-md px-3 py-1.5 text-sm font-medium transition " +
+              (tab === t.id
+                ? "bg-white text-slate-900 shadow-sm"
+                : "text-slate-600 hover:text-slate-900")
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Chỉ dựng tab đang mở: mỗi tab kéo dữ liệu của riêng nó, và ba tab ẩn
+          mà vẫn gọi API là ba lượt gọi không ai nhìn — trong đó có hai bảng tự
+          làm mới mỗi 30 giây. */}
       <div className="space-y-6">
-        <LLMSection />
-        <AIUsageSection />
-        <FetchStatsSection />
+        {tab === "llm" ? <LLMSection /> : null}
+        {tab === "cost" ? <AIUsageSection /> : null}
+        {tab === "scrape" ? <ScrapeInfraSection /> : null}
+        {tab === "blocked" ? <FetchStatsSection /> : null}
       </div>
     </>
   );

@@ -68,6 +68,7 @@ func (h *Handler) Mux() *asynq.ServeMux {
 	mux.HandleFunc(task.TypeBreakingScan, h.breakingScan)
 	mux.HandleFunc(task.TypeScheduledScan, h.scheduledScan)
 	mux.HandleFunc(task.TypeMaintenanceCleanup, h.maintenanceCleanup)
+	mux.HandleFunc(task.TypeScrapeSweep, h.scrapeSweep)
 	return mux
 }
 
@@ -352,6 +353,14 @@ func (h *Handler) maintenanceCleanup(ctx context.Context, _ *asynq.Task) error {
 		return err
 	}
 	return nil
+}
+
+// scrapeSweep bảo trì hạ tầng via/proxy — xem Maintenance.SweepScrapeInfra.
+func (h *Handler) scrapeSweep(ctx context.Context, _ *asynq.Task) error {
+	if h.maintenance == nil {
+		return nil
+	}
+	return h.maintenance.SweepScrapeInfra(ctx)
 }
 
 // ---------------------------------------------------------------------------

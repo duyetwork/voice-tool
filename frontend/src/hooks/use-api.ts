@@ -31,6 +31,11 @@ import type {
   Health,
   Role,
   ScanHistory,
+  ScrapeHourRow,
+  ScrapeProxy,
+  Via,
+  ViaCookieSpec,
+  ViaHealth,
   SkippedLogPage,
   SourcePost,
   User,
@@ -56,6 +61,11 @@ export const keys = {
   llmApiSet: (id: string) => ["llm-api-sets", id] as const,
   settings: ["settings"] as const,
   fetchStats: (days: number) => ["settings", "fetch-stats", days] as const,
+  vias: (platform: string) => ["settings", "vias", platform] as const,
+  proxies: (platform: string) => ["settings", "proxies", platform] as const,
+  scrapeHealth: ["settings", "scrape-health"] as const,
+  viaCookieSpecs: ["settings", "via-cookie-specs"] as const,
+  scrapeLoad: (days: number) => ["settings", "scrape-load", days] as const,
   aiUsage: (days: number) => ["settings", "ai-usage", days] as const,
   health: ["meta", "health"] as const,
   auditLog: (filters: Record<string, unknown>) => ["audit-log", filters] as const,
@@ -1147,12 +1157,20 @@ export function useMe() {
   });
 }
 
+/**
+ * Danh sách tài khoản. Route `/users` CHỈ ADMIN.
+ *
+ * `enabled` để chỗ gọi tắt hẳn query cho vai trò không được xem: không tắt thì
+ * mỗi lần mở bảng là một lỗi 403 vô nghĩa trong log của cả hai phía.
+ */
 export function useUsers(
   filters: { limit?: number; offset?: number; sort?: string; dir?: string } = {},
+  enabled = true,
 ) {
   return useQuery({
     queryKey: keys.users(filters),
     queryFn: () => api.get<Page<User>>("/users", filters),
+    enabled,
   });
 }
 
@@ -1171,5 +1189,133 @@ export function useSetUserActive() {
     mutationFn: ({ id, is_active }: { id: string; is_active: boolean }) =>
       api.patch<User>(`/users/${id}/active`, { is_active }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Hạ tầng via/proxy (màn Cài đặt)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bảng via tự làm mới mỗi 30 giây.
+ *
+ * Trạng thái via đổi do WORKER chứ không do thao tác trên màn hình này: một via
+ * có thể vào cooldown trong lúc người vận hành đang nhìn bảng. Không tự làm mới
+ * thì thứ họ đang nhìn là ảnh chụp của vài phút trước, và đó chính là lúc họ ra
+ * quyết định thay via.
+ */
+export function useVias(platform = "") {
+  return useQuery({
+    queryKey: keys.vias(platform),
+    queryFn: () => api.get<{ items: Via[] }>("/settings/vias", { platform: platform || undefined }),
+    refetchInterval: 30_000,
+  });
+}
+
+export interface ViaInput {
+  platform?: string;
+  label?: string;
+  /** Chỉ đi MỘT CHIỀU. Bỏ trống khi sửa = giữ cookies cũ. */
+  cookies?: string;
+  daily_quota?: number;
+  /** Chỉ `active` / `disabled` — cooldown và dead do hệ thống kết luận. */
+  status?: "active" | "disabled";
+}
+
+export function useCreateVia() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ViaInput) => api.post<Via>("/settings/vias", input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
+export function useUpdateVia() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string } & ViaInput) =>
+      api.patch<Via>(`/settings/vias/${id}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
+export function useDeleteVia() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/settings/vias/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
+export function useProxies(platform = "") {
+  return useQuery({
+    queryKey: keys.proxies(platform),
+    queryFn: () =>
+      api.get<{ items: ScrapeProxy[] }>("/settings/proxies", { platform: platform || undefined }),
+    refetchInterval: 30_000,
+  });
+}
+
+export interface ProxyInput {
+  label?: string;
+  platform?: string;
+  /** Chỉ đi MỘT CHIỀU. Bỏ trống khi sửa = giữ endpoint cũ. */
+  endpoint?: string;
+  kind?: "residential" | "mobile" | "datacenter";
+  status?: "active" | "disabled";
+}
+
+export function useCreateProxy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ProxyInput) => api.post<ScrapeProxy>("/settings/proxies", input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
+export function useUpdateProxy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string } & ProxyInput) =>
+      api.patch<ScrapeProxy>(`/settings/proxies/${id}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
+export function useDeleteProxy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/settings/proxies/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
+export function useScrapeHealth() {
+  return useQuery({
+    queryKey: keys.scrapeHealth,
+    queryFn: () => api.get<{ items: ViaHealth[] }>("/settings/scrape-health"),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useScrapeLoad(days = 7) {
+  return useQuery({
+    queryKey: keys.scrapeLoad(days),
+    queryFn: () =>
+      api.get<{ items: ScrapeHourRow[]; days: number }>("/settings/scrape-load", { days }),
+  });
+}
+
+/**
+ * Nền tảng nào cần cookie gì.
+ *
+ * Danh mục tĩnh (chỉ đổi khi code đổi) nên lấy một lần rồi giữ: mở form thêm
+ * via không phải gọi lại.
+ */
+export function useViaCookieSpecs() {
+  return useQuery({
+    queryKey: keys.viaCookieSpecs,
+    queryFn: () => api.get<{ items: ViaCookieSpec[] }>("/settings/via-cookie-specs"),
+    staleTime: Infinity,
   });
 }

@@ -35,8 +35,10 @@ type RouterDeps struct {
 	FetchStats *service.FetchStats
 	AIUsage    *service.AIUsage
 	Health     *service.Health
-	Audit      *service.Audit
-	User       *service.User
+	// ScrapeAdmin quản lý via/proxy quét Facebook/X/Instagram (màn Cài đặt).
+	ScrapeAdmin *service.ScrapeAdmin
+	Audit       *service.Audit
+	User        *service.User
 	// MultimeUsers tra danh bạ tài khoản Strongbody (ô chọn tác giả).
 	MultimeUsers *service.MultimeUsers
 	// CatalogCache: danh mục quốc gia/hashtag đã lưu trong DB cho modal Tạo
@@ -218,6 +220,9 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	// Cài đặt: chuỗi dự phòng LLM + batch. Chặn bằng middleware được vì đây là
 	// cấu hình của cả hệ thống, không có "chủ sở hữu" nào để so như API key.
 	settings := handler.NewSettings(d.Settings, d.FetchStats, d.AIUsage)
+	// Via/proxy: bí mật đăng nhập và lối ra mạng của cả hệ thống — admin.
+	handler.NewScrape(d.ScrapeAdmin).Register(admin)
+
 	admin.GET("/settings", settings.Get)
 	admin.PATCH("/settings", settings.Update)
 	// Số lần bị từng nền tảng chặn — dữ liệu để quyết định có cần proxy không.

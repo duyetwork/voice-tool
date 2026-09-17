@@ -45,6 +45,36 @@ type Querier interface {
 	// Cùng ranh giới với cascade từ kênh: voice đã ghi xong file là mô tả của một
 	// file audio có thật, đổi nhãn không đổi được tiếng đã đọc trong file.
 	CascadeVoiceLanguageFromPost(ctx context.Context, arg CascadeVoiceLanguageFromPostParams) (int64, error)
+	// Nhận proxy cho MỘT request: nghỉ lâu nhất trước. Chọn-và-đánh-dấu trong một
+	// câu, cùng lý do với ClaimScrapeVia.
+	//
+	// `platform IS NULL` lọt vào kết quả: đó là gateway residential dùng chung cho
+	// mọi nền tảng. Proxy gán đích danh nền tảng được ưu tiên hơn (ORDER BY đẩy
+	// `platform IS NULL` xuống sau) vì gán đích danh là có chủ đích.
+	//
+	// Chỉ lấy `active`: `degraded` và `dead` đứng ngoài vòng chọn cho tới khi có
+	// người bật lại tay. Xem MarkScrapeProxyBlocked.
+	ClaimScrapeProxy(ctx context.Context, platform *string) (ScrapeProxy, error)
+	// Nhận via cho MỘT lượt quét: nghỉ lâu nhất trước (round-robin theo thời gian
+	// nghỉ), trong nhóm còn khoẻ và còn hạn mức ngày.
+	//
+	// CHỌN VÀ ĐÁNH DẤU TRONG MỘT CÂU, không phải SELECT rồi UPDATE. Hai worker quét
+	// song song mà đọc rồi mới ghi thì cả hai cùng thấy một via "nghỉ lâu nhất" và
+	// cùng dùng nó — vòng xoay đứng im, một via gánh hết tải, đúng thứ cần tránh
+	// nhất khi tài sản quý là số via còn sống. Một câu UPDATE thì Postgres tự khoá
+	// dòng, worker thứ hai thấy last_used_at đã đổi và nhận via kế tiếp.
+	//
+	// SKIP LOCKED ở subquery: worker thứ hai nhảy sang via kế thay vì xếp hàng chờ
+	// — có vài trăm kênh cần quét thì chờ nhau là tự dồn burst về cuối hàng.
+	//
+	// Chỉ đặt last_used_at ở đây, KHÔNG trừ hạn mức: hạn mức trừ khi lượt quét
+	// thành công (xem MarkScrapeViaUsed). Một request bị proxy làm hỏng không phải
+	// lỗi của via và không đáng lấy mất một suất của nó.
+	//
+	// `daily_used_date < CURRENT_DATE` cũng được coi là CÒN hạn mức: bộ đếm của
+	// ngày hôm qua không phải hạn mức của hôm nay. Nhờ vậy việc reset tự liền ngay
+	// cả khi job cron lỡ nhịp.
+	ClaimScrapeVia(ctx context.Context, platform string) (ScrapeVia, error)
 	// Chỉ 1 worker được xử lý 1 bài tại 1 thời điểm (idempotent khi Asynq retry).
 	ClaimSourcePostForProcessing(ctx context.Context, id uuid.UUID) (SourcePost, error)
 	// Nhận Voice về để đọc. Chỉ nhận khi voice đang `processing` hoặc đã `failed`:
@@ -73,11 +103,14 @@ type Querier interface {
 	CountListScheduleds(ctx context.Context, arg CountListScheduledsParams) (int64, error)
 	CountPrompts(ctx context.Context) (int64, error)
 	CountScanRuns(ctx context.Context, arg CountScanRunsParams) (int64, error)
+	// Bảng tổng quan trên màn Cài đặt: bao nhiêu via sống/chết theo từng nền tảng.
+	CountScrapeViasByStatus(ctx context.Context) ([]CountScrapeViasByStatusRow, error)
 	CountSkippedLogs(ctx context.Context, listBreakingID uuid.UUID) (int64, error)
 	// Tỉ lệ bỏ qua giúp đánh giá regex có quá chặt/quá lỏng hay không.
 	CountSkippedLogsSince(ctx context.Context, arg CountSkippedLogsSinceParams) (int64, error)
 	CountSourcePosts(ctx context.Context, arg CountSourcePostsParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	CountViaUsageLogs(ctx context.Context, arg CountViaUsageLogsParams) (int64, error)
 	// Lọc theo trạng thái NGƯỜI DÙNG THẤY, không phải cột thô: voice còn thiếu điều
 	// kiện đăng (chưa chọn author, chưa có hashtag/tiêu đề, audio ngắn hơn mức
 	// multime nhận) hiện badge "Chưa đủ điều kiện", nên chọn trạng thái đó phải ra
@@ -107,12 +140,24 @@ type Querier interface {
 	CreateListBreaking(ctx context.Context, arg CreateListBreakingParams) (ListBreaking, error)
 	CreateListScheduled(ctx context.Context, arg CreateListScheduledParams) (ListScheduled, error)
 	CreatePrompt(ctx context.Context, arg CreatePromptParams) (Prompt, error)
+	// ---------------------------------------------------------------------------
+	// Proxy (lối ra mạng cho các request quét)
+	// ---------------------------------------------------------------------------
+	CreateScrapeProxy(ctx context.Context, arg CreateScrapeProxyParams) (ScrapeProxy, error)
+	// ---------------------------------------------------------------------------
+	// Via (phiên đăng nhập dùng để quét trang công khai)
+	// ---------------------------------------------------------------------------
+	CreateScrapeVia(ctx context.Context, arg CreateScrapeViaParams) (ScrapeVia, error)
 	CreateSkippedLog(ctx context.Context, arg CreateSkippedLogParams) error
 	CreateSourcePost(ctx context.Context, arg CreateSourcePostParams) (SourcePost, error)
 	// Voice gõ tay: không có Bài Post nào đứng sau, nội dung nằm thẳng trên Voice.
 	// Tạo ở trạng thái `processing` để người dùng thấy ngay dòng voice đang chạy,
 	// worker điền file + metadata vào đúng dòng đó (FinishVoice).
 	CreateTextVoice(ctx context.Context, arg CreateTextVoiceParams) (Voice, error)
+	// ---------------------------------------------------------------------------
+	// via_usage_log
+	// ---------------------------------------------------------------------------
+	CreateViaUsageLog(ctx context.Context, arg CreateViaUsageLogParams) error
 	// Metadata người dùng điền sẵn ở màn tạo Voice đi vào ngay từ đây (title,
 	// hashtag, author, ảnh): worker sau đó chỉ ĐIỀN VÀO CHỖ TRỐNG chứ không ghi đè,
 	// nên giá trị người dùng gõ luôn thắng giá trị lấy từ bài gốc.
@@ -129,8 +174,11 @@ type Querier interface {
 	DeleteListScheduled(ctx context.Context, id uuid.UUID) (int64, error)
 	DeletePrompt(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteScanRunsBefore(ctx context.Context, before time.Time) (int64, error)
+	DeleteScrapeProxy(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteScrapeVia(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteSkippedLogsBefore(ctx context.Context, before time.Time) (int64, error)
 	DeleteSourcePost(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteViaUsageLogsBefore(ctx context.Context, before time.Time) (int64, error)
 	DeleteVoice(ctx context.Context, id uuid.UUID) (int64, error)
 	// Đóng những vòng quét không bao giờ kết thúc.
 	//
@@ -169,6 +217,8 @@ type Querier interface {
 	GetListBreaking(ctx context.Context, id uuid.UUID) (ListBreaking, error)
 	GetListScheduled(ctx context.Context, id uuid.UUID) (ListScheduled, error)
 	GetPrompt(ctx context.Context, id uuid.UUID) (Prompt, error)
+	GetScrapeProxy(ctx context.Context, id uuid.UUID) (ScrapeProxy, error)
+	GetScrapeVia(ctx context.Context, id uuid.UUID) (ScrapeVia, error)
 	GetSourcePost(ctx context.Context, id uuid.UUID) (SourcePost, error)
 	GetUserByEmail(ctx context.Context, email string) (AppUser, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (AppUser, error)
@@ -239,6 +289,11 @@ type Querier interface {
 	ListPrompts(ctx context.Context, arg ListPromptsParams) ([]Prompt, error)
 	// Lịch sử của ĐÚNG MỘT kênh — service luôn truyền đúng một trong hai id.
 	ListScanRuns(ctx context.Context, arg ListScanRunsParams) ([]ListScanRunsRow, error)
+	ListScrapeProxies(ctx context.Context, platform *string) ([]ScrapeProxy, error)
+	// Bảng quản lý trên màn Cài đặt. Sắp theo nền tảng rồi nhãn để danh sách đứng
+	// yên giữa các lần tải — sắp theo trạng thái thì dòng nhảy chỗ mỗi lần một via
+	// vào cooldown, đúng lúc người ta đang nhìn nó.
+	ListScrapeVias(ctx context.Context, platform *string) ([]ScrapeVia, error)
 	ListSkippedLogs(ctx context.Context, arg ListSkippedLogsParams) ([]SkippedLog, error)
 	// Bài Post đi kèm URL của kênh đã đẻ ra nó. Kênh không có cột tên, nên thứ
 	// nhận diện được một kênh trên giao diện vẫn là source_url của nó.
@@ -255,6 +310,7 @@ type Querier interface {
 	// NULL khi dir='desc' -> rơi về mặc định mới nhất trước.
 	ListSourcePosts(ctx context.Context, arg ListSourcePostsParams) ([]ListSourcePostsRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]AppUser, error)
+	ListViaUsageLogs(ctx context.Context, arg ListViaUsageLogsParams) ([]ListViaUsageLogsRow, error)
 	// Trả kèm nền tảng nguồn + email người tạo để bảng Voice hiển thị và lọc được
 	// mà không phải gọi thêm API (prompt.md mục 3, 4, 8).
 	// Lọc theo trạng thái NGƯỜI DÙNG THẤY, không phải cột thô: voice còn thiếu điều
@@ -289,12 +345,51 @@ type Querier interface {
 	// Đóng vòng quét đầu. Cột riêng chứ không suy ra từ last_synced_post_id: kênh
 	// chưa có bài nào thì mốc đó vẫn NULL sau một vòng quét hoàn toàn hợp lệ.
 	MarkListScheduledBackfilled(ctx context.Context, id uuid.UUID) error
+	// Nền tảng chặn IP (`bot_block`): đây là lỗi của lối ra mạng.
+	//
+	//   chưa đủ ngưỡng      -> vẫn active
+	//   đủ ngưỡng lần đầu   -> degraded (ra khỏi vòng chọn, còn cứu được bằng tay)
+	//   vẫn hỏng tiếp       -> dead
+	//
+	// KHÔNG có đường tự hồi sinh theo thời gian, khác hẳn via: một IP đã bị Meta/X
+	// liệt thì chờ bao lâu cũng vậy. Tự bật lại chỉ tạo ra một vòng lặp hỏng đều
+	// đặn và làm nhiễu số liệu của các proxy còn tốt.
+	MarkScrapeProxyBlocked(ctx context.Context, arg MarkScrapeProxyBlockedParams) (ScrapeProxy, error)
+	// Request đi qua proxy này xong mà không bị chặn.
+	MarkScrapeProxyUsed(ctx context.Context, id uuid.UUID) error
+	// Nền tảng đòi đăng nhập — phiên của via này có vấn đề.
+	//
+	// Một câu UPDATE lo trọn máy trạng thái, thay vì đọc rồi tính rồi ghi: hai
+	// worker cùng gặp lỗi trên một via sẽ chạy hai lượt, và đọc-tính-ghi thì lượt
+	// sau ghi đè lượt trước, số đếm đứng yên và via không bao giờ chết.
+	//
+	//   chưa đủ ngưỡng          -> vẫn active, chỉ tăng số đếm
+	//   đủ ngưỡng, lần đầu      -> cooldown, hẹn giờ thử lại
+	//   lại hỏng sau cooldown   -> dead (đã cho một cơ hội rồi)
+	//
+	// Nhận ra "lại hỏng sau cooldown" bằng cooldown_until: cột này chỉ được đặt khi
+	// via đã từng đi qua cooldown, và MarkScrapeViaUsed xoá nó khi via sống lại
+	// thật. Còn giá trị nghĩa là lần cuối cùng ta cho nó cơ hội, nó vẫn hỏng.
+	MarkScrapeViaLoginError(ctx context.Context, arg MarkScrapeViaLoginErrorParams) (ScrapeVia, error)
+	// Sau một lượt quét THÀNH CÔNG: trừ hạn mức, xoá sạch dấu vết hỏng hóc cũ.
+	//
+	// Bộ đếm ngày tự liền ngay tại đây: gặp ngày lệch thì đặt lại về 1 thay vì cộng
+	// tiếp vào con số của hôm qua.
+	MarkScrapeViaUsed(ctx context.Context, id uuid.UUID) error
 	// Business rule #2: publish thành công -> xoá file S3 và set voice_file_url = NULL,
 	// chỉ giữ multime_post_url làm nguồn tham chiếu duy nhất.
 	// Ảnh bìa tải từ máy cũng bị xoá theo cùng lý do: multime đã giữ bản của nó,
 	// bản trong bucket của mình không còn ai đọc nữa. Ảnh lấy từ URL bài gốc không
 	// nằm trong bucket nên giữ nguyên link.
 	MarkVoicePublished(ctx context.Context, arg MarkVoicePublishedParams) (Voice, error)
+	// Lỗi không quy được cho proxy: đếm vào tỉ lệ hỏng của ngày, không đụng trạng thái.
+	NoteScrapeProxyError(ctx context.Context, arg NoteScrapeProxyErrorParams) error
+	// Lỗi KHÔNG phải của via (bot_block, rate_limit, mạng đứt): ghi lại để đối
+	// chiếu, nhưng không đụng tới máy trạng thái.
+	//
+	// Vì sao tách khỏi câu trên: đánh via chết vì một IP bị chặn là thay nhầm thứ
+	// đang hỏng — via vẫn tốt, và ta vừa vứt đi một tài khoản còn dùng được.
+	NoteScrapeViaError(ctx context.Context, arg NoteScrapeViaErrorParams) error
 	// Bốc 1 quốc gia trong nhóm nói cùng một ngôn ngữ, ưu tiên theo sort_order.
 	//
 	// Dùng cho kênh bật "Random author": bài đọc bằng tiếng Việt mà đứng tên tài
@@ -306,6 +401,23 @@ type Querier interface {
 	// là bản sao từ Strongbody, không phải chuỗi ta tự kiểm soát.
 	PickCountryForLanguage(ctx context.Context, names []string) (int64, error)
 	RecordAIUsage(ctx context.Context, arg RecordAIUsageParams) error
+	ResetScrapeProxyDaily(ctx context.Context) (int64, error)
+	// Job hằng ngày. Bộ đếm đã tự liền theo ngày ở MarkScrapeViaUsed, nên câu này
+	// chỉ để bảng nhìn đúng trên giao diện trước lượt dùng đầu tiên của ngày mới.
+	ResetScrapeViaDailyUsed(ctx context.Context) (int64, error)
+	// Job định kỳ: via hết cooldown thì cho thử lại.
+	//
+	// GIỮ NGUYÊN cooldown_until (không xoá về NULL) vì nó chính là thứ đánh dấu
+	// "via này đã được cho một cơ hội" — xem MarkScrapeViaLoginError. Xoá nó ở đây
+	// thì via hỏng lại sẽ vào cooldown lần nữa, và lặp mãi không bao giờ chết.
+	ReviveScrapeVias(ctx context.Context) (int64, error)
+	// Số lượt quét theo GIỜ trong ngày, `days` ngày gần nhất.
+	//
+	// Biểu đồ này trả lời đúng một câu: lịch quét có bị dồn cục không. Vài trăm
+	// kênh quét 1 lần/ngày mà tất cả rơi vào cùng một khung giờ thì nền tảng nhìn
+	// thấy một đợt tấn công, còn bảng thống kê lỗi thì chỉ nói "bị chặn" mà không
+	// nói vì sao — cột giờ này mới nói ra.
+	ScrapeHourlyLoad(ctx context.Context, days int32) ([]ScrapeHourlyLoadRow, error)
 	// Bật/tắt MỘT key. Người gọi chịu trách nhiệm tắt các key khác TRƯỚC khi bật
 	// key này (xem DeactivateOtherAIEngines) — làm ngược lại là đụng
 	// uq_ai_engine_active_per_user.
@@ -375,6 +487,12 @@ type Querier interface {
 	UpdateListBreaking(ctx context.Context, arg UpdateListBreakingParams) (ListBreaking, error)
 	UpdateListScheduled(ctx context.Context, arg UpdateListScheduledParams) (ListScheduled, error)
 	UpdatePrompt(ctx context.Context, arg UpdatePromptParams) (Prompt, error)
+	// Dán endpoint mới cũng là reset sức khoẻ — cùng lý do với UpdateScrapeVia.
+	UpdateScrapeProxy(ctx context.Context, arg UpdateScrapeProxyParams) (ScrapeProxy, error)
+	// Sửa via. Dán cookies mới cũng là RESET SỨC KHOẺ: người vào đây là vì via
+	// hỏng, dán cookies mới mà vẫn còn `dead` thì bộ chọn tiếp tục bỏ qua nó và họ
+	// không hiểu vì sao (đúng bài học của UpdateLLMAPIKey).
+	UpdateScrapeVia(ctx context.Context, arg UpdateScrapeViaParams) (ScrapeVia, error)
 	UpdateSourcePost(ctx context.Context, arg UpdateSourcePostParams) (SourcePost, error)
 	// Worker ghi lại metadata gốc lấy được từ nền tảng để Voice và form đăng bài
 	// auto-fill từ đây.

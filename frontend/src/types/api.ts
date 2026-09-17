@@ -787,3 +787,103 @@ export interface ScanHistory {
   limit: number;
   offset: number;
 }
+
+// ---------------------------------------------------------------------------
+// Hạ tầng via/proxy quét Facebook / X / Instagram
+// ---------------------------------------------------------------------------
+//
+// VÌ SAO CÓ: ba nền tảng này không liệt kê được bài của một trang qua yt-dlp, và
+// kênh nguồn là trang của NGƯỜI KHÁC nên không có API chính thức nào dùng được.
+//
+// Rủi ro đi kèm, người vận hành cần biết: cách làm này vi phạm điều khoản sử
+// dụng của cả ba nền tảng, mang rủi ro pháp lý về scraping, và chi phí thật của
+// nó là via chết liên tục phải thay.
+
+/**
+ * Trạng thái một via.
+ *
+ * `cooldown` và `dead` là KẾT LUẬN của hệ thống, không đặt tay được; `disabled`
+ * mới là công tắc của người vận hành. Gộp `dead` với `disabled` thì một lần tắt
+ * tay trông giống một lần via chết, và bảng tổng quan đếm sai.
+ */
+export type ViaStatus = "active" | "cooldown" | "dead" | "disabled";
+
+/** Không có `cooldown`: IP bị nền tảng liệt thì chờ không khỏi. */
+export type ProxyStatus = "active" | "degraded" | "dead" | "disabled";
+
+export type ProxyKind = "residential" | "mobile" | "datacenter";
+
+/** KHÔNG có trường nào chứa cookies — chúng không bao giờ rời khỏi server. */
+export interface Via {
+  id: string;
+  platform: string;
+  label: string;
+  status: ViaStatus;
+  /** Số lỗi "đòi đăng nhập" liên tiếp; đủ ngưỡng thì via vào cooldown. */
+  consecutive_login_errors: number;
+  cooldown_until: string | null;
+  daily_quota: number;
+  daily_used: number;
+  /** Tính ở server: bộ đếm tự liền theo ngày nên trình duyệt trừ tay sẽ sai. */
+  quota_left: number;
+  last_used_at: string | null;
+  last_error_at: string | null;
+  last_error: string;
+  created_at: string;
+}
+
+/** `endpoint` đã che user/pass — server cắt, client không bao giờ thấy bản đầy đủ. */
+export interface ScrapeProxy {
+  id: string;
+  label: string;
+  /** Rỗng = dùng chung mọi nền tảng (gateway residential xoay IP). */
+  platform: string;
+  endpoint: string;
+  kind: ProxyKind;
+  status: ProxyStatus;
+  consecutive_blocks: number;
+  used_today: number;
+  errors_today: number;
+  last_used_at: string | null;
+  last_error: string;
+  created_at: string;
+}
+
+/** Số via theo trạng thái, cho mỗi nền tảng cần via. */
+export interface ViaHealth {
+  platform: string;
+  active: number;
+  cooldown: number;
+  dead: number;
+  disabled: number;
+  total: number;
+  /**
+   * Tỉ lệ via còn dùng được (0..1). Mẫu số KHÔNG tính via bị tắt tay — tắt bớt
+   * vài via không phải là dấu hiệu hệ thống đang hỏng.
+   */
+  healthy: number;
+}
+
+/**
+ * Hướng dẫn dán cookies cho một nền tảng.
+ *
+ * Đi từ backend chứ không chép cứng ở đây: server mới là bên từ chối khi thiếu
+ * cookie, nên form phải nói đúng cái server kiểm. Hai nơi giữ hai bản thì sớm
+ * muộn form hướng dẫn một đằng, API chặn một nẻo.
+ */
+export interface ViaCookieSpec {
+  platform: string;
+  /** Cookie mang danh tính — thiếu là bị từ chối. */
+  required: string[];
+  /** Mẫu để dán: đúng hình dạng thật, giá trị là giả. */
+  example: string;
+  hint: string;
+}
+
+/** Một cột của biểu đồ "số lượt quét theo giờ" — để xem lịch có bị dồn cục không. */
+export interface ScrapeHourRow {
+  hour: number;
+  platform: string;
+  total: number;
+  failed: number;
+}

@@ -27,6 +27,14 @@ const (
 	TypeScheduledScan    = "scheduled:scan"
 	// TypeMaintenanceCleanup dọn skipped_log quá hạn (chạy theo lịch ngày).
 	TypeMaintenanceCleanup = "maintenance:cleanup"
+	// TypeScrapeSweep bảo trì hạ tầng via/proxy: hồi sinh via hết cooldown, đặt
+	// lại hạn mức ngày, dọn nhật ký.
+	//
+	// Tách khỏi maintenance:cleanup vì NHỊP khác hẳn: cleanup chạy mỗi ngày một
+	// lần là đủ, còn cooldown của via chỉ 6 tiếng — gộp vào đó thì một via vào
+	// cooldown lúc 4h sáng phải chờ tới 3h15 hôm sau mới được thử lại, tức là
+	// 23 tiếng thay vì 6.
+	TypeScrapeSweep = "scrape:sweep"
 )
 
 // Tên queue — ưu tiên cao cho breaking (specs: F2 ưu tiên tốc độ).
@@ -104,6 +112,8 @@ type ScheduledScanPayload struct {
 
 type MaintenanceCleanupPayload struct{}
 
+type ScrapeSweepPayload struct{}
+
 func NewVoiceProcess(p VoiceProcessPayload) (*asynq.Task, error) {
 	return newTask(TypeVoiceProcess, p, QueueDefault)
 }
@@ -134,6 +144,10 @@ func NewScheduledScan(p ScheduledScanPayload) (*asynq.Task, error) {
 
 func NewMaintenanceCleanup() (*asynq.Task, error) {
 	return newTask(TypeMaintenanceCleanup, MaintenanceCleanupPayload{}, QueueLow)
+}
+
+func NewScrapeSweep() (*asynq.Task, error) {
+	return newTask(TypeScrapeSweep, ScrapeSweepPayload{}, QueueLow)
 }
 
 func newTask(name string, payload any, queue string) (*asynq.Task, error) {

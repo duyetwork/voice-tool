@@ -63,6 +63,8 @@ func run() error {
 		// Thiếu dòng này thì d.Health là nil và GET /meta/health panic —
 		// mà thanh cảnh báo trên giao diện gọi nó ở MỖI lần đổi trang.
 		Health: application.Health,
+		// Via/proxy quét Facebook/X/Instagram — màn Cài đặt.
+		ScrapeAdmin: application.ScrapeAdmin,
 
 		MultimeUsers: application.MultimeUsers,
 		CatalogCache: application.CatalogCache,
