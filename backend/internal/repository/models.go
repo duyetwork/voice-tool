@@ -216,6 +216,45 @@ type ScanRun struct {
 	Error           *string    `json:"error"`
 }
 
+type ScrapeProxy struct {
+	ID                uuid.UUID   `json:"id"`
+	Label             string      `json:"label"`
+	Platform          *string     `json:"platform"`
+	EndpointEncrypted string      `json:"endpoint_encrypted"`
+	EndpointMasked    string      `json:"endpoint_masked"`
+	Kind              string      `json:"kind"`
+	Status            string      `json:"status"`
+	ConsecutiveBlocks int32       `json:"consecutive_blocks"`
+	ErrorsToday       int32       `json:"errors_today"`
+	UsedToday         int32       `json:"used_today"`
+	Today             pgtype.Date `json:"today"`
+	LastUsedAt        *time.Time  `json:"last_used_at"`
+	LastErrorAt       *time.Time  `json:"last_error_at"`
+	LastError         *string     `json:"last_error"`
+	CreatedBy         uuid.UUID   `json:"created_by"`
+	CreatedAt         time.Time   `json:"created_at"`
+	UpdatedAt         time.Time   `json:"updated_at"`
+}
+
+type ScrapeVia struct {
+	ID                     uuid.UUID   `json:"id"`
+	Platform               string      `json:"platform"`
+	Label                  string      `json:"label"`
+	CookiesEncrypted       string      `json:"cookies_encrypted"`
+	Status                 string      `json:"status"`
+	ConsecutiveLoginErrors int32       `json:"consecutive_login_errors"`
+	CooldownUntil          *time.Time  `json:"cooldown_until"`
+	DailyQuota             int32       `json:"daily_quota"`
+	DailyUsed              int32       `json:"daily_used"`
+	DailyUsedDate          pgtype.Date `json:"daily_used_date"`
+	LastUsedAt             *time.Time  `json:"last_used_at"`
+	LastErrorAt            *time.Time  `json:"last_error_at"`
+	LastError              *string     `json:"last_error"`
+	CreatedBy              uuid.UUID   `json:"created_by"`
+	CreatedAt              time.Time   `json:"created_at"`
+	UpdatedAt              time.Time   `json:"updated_at"`
+}
+
 type SkippedLog struct {
 	ID             uuid.UUID `json:"id"`
 	ListBreakingID uuid.UUID `json:"list_breaking_id"`
@@ -249,6 +288,19 @@ type SourcePost struct {
 	AuthorName      *string    `json:"author_name"`
 	PostedAt        *time.Time `json:"posted_at"`
 	CountryID       *int64     `json:"country_id"`
+}
+
+type ViaUsageLog struct {
+	ID              uuid.UUID  `json:"id"`
+	ViaID           uuid.UUID  `json:"via_id"`
+	ProxyID         *uuid.UUID `json:"proxy_id"`
+	ListBreakingID  *uuid.UUID `json:"list_breaking_id"`
+	ListScheduledID *uuid.UUID `json:"list_scheduled_id"`
+	Platform        string     `json:"platform"`
+	Result          string     `json:"result"`
+	PostsFound      int32      `json:"posts_found"`
+	Detail          *string    `json:"detail"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 type Voice struct {

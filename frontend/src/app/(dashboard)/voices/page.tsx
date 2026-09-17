@@ -6,6 +6,7 @@ import { AudioPreview } from "@/components/audio-preview";
 import { BulkBar, SelectAllBox, useSelection } from "@/components/bulk";
 import { DuplicatePostNotice } from "@/components/duplicate-notice";
 import { ErrorNote, PageHeader } from "@/components/page-header";
+import { CreatorFilter } from "@/components/creator-filter";
 import { Can } from "@/components/permission";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -163,6 +164,7 @@ const MAX_TTS_TEXT_LENGTH = 20000;
 const EMPTY_FILTERS = {
   publish_status: "",
   platform: "",
+  created_by: "",
   created_from: "",
   created_to: "",
   published_from: "",
@@ -207,6 +209,7 @@ export default function VoicesPage() {
     {
       publish_status: filters.publish_status || undefined,
       platform: filters.platform || undefined,
+      created_by: filters.created_by || undefined,
       created_from: filters.created_from || undefined,
       created_to: filters.created_to || undefined,
       published_from: filters.published_from || undefined,
@@ -294,6 +297,8 @@ export default function VoicesPage() {
               ))}
             </Select>
           </div>
+
+          <CreatorFilter value={filters.created_by} onChange={(id) => set("created_by")(id)} />
 
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-500">Ngày tạo</label>

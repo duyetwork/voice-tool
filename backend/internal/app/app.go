@@ -70,17 +70,21 @@ type App struct {
 	// Settings đọc/ghi app_setting (chuỗi dự phòng LLM, batch).
 	Settings *service.Settings
 	// LLMSets quản lý Bộ API key LLM; LLMRouter là thứ worker gọi khi chạy mode C.
-	LLMSets      *service.LLMAPISetService
-	LLMRouter    *service.LLMRouter
-	User         *service.User
-	SourcePost   *service.SourcePost
-	Voice        *service.Voice
-	List         *service.List
-	Catalog      *service.Catalog
-	AIEngine     *service.AIEngineService
-	Engine       *service.Engine
-	Scan         *service.Scan
-	Maintenance  *service.Maintenance
+	LLMSets     *service.LLMAPISetService
+	LLMRouter   *service.LLMRouter
+	User        *service.User
+	SourcePost  *service.SourcePost
+	Voice       *service.Voice
+	List        *service.List
+	Catalog     *service.Catalog
+	AIEngine    *service.AIEngineService
+	Engine      *service.Engine
+	Scan        *service.Scan
+	Maintenance *service.Maintenance
+	// ScrapePool cấp (via, proxy) cho từng lượt quét Facebook/X/Instagram;
+	// ScrapeAdmin là mặt quản trị của chúng trên màn Cài đặt.
+	ScrapePool   *service.ScrapePool
+	ScrapeAdmin  *service.ScrapeAdmin
 	MultimeCreds *service.MultimeCreds
 	MultimeUsers *service.MultimeUsers
 	// CatalogCache: danh mục quốc gia/hashtag lưu trong DB cho modal Tạo Voice.
@@ -118,6 +122,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		return fail(err)
 	}
 
+	// Hộp mã hoá dựng SỚM: cả cookies của via lẫn token multime đều đi qua nó,
+	// và adapter Facebook bên dưới cần nó ngay lúc khởi tạo.
+	box, err := secret.NewBox(cfg.TokenEncryptionKey)
+	if err != nil {
+		return fail(err)
+	}
+
 	runner := platformadapter.NewExecRunner(10*time.Minute, map[string]string{
 		"yt-dlp":  cfg.YtDlpPath,
 		"ffmpeg":  cfg.FFmpegPath,
@@ -129,9 +140,33 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	proxyFor := func(p domain.Platform) platformadapter.Option {
 		return platformadapter.WithProxy(cfg.YtDlpProxyFor(p))
 	}
+	// Facebook: adapter yt-dlp lo phần lấy từng bài, còn phần LIỆT KÊ TRANG do
+	// adapter tự đọc HTML đảm nhiệm (yt-dlp không có extractor nào cho việc đó).
+	//
+	// Truyền pool vào — tức mở khoá việc thêm kênh Facebook — chỉ khi cả hai
+	// điều kiện cùng đúng: có hạ tầng via, và người vận hành đã bật cờ sau khi
+	// đối chiếu với một trang thật. Xem config.FacebookChannelScan.
+	scrapePool := service.NewScrapePool(queries, box, log, service.ScrapeLimits{
+		ViaLoginErrors: cfg.ViaLoginErrorThreshold,
+		ViaCooldown:    cfg.ViaCooldown,
+		ProxyBlocks:    cfg.ProxyBlockThreshold,
+	})
+	var facebookPool domain.ScrapePool
+	if cfg.FacebookChannelScan {
+		facebookPool = scrapePool
+	} else {
+		log.Info("FACEBOOK_CHANNEL_SCAN=false — chưa cho thêm kênh Facebook; " +
+			"bật sau khi đã thử via thật trên một trang thật")
+	}
+	facebook := platformadapter.NewFacebookScrape(
+		platformadapter.NewFacebook(runner, "", proxyFor(domain.PlatformFacebook)),
+		facebookPool,
+		platformadapter.NewScrapeFetcher(),
+	)
+
 	platforms := platformadapter.NewRegistry(
 		platformadapter.NewYouTube(runner, "", proxyFor(domain.PlatformYouTube)),
-		platformadapter.NewFacebook(runner, "", proxyFor(domain.PlatformFacebook)),
+		facebook,
 		platformadapter.NewTikTok(runner, "", proxyFor(domain.PlatformTikTok)),
 		platformadapter.NewInstagram(runner, "", proxyFor(domain.PlatformInstagram)),
 		platformadapter.NewX(runner, "", proxyFor(domain.PlatformX)),
@@ -173,11 +208,6 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		multimeClient, multimeAuth, multimeDir = client, client, client
 	}
 
-	box, err := secret.NewBox(cfg.TokenEncryptionKey)
-	if err != nil {
-		return fail(err)
-	}
-
 	tokens := jwt.NewManager(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
 	settings := service.NewSettings(queries, log)
 	aiUsage := service.NewAIUsage(queries, settings, log)
@@ -202,6 +232,10 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// Gate riêng cho TTS: khoá là API key chứ không phải nền tảng, và 3voices
 	// cho 2 job đồng thời trên mỗi key chứ không phải 1.
 	ttsGate := service.NewTTSGate(cfg.TTSMinGap, cfg.TTSMaxConcurrent)
+	// Nhịp riêng cho Facebook/X/Instagram: chậm hơn và ít song song hơn yt-dlp.
+	// Một lần tải trang ở đây mang theo cookies của tài khoản thật, nên nó bị
+	// soi kỹ hơn hẳn một lần yt-dlp lấy video ẩn danh.
+	scrapeGate := service.NewKeyGate(cfg.ScrapeMinGap, cfg.ScrapeConcurrency)
 	fetchStats := service.NewFetchStats(queries, log)
 	multimeCreds := service.NewMultimeCreds(queries, multimeAuth, box, log)
 	multimeUsers := service.NewMultimeUsers(multimeDir, multimeCreds)
@@ -284,13 +318,17 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			Enqueuer:   enqueuer,
 			Logger:     log,
 			Gate:       platformGate,
+			ScrapeGate: scrapeGate,
 			FetchStats: fetchStats,
 		}),
-		FetchStats: fetchStats,
-		AIUsage:    aiUsage,
-		Health:     service.NewHealth(queries, log),
+		FetchStats:  fetchStats,
+		AIUsage:     aiUsage,
+		Health:      service.NewHealth(queries, log),
+		ScrapePool:  scrapePool,
+		ScrapeAdmin: service.NewScrapeAdmin(queries, box, audit),
 		Maintenance: service.NewMaintenance(
-			queries, log, cfg.SkippedLogRetention, cfg.AIUsageRetention, cfg.ScanRunRetention),
+			queries, log, cfg.SkippedLogRetention, cfg.AIUsageRetention,
+			cfg.ScanRunRetention, cfg.ViaUsageLogRetention),
 		MultimeCreds: multimeCreds,
 		MultimeUsers: multimeUsers,
 		CatalogCache: service.NewCatalogCache(queries, multimeUsers, log),

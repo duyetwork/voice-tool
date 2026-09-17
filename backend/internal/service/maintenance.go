@@ -19,6 +19,8 @@ type Maintenance struct {
 	aiUsageRetention time.Duration
 	// scanRunRetention: giữ lịch sử quét bao lâu.
 	scanRunRetention time.Duration
+	// viaUsageLogRetention: giữ nhật ký dùng via bao lâu.
+	viaUsageLogRetention time.Duration
 }
 
 // staleScanRunAfter — sau bấy lâu, một vòng quét còn ở `running` được coi là đã
@@ -33,7 +35,8 @@ const staleScanRunAfter = 2 * time.Hour
 func NewMaintenance(
 	q *repository.Queries,
 	log *slog.Logger,
-	skippedLogRetention, aiUsageRetention, scanRunRetention time.Duration,
+	skippedLogRetention, aiUsageRetention, scanRunRetention,
+	viaUsageLogRetention time.Duration,
 ) *Maintenance {
 	if skippedLogRetention <= 0 {
 		skippedLogRetention = 7 * 24 * time.Hour
@@ -44,11 +47,15 @@ func NewMaintenance(
 	if scanRunRetention <= 0 {
 		scanRunRetention = 30 * 24 * time.Hour
 	}
+	if viaUsageLogRetention <= 0 {
+		viaUsageLogRetention = 30 * 24 * time.Hour
+	}
 	return &Maintenance{
 		q: q, log: log,
-		skippedLogRetention: skippedLogRetention,
-		aiUsageRetention:    aiUsageRetention,
-		scanRunRetention:    scanRunRetention,
+		skippedLogRetention:  skippedLogRetention,
+		aiUsageRetention:     aiUsageRetention,
+		scanRunRetention:     scanRunRetention,
+		viaUsageLogRetention: viaUsageLogRetention,
 	}
 }
 
@@ -126,4 +133,53 @@ func (m *Maintenance) CleanupScanRuns(ctx context.Context) (int64, error) {
 			"deleted", rows, "retention", m.scanRunRetention.String())
 	}
 	return rows, nil
+}
+
+// SweepScrapeInfra là job bảo trì của hạ tầng via/proxy.
+//
+// Ba việc, chạy theo thứ tự này:
+//
+//  1. Hồi sinh via đã hết cooldown — via nghỉ đủ giờ mà không ai cho thử lại
+//     thì cooldown không khác gì cái chết.
+//  2. Đặt lại bộ đếm hạn mức ngày. Bộ đếm đã tự liền theo ngày ở
+//     MarkScrapeViaUsed, nên đây chỉ để bảng trên giao diện nhìn đúng trước
+//     lượt dùng đầu tiên của ngày mới.
+//  3. Dọn nhật ký dùng via quá hạn.
+//
+// Không dừng ở việc đầu tiên hỏng: ba việc độc lập nhau, và bỏ qua việc hồi
+// sinh via chỉ vì việc dọn log hỏng là đánh đổi sai hướng.
+func (m *Maintenance) SweepScrapeInfra(ctx context.Context) error {
+	var firstErr error
+	note := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	revived, err := m.q.ReviveScrapeVias(ctx)
+	note(err)
+	if err != nil {
+		m.log.ErrorContext(ctx, "không hồi sinh được via hết cooldown", "error", err)
+	} else if revived > 0 {
+		m.log.InfoContext(ctx, "via hết cooldown, cho thử lại", "count", revived)
+	}
+
+	if _, err := m.q.ResetScrapeViaDailyUsed(ctx); err != nil {
+		note(err)
+		m.log.ErrorContext(ctx, "không đặt lại được hạn mức ngày của via", "error", err)
+	}
+	if _, err := m.q.ResetScrapeProxyDaily(ctx); err != nil {
+		note(err)
+		m.log.ErrorContext(ctx, "không đặt lại được bộ đếm ngày của proxy", "error", err)
+	}
+
+	rows, err := m.q.DeleteViaUsageLogsBefore(ctx, time.Now().Add(-m.viaUsageLogRetention))
+	if err != nil {
+		note(err)
+		m.log.ErrorContext(ctx, "không dọn được nhật ký dùng via", "error", err)
+	} else if rows > 0 {
+		m.log.InfoContext(ctx, "đã dọn nhật ký dùng via quá hạn",
+			"deleted", rows, "retention", m.viaUsageLogRetention.String())
+	}
+	return firstErr
 }

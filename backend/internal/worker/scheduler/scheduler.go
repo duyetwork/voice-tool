@@ -24,6 +24,16 @@ import (
 // cleanupCronspec: dọn skipped_log mỗi ngày lúc 03:15 (giờ của container).
 const cleanupCronspec = "15 3 * * *"
 
+// scrapeSweepCronspec: bảo trì via/proxy mỗi giờ, ở phút thứ 7.
+//
+// Mỗi giờ chứ không mỗi ngày vì cooldown của via mặc định là 6 tiếng: chạy theo
+// ngày thì via nghỉ xong vẫn nằm ngoài vòng xoay gần trọn một ngày nữa.
+//
+// Phút 7 để không rơi trúng đầu giờ, nơi phần lớn lịch quét của các kênh được
+// rải vào — hai việc cùng chạy một lúc thì việc dọn dẹp làm chậm đúng lúc vòng
+// quét đang cần DB.
+const scrapeSweepCronspec = "7 * * * *"
+
 // Provider cài đặt asynq.PeriodicTaskConfigProvider.
 type Provider struct {
 	q   *repository.Queries
@@ -67,6 +77,13 @@ func (p *Provider) GetConfigs() ([]*asynq.PeriodicTaskConfig, error) {
 		configs = append(configs, &asynq.PeriodicTaskConfig{Cronspec: cleanupCronspec, Task: cleanup})
 	} else {
 		p.log.Warn("tạo task maintenance:cleanup thất bại", "error", err)
+	}
+
+	// Bảo trì hạ tầng via/proxy, mỗi giờ.
+	if sweep, err := task.NewScrapeSweep(); err == nil {
+		configs = append(configs, &asynq.PeriodicTaskConfig{Cronspec: scrapeSweepCronspec, Task: sweep})
+	} else {
+		p.log.Warn("tạo task scrape:sweep thất bại", "error", err)
 	}
 
 	return configs, nil

@@ -30,6 +30,13 @@ var (
 	ErrReloginRequired = errors.New("cần đăng nhập lại multime")
 	// ErrTOTPRequired: tài khoản bật 2FA nên login không trả về token.
 	ErrTOTPRequired = errors.New("tài khoản đang bật 2FA, chưa hỗ trợ đăng nhập")
+	// ErrNoViaAvailable: không còn via nào dùng được cho nền tảng này (hết hạn
+	// mức ngày, hoặc tất cả đang cooldown/dead).
+	//
+	// KHÔNG phải sự cố: vòng quét gặp lỗi này phải bỏ qua kênh đó và thử lại ở
+	// lượt sau, không được để nó làm hỏng cả mẻ quét. Hết hạn mức là trạng thái
+	// vận hành bình thường của một hệ thống chạy bằng via.
+	ErrNoViaAvailable = errors.New("không còn via khả dụng cho nền tảng này")
 )
 
 // PermanentError — lỗi vĩnh viễn (bài bị xoá, URL chết...).
@@ -89,6 +96,7 @@ var userMessages = []struct {
 	{ErrTOTPRequired, "Tài khoản đang bật 2FA, chưa hỗ trợ"},
 	{ErrNotFound, "Không tìm thấy bản ghi"},
 	{ErrDuplicate, "Bài đăng này đã có trong hệ thống"},
+	{ErrNoViaAvailable, "Hết via khả dụng cho nền tảng này — thêm via hoặc chờ sang ngày mới"},
 }
 
 // maxUserMessageRunes giới hạn độ dài câu lỗi hiện lên UI. Đủ để đọc được nhà

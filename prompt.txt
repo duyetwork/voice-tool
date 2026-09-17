@@ -1,0 +1,7 @@
+sửa tiếp như sau:
+1. Ở bảng Voice thêm filter "Người tạo"
+2. Trang "Cài đặt" chia thành các tab chõ dễ theo dõi
+3. Via chỉ cần dán cookie thì với các nền tảng khác nhau tôi phải lấy ra những cái gì 
+-> sửa lại placeholder điền dữ liệu chuẩn cho từng nền tảng khác nhau
+4. các proxy của tôi sẽ dạng dưới đây thì cứ thế dán vào đc không hay cần đúng định dnajg như nào
+23.95.45.5:10356:u3qvdrto:9w6w0mc8c5

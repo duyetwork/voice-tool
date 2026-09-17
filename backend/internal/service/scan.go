@@ -28,8 +28,18 @@ type Scan struct {
 	enq       domain.Enqueuer
 	log       *slog.Logger
 	// gate giữ nhịp gọi yt-dlp theo từng nền tảng; stats đếm số lần bị chặn.
-	gate  *KeyGate
-	stats *FetchStats
+	gate *KeyGate
+	// scrapeGate giữ nhịp RIÊNG cho Facebook/X/Instagram.
+	//
+	// Tách khỏi `gate` vì hai loại request khác hẳn nhau về mức độ bị soi: một
+	// lần yt-dlp lấy video YouTube là request ẩn danh, còn một lần tải trang
+	// Facebook mang theo cookies của một tài khoản thật. Nhịp của cái sau phải
+	// chậm hơn, và quan trọng hơn là nó không được ăn theo cấu hình của cái
+	// trước — chỉnh nhanh YouTube lên thì không được kéo Facebook theo.
+	//
+	// nil = chưa cấu hình: rơi về `gate`, tức là vẫn có nhịp chứ không thả nổi.
+	scrapeGate *KeyGate
+	stats      *FetchStats
 }
 
 // skippedExcerptLen — độ dài đoạn text lưu kèm mỗi bài bị bỏ qua.
@@ -44,13 +54,14 @@ type ScanDeps struct {
 	Enqueuer   domain.Enqueuer
 	Logger     *slog.Logger
 	Gate       *KeyGate
+	ScrapeGate *KeyGate
 	FetchStats *FetchStats
 }
 
 func NewScan(d ScanDeps) *Scan {
 	return &Scan{
 		q: d.Queries, platforms: d.Platforms, enq: d.Enqueuer, log: d.Logger,
-		gate: d.Gate, stats: d.FetchStats,
+		gate: d.Gate, scrapeGate: d.ScrapeGate, stats: d.FetchStats,
 	}
 }
 
@@ -85,7 +96,7 @@ func (s *Scan) latestPosts(
 	platform, channelURL string,
 	limit int,
 ) ([]domain.RemotePost, error) {
-	release, err := s.gate.Acquire(ctx, platform)
+	release, err := s.gateFor(platform).Acquire(ctx, platform)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +108,14 @@ func (s *Scan) latestPosts(
 		return nil, err
 	}
 	return posts, nil
+}
+
+// gateFor chọn nhịp cho nền tảng này: nền tảng chạy bằng via đi đường riêng.
+func (s *Scan) gateFor(platform string) *KeyGate {
+	if s.scrapeGate != nil && domain.NeedsVia(domain.Platform(platform)) {
+		return s.scrapeGate
+	}
+	return s.gate
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +202,15 @@ func (s *Scan) scanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 	}
 	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, limit)
 	if err != nil {
+		// Hết via KHÔNG phải sự cố của kênh này: hạn mức ngày đã cạn, hoặc cả
+		// đàn via đang nghỉ. Trả nil để vòng quét kết thúc SẠCH — kênh không bị
+		// ghi lỗi, asynq không retry ba lần, và mẻ quét của các kênh còn lại
+		// không bị kéo theo. Lượt sau tới hạn thì thử lại.
+		if errors.Is(err, domain.ErrNoViaAvailable) {
+			s.log.WarnContext(ctx, "bỏ qua vòng quét — hết via khả dụng",
+				"list_id", list.ID, "platform", list.Platform)
+			return res, nil
+		}
 		return res, fmt.Errorf("quét kênh %s: %w", list.SourceUrl, err)
 	}
 
@@ -332,6 +360,15 @@ func (s *Scan) scanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 	}
 	posts, err := s.latestPosts(ctx, adapter, list.Platform, list.SourceUrl, limit)
 	if err != nil {
+		// Hết via KHÔNG phải sự cố của kênh này: hạn mức ngày đã cạn, hoặc cả
+		// đàn via đang nghỉ. Trả nil để vòng quét kết thúc SẠCH — kênh không bị
+		// ghi lỗi, asynq không retry ba lần, và mẻ quét của các kênh còn lại
+		// không bị kéo theo. Lượt sau tới hạn thì thử lại.
+		if errors.Is(err, domain.ErrNoViaAvailable) {
+			s.log.WarnContext(ctx, "bỏ qua vòng quét — hết via khả dụng",
+				"list_id", list.ID, "platform", list.Platform)
+			return res, nil
+		}
 		return res, fmt.Errorf("quét kênh %s: %w", list.SourceUrl, err)
 	}
 
