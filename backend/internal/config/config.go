@@ -128,21 +128,22 @@ type Config struct {
 	ScrapeConcurrency int `mapstructure:"SCRAPE_CONCURRENCY"`
 	// Khoảng nghỉ tối thiểu giữa 2 request quét tới cùng một nền tảng.
 	ScrapeMinGap time.Duration `mapstructure:"SCRAPE_MIN_GAP"`
-	// FacebookChannelScan mở khoá việc THÊM KÊNH Facebook.
+	// FacebookChannelScan / InstagramChannelScan / XChannelScan mở khoá việc
+	// THÊM KÊNH của ba nền tảng chạy bằng via.
 	//
-	// Mặc định TẮT, và đó là điều kiện đã chốt: bộ phân tích trang Facebook bám
-	// vào cấu trúc JSON nội bộ của họ — không có tài liệu, không có cam kết
-	// tương thích — nên nó phải được đối chiếu với một trang thật, bằng via
-	// thật, trước khi người dùng được phép tạo kênh.
+	// Mặc định BẬT kể từ 17/09/2026. Trước đó mặc định là TẮT, làm cửa kiểm
+	// trước khi cho người dùng tạo kênh: ba bộ phân tích bám vào cấu trúc nội
+	// bộ của ba nền tảng — không tài liệu, không cam kết tương thích — nên phải
+	// đối chiếu với trang thật bằng via thật đã. Facebook và X đã qua cửa đó
+	// (quét thật ra 10 và 20 bài), nên cửa kiểm hết việc và giữ nó chỉ còn là
+	// bắt mọi lần triển khai phải khai lại cùng một thứ.
 	//
-	// Bật sớm thì người ta tạo ra hàng loạt kênh im lặng không ra bài, và không
-	// có gì trên giao diện nói vì sao.
-	FacebookChannelScan bool `mapstructure:"FACEBOOK_CHANNEL_SCAN"`
-	// InstagramChannelScan / XChannelScan — cùng ý nghĩa, cho hai nền tảng còn
-	// lại. Ba cờ RIÊNG chứ không phải một cờ chung "bật quét kênh": ba bộ phân
-	// tích bám vào ba thứ khác nhau và hỏng độc lập nhau, nên khi một nền tảng
-	// đổi giao diện thì phải tắt được đúng nó mà không làm đứt hai nền tảng
-	// đang chạy tốt.
+	// Ba cờ vẫn RIÊNG và vẫn giữ lại, giờ với vai trò CÔNG TẮC NGẮT: ba bộ phân
+	// tích hỏng độc lập nhau, nên khi một nền tảng đổi giao diện thì phải tắt
+	// được đúng nó mà không làm đứt hai nền tảng đang chạy tốt. Đặt
+	// `<TÊN>_CHANNEL_SCAN=false` trong .env là kênh của nền tảng đó ngừng quét
+	// ngay lần khởi động sau, không cần sửa code.
+	FacebookChannelScan  bool `mapstructure:"FACEBOOK_CHANNEL_SCAN"`
 	InstagramChannelScan bool `mapstructure:"INSTAGRAM_CHANNEL_SCAN"`
 	XChannelScan         bool `mapstructure:"X_CHANNEL_SCAN"`
 
@@ -267,9 +268,9 @@ func setDefaults(v *viper.Viper) {
 	// không thấy một chùm request dồn cục.
 	v.SetDefault("SCRAPE_CONCURRENCY", 3)
 	v.SetDefault("SCRAPE_MIN_GAP", "5s")
-	v.SetDefault("FACEBOOK_CHANNEL_SCAN", false)
-	v.SetDefault("INSTAGRAM_CHANNEL_SCAN", false)
-	v.SetDefault("X_CHANNEL_SCAN", false)
+	v.SetDefault("FACEBOOK_CHANNEL_SCAN", true)
+	v.SetDefault("INSTAGRAM_CHANNEL_SCAN", true)
+	v.SetDefault("X_CHANNEL_SCAN", true)
 	v.SetDefault("DEFAULT_LANGUAGE", "auto")
 	// B/C đã chạy được (TTS 3voices + LLM) nên bật sẵn cả 3 hình thức.
 	v.SetDefault("ENABLED_COLLECT_MODES", "A,B,C")
