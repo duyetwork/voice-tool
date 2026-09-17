@@ -233,13 +233,21 @@ function HealthBanner() {
           <li key={text}>{text}</li>
         ))}
       </ul>
+      {/* Mỗi lối tắt chỉ hiện khi có đúng thứ nó dẫn tới. Hiện cả hai bất kể
+          cảnh báo nào đang bật thì "Xem kênh" xuất hiện cạnh một dòng nói về
+          voice — người đọc bấm vào rồi không thấy gì, và lần sau không tin
+          banner nữa. */}
       <div className="mt-2 flex gap-3 text-xs">
-        <Link href="/voices?publish_status=failed" className="font-medium underline">
-          Xem voice lỗi
-        </Link>
-        <Link href="/lists/breaking" className="font-medium underline">
-          Xem kênh
-        </Link>
+        {data.failed_voices > 0 ? (
+          <Link href="/voices?publish_status=failed" className="font-medium underline">
+            Xem voice lỗi
+          </Link>
+        ) : null}
+        {data.channels_with_error > 0 || data.users_need_relogin > 0 ? (
+          <Link href="/lists/breaking" className="font-medium underline">
+            Xem kênh
+          </Link>
+        ) : null}
       </div>
     </div>
   );

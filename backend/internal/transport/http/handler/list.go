@@ -55,6 +55,26 @@ func (r *scheduleRequest) scheduleUpdate() (*domain.ChannelSchedule, bool) {
 	return &sched, r.ClearWindow
 }
 
+// channelCountryRequest là phần "quốc gia của kênh" dùng chung cho cả 2 loại
+// kênh, nhúng vào cả 4 request tạo/sửa.
+type channelCountryRequest struct {
+	// CountryID: quốc gia của kênh — mọi Bài Post và Voice của kênh mang giá
+	// trị này. 0 = GỠ quốc gia, quay lại suy từ ngôn ngữ (id của Strongbody
+	// luôn > 0, nên 0 không đụng vào giá trị thật nào).
+	CountryID *int64 `json:"country_id" binding:"omitempty,min=0"`
+}
+
+// country dịch country_id nhận từ client thành cặp (giá trị, cờ ghi đè).
+func (r channelCountryRequest) country() (*int64, bool) {
+	if r.CountryID == nil {
+		return nil, false
+	}
+	if *r.CountryID <= 0 {
+		return nil, true
+	}
+	return r.CountryID, true
+}
+
 // clearMaxPosts dịch giá trị max_posts_per_run nhận từ client thành cặp
 // (giá trị, cờ xoá).
 //
@@ -107,6 +127,7 @@ type createBreakingRequest struct {
 	// chọn bộ, nên bộ phải nằm sẵn trên kênh.
 	LLMAPISetID *uuid.UUID       `json:"llm_api_set_id"`
 	Schedule    *scheduleRequest `json:"schedule"`
+	channelCountryRequest
 }
 
 func (h *List) CreateBreaking(c *gin.Context) {
@@ -131,6 +152,7 @@ func (h *List) CreateBreaking(c *gin.Context) {
 		MaxPostsPerRun: req.MaxPostsPerRun,
 		LLMAPISetID:    req.LLMAPISetID,
 		Schedule:       req.Schedule.schedule(),
+		CountryID:      req.CountryID,
 	}
 	if req.ScanInterval != nil {
 		d, err := parseDuration(*req.ScanInterval)
@@ -209,6 +231,7 @@ type updateBreakingRequest struct {
 	MaxPostsPerRun *int32           `json:"max_posts_per_run" binding:"omitempty,min=0"`
 	LLMAPISetID    *uuid.UUID       `json:"llm_api_set_id"`
 	Schedule       *scheduleRequest `json:"schedule"`
+	channelCountryRequest
 }
 
 func (h *List) UpdateBreaking(c *gin.Context) {
@@ -239,6 +262,7 @@ func (h *List) UpdateBreaking(c *gin.Context) {
 	}
 	in.MaxPostsPerRun, in.ClearMaxPosts = clearMaxPosts(req.MaxPostsPerRun)
 	in.Schedule, in.ClearWindow = req.Schedule.scheduleUpdate()
+	in.CountryID, in.SetCountry = req.country()
 	if req.ScanInterval != nil {
 		d, err := parseDuration(*req.ScanInterval)
 		if err != nil {
@@ -283,6 +307,56 @@ func (h *List) RunBreaking(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"status": "queued", "list_breaking_id": id})
 }
 
+// ScanRunsBreaking / ScanRunsScheduled trả lịch sử quét của 1 kênh — tab "Lịch
+// sử quét" trong modal chi tiết.
+//
+// Hai route riêng thay vì một route /scan-runs toàn cục: một vòng quét chỉ đọc
+// được khi đứng cạnh cấu hình của chính kênh đã chạy nó (cùng lý do với
+// SkippedLogs), và hai bảng kênh là hai thực thể độc lập.
+func (h *List) ScanRunsBreaking(c *gin.Context) {
+	id, err := pathUUID(c, "id")
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	limit, offset := pagination(c)
+	out, err := h.svc.ScanRunsBreaking(c.Request.Context(), id, limit, offset)
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, out)
+}
+
+func (h *List) ScanRunsScheduled(c *gin.Context) {
+	id, err := pathUUID(c, "id")
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	limit, offset := pagination(c)
+	out, err := h.svc.ScanRunsScheduled(c.Request.Context(), id, limit, offset)
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, out)
+}
+
+// RunScheduled trigger 1 vòng quét thủ công cho kênh Định kỳ.
+func (h *List) RunScheduled(c *gin.Context) {
+	id, err := pathUUID(c, "id")
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	if err := h.svc.RunScheduled(c.Request.Context(), middleware.ActorID(c), id); err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"status": "queued", "list_scheduled_id": id})
+}
+
 // SkippedLogs trả những bài vòng quét đã xét rồi bỏ — tab "Bài bị bỏ qua"
 // trong modal chi tiết kênh Breaking.
 func (h *List) SkippedLogs(c *gin.Context) {
@@ -323,6 +397,7 @@ type createScheduledRequest struct {
 	BackfillLimit *int32           `json:"backfill_limit" binding:"omitempty,min=0,max=200"`
 	LLMAPISetID   *uuid.UUID       `json:"llm_api_set_id"`
 	Schedule      *scheduleRequest `json:"schedule"`
+	channelCountryRequest
 }
 
 func (h *List) CreateScheduled(c *gin.Context) {
@@ -336,7 +411,6 @@ func (h *List) CreateScheduled(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-
 	list, err := h.svc.CreateScheduled(c.Request.Context(), middleware.ActorID(c), service.ScheduledInput{
 		SourceURL:      req.SourceURL,
 		CollectMode:    domain.CollectMode(req.CollectMode),
@@ -352,6 +426,7 @@ func (h *List) CreateScheduled(c *gin.Context) {
 		BackfillLimit:  req.BackfillLimit,
 		LLMAPISetID:    req.LLMAPISetID,
 		Schedule:       req.Schedule.schedule(),
+		CountryID:      req.CountryID,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -420,6 +495,7 @@ type updateScheduledRequest struct {
 	BackfillLimit  *int32           `json:"backfill_limit" binding:"omitempty,min=0,max=200"`
 	LLMAPISetID    *uuid.UUID       `json:"llm_api_set_id"`
 	Schedule       *scheduleRequest `json:"schedule"`
+	channelCountryRequest
 }
 
 func (h *List) UpdateScheduled(c *gin.Context) {
@@ -449,6 +525,7 @@ func (h *List) UpdateScheduled(c *gin.Context) {
 	}
 	in.MaxPostsPerRun, in.ClearMaxPosts = clearMaxPosts(req.MaxPostsPerRun)
 	in.Schedule, in.ClearWindow = req.Schedule.scheduleUpdate()
+	in.CountryID, in.SetCountry = req.country()
 	if req.ScanFrequency != nil {
 		freq, err := parseDuration(*req.ScanFrequency)
 		if err != nil {

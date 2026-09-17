@@ -386,13 +386,14 @@ trả `400` ngay nếu thiếu author/hashtag, các điều kiện còn lại l�
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| POST | `/lists/breaking` | Body: `source_url`, `regex_patterns[]`, `collect_mode`, `prompt_id?`, `llm_api_set_id?`, `language_default?`, `auto_process?`, `auto_publish?`, `status?`, `scan_limit?`, `scan_interval?`, `backfill_limit?`, `max_posts_per_run?`, `schedule?` |
+| POST | `/lists/breaking` | Body: `source_url`, `regex_patterns[]`, `collect_mode`, `prompt_id?`, `llm_api_set_id?`, `language_default?`, `auto_process?`, `auto_publish?`, `random_author?`, `status?`, `scan_limit?`, `scan_interval?`, `backfill_limit?`, `max_posts_per_run?`, `schedule?`, `country_id?` |
 | GET | `/lists/breaking` | Query: `status`, `search` (regex lọc theo `source_url`), `limit`, `offset` |
 | GET | `/lists/breaking/:id` | |
 | PATCH | `/lists/breaking/:id` | Mọi field ở trên đều optional |
 | DELETE | `/lists/breaking/:id` | **Chỉ admin** |
 | POST | `/lists/breaking/:id/run` | → `202`. Quét thủ công 1 vòng để test regex |
 | GET | `/lists/breaking/:id/skipped` | Bài đã xét rồi bỏ. Query `limit`, `offset` |
+| GET | `/lists/breaking/:id/scans` | Lịch sử quét. Query `limit`, `offset` — xem mục **Lịch sử quét** |
 
 `GET /lists/breaking/:id/skipped` trả:
 
@@ -512,11 +513,13 @@ phải chạy bằng đúng bộ đã chọn.
 
 | Method | Path | Ghi chú |
 |---|---|---|
-| POST | `/lists/scheduled` | Body như Breaking nhưng thay `regex_patterns` bằng `scan_frequency`; cũng nhận `scan_limit?`, `max_posts_per_run?`, `backfill_limit?`, `llm_api_set_id?`, `schedule?` (xem mục trên) |
+| POST | `/lists/scheduled` | Body như Breaking nhưng thay `regex_patterns` bằng `scan_frequency`; cũng nhận `scan_limit?`, `max_posts_per_run?`, `backfill_limit?`, `llm_api_set_id?`, `schedule?`, `country_id?` (xem mục trên) |
 | GET | `/lists/scheduled` | Query: `status`, `search`, `limit`, `offset` |
 | GET | `/lists/scheduled/:id` | |
 | PATCH | `/lists/scheduled/:id` | |
 | DELETE | `/lists/scheduled/:id` | **Chỉ admin** |
+| POST | `/lists/scheduled/:id/run` | → `202`. Quét thủ công 1 vòng, không chờ hết chu kỳ |
+| GET | `/lists/scheduled/:id/scans` | Lịch sử quét. Query `limit`, `offset` |
 
 `scan_frequency` nhận `"30m"`, `"6h"`, `"24h"` hoặc số giây (`"1800"`).
 Tối thiểu 1 phút.
@@ -528,6 +531,59 @@ kênh đăng ồ ạt. Phần dư không mất, nó được xử lý ở vòng 
 Trên PATCH, gửi `0` nghĩa là **bỏ trần** (cột trong DB về `NULL`). Bỏ hẳn field
 ra khỏi body thì trần cũ giữ nguyên — hai điều đó khác nhau, và đây là lý do
 `0` không thể là "không sửa".
+
+## Quốc gia của kênh
+
+`country_id` là **quốc gia của kênh**: mọi Bài Post và Voice do kênh đẻ ra mang
+giá trị này, và tài khoản đứng tên bài (`random_author`) được bốc trong nhóm đó.
+Bỏ trống = suy từ ngôn ngữ như trước. Trên PATCH, gửi `0` nghĩa là **gỡ quốc
+gia** (id của Strongbody luôn > 0, nên `0` không đụng vào giá trị thật nào).
+
+## Lịch sử quét
+
+`GET /lists/breaking/:id/scans` và `GET /lists/scheduled/:id/scans` trả:
+
+```jsonc
+{
+  "items": [{
+    "id":                 "7c1e…",
+    "started_at":         "2026-09-17T08:12:00Z",
+    "finished_at":        "2026-09-17T08:12:04Z",  // null = đang chạy
+    "status":             "success",               // running | success | error
+    "trigger_kind":       "manual",                // auto = lịch chạy
+    "triggered_by_email": "an@strongbody.ai",      // rỗng ở vòng auto
+    "fetched":            20,
+    "posts_created":      3,
+    "voices_created":     3,
+    "skipped":            17,
+    "error":              ""
+  }],
+  "total": 1284,
+  "runs_7d": 336, "posts_created_7d": 41, "voices_created_7d": 41, "failed_7d": 2,
+  "limit": 20, "offset": 0
+}
+```
+
+Kênh chỉ mang được trạng thái của **vòng gần nhất** (`last_scanned_at`,
+`last_error`), và vòng sau ghi đè vòng trước. Đây là chỗ duy nhất trả lời được
+"kênh này quét bao lâu một lần THẬT SỰ", "vòng vừa rồi do lịch chạy hay ai bấm",
+và "mấy hôm nay nó có ra bài nào không".
+
+`voices_created` đếm riêng khỏi `posts_created` vì kênh tắt `auto_process` vẫn
+tạo Bài Post mà không tạo voice nào — gộp lại thì không phân biệt được "kênh
+không bắt được bài" với "kênh bắt được bài nhưng không ai bảo nó đọc".
+
+`trigger_kind` và `triggered_by_email` là hai trường riêng: email rỗng ở vòng
+`manual` nghĩa là tài khoản đã bị xoá, khác hẳn vòng `auto` vốn không có ai
+đứng sau.
+
+Hai bảng danh sách kênh kèm thêm **`last_run_status`** — trạng thái vòng quét
+gần nhất, đọc thẳng từ bảng này. Chuỗi rỗng = kênh chưa quét lần nào. Không
+thêm cột "đang quét" lên kênh vì cột như vậy phải được xoá bởi chính tiến trình
+vừa chết, nên nó sẽ kẹt ở "đang quét" đúng lúc cần tin nó nhất.
+
+Lịch sử giữ theo `SCAN_RUN_RETENTION` (mặc định 30 ngày). Vòng quét treo ở
+`running` quá 2 giờ được job dọn dẹp hằng ngày đóng lại thành `error`.
 
 ## Danh mục
 

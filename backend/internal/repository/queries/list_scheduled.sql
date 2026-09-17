@@ -4,13 +4,15 @@ INSERT INTO list_scheduled (
   language_default, auto_process, auto_publish, status, scan_limit,
   max_posts_per_run, created_by, llm_api_set_id,
   timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min,
-  backfill_limit, random_author
+  backfill_limit, random_author,
+  country_id
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   sqlc.narg('llm_api_set_id'), sqlc.arg('timezone'),
   sqlc.narg('active_from_min'), sqlc.narg('active_to_min'),
   sqlc.arg('active_weekdays'), sqlc.arg('fixed_times_min'),
-  sqlc.arg('backfill_limit'), sqlc.arg('random_author')
+  sqlc.arg('backfill_limit'), sqlc.arg('random_author'),
+  sqlc.narg('country_id')
 )
 RETURNING *;
 
@@ -30,7 +32,22 @@ SELECT ls.*, u.email AS created_by_email,
          WHERE sp.list_scheduled_id = ls.id) AS post_count,
        (SELECT COUNT(*) FROM voice v
           JOIN source_post sp2 ON sp2.id = v.source_post_id
-         WHERE sp2.list_scheduled_id = ls.id) AS voice_count
+         WHERE sp2.list_scheduled_id = ls.id) AS voice_count,
+       -- Vòng quét GẦN NHẤT của kênh: 'running' = đang quét, 'success' =
+       -- vừa quét xong, 'error' = vòng vừa rồi hỏng, '' = chưa quét lần nào.
+       --
+       -- Đọc từ scan_run chứ không thêm cột "đang quét" lên kênh: một cột như
+       -- vậy phải được XOÁ bởi chính tiến trình vừa chết, nên nó sẽ kẹt ở
+       -- "đang quét" đúng lúc người ta cần tin nó nhất. Ở đây dòng 'running'
+       -- treo lại chỉ sống tới vòng quét kế tiếp, vì câu này luôn đọc dòng mới
+       -- nhất.
+       --
+       -- COALESCE về chuỗi rỗng vì sqlc suy ra subquery vô hướng là NOT NULL:
+       -- kênh chưa quét lần nào trả NULL, và quét NULL vào `string` là lỗi
+       -- runtime ngay ở kênh vừa thêm (xem ghi chú tương tự ở source_post.sql).
+       COALESCE((SELECT r.status FROM scan_run r
+                  WHERE r.list_scheduled_id = ls.id
+                  ORDER BY r.started_at DESC LIMIT 1), '')::text AS last_run_status
 FROM list_scheduled ls
 JOIN app_user u ON u.id = ls.created_by
 WHERE (sqlc.narg('status')::varchar   IS NULL OR ls.status     = sqlc.narg('status'))
@@ -80,7 +97,11 @@ SET source_url        = COALESCE(sqlc.narg('source_url'), source_url),
                              ELSE COALESCE(sqlc.narg('active_to_min'), active_to_min) END,
     active_weekdays   = COALESCE(sqlc.narg('active_weekdays'), active_weekdays),
     fixed_times_min   = COALESCE(sqlc.narg('fixed_times_min'), fixed_times_min),
-    random_author     = COALESCE(sqlc.narg('random_author'), random_author)
+    random_author     = COALESCE(sqlc.narg('random_author'), random_author),
+    -- country_id: cùng lý do — NULL ở đây nghĩa là "kênh không chốt quốc gia,
+    -- suy từ ngôn ngữ như cũ", không phải "không sửa".
+    country_id        = CASE WHEN sqlc.arg('set_country')::bool
+                             THEN sqlc.narg('country_id') ELSE country_id END
 WHERE id = sqlc.arg('id')
 RETURNING *;
 

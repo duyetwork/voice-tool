@@ -20,6 +20,11 @@ Nếu là kênh của người khác thì với TikTok/Instagram buộc phải s
 quyết định về pháp lý/vận hành **trước khi** code, vì nó thay đổi hẳn cách làm
 adapter (proxy pool, chống chặn, chi phí).
 
+Các đường đi có thật, chi phí từng đường và điểm nối trong code đã được khảo
+sát ở **[channel-scan-fb-ig-x.md](channel-scan-fb-ig-x.md)**. Câu còn treo ở
+đây vẫn là câu đầu tiên của tài liệu đó: **kênh nguồn là của ai** — trả lời
+được nó thì ba trong bốn phương án tự loại.
+
 ## 2. Voice do F2/F3 tự tạo nên đăng dưới tài khoản nào? 🟡
 
 Hiện tại: tài khoản của **người tạo ra danh sách kênh** (`list.created_by`).

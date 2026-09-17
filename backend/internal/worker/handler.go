@@ -272,12 +272,13 @@ func (h *Handler) breakingScan(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("%w: list_id không hợp lệ", asynq.SkipRetry)
 	}
 
-	res, err := h.scan.ScanBreaking(ctx, listID)
+	res, err := h.scan.ScanBreaking(ctx, listID, service.ScanTriggerFromActorID(p.ActorID))
 	if err != nil {
 		return skipIfPermanent(err)
 	}
 	h.log.InfoContext(ctx, "breaking:scan xong",
-		"list_id", listID, "fetched", res.Fetched, "created", res.Created, "skipped", res.Skipped)
+		"list_id", listID, "fetched", res.Fetched, "created", res.Created,
+		"voices", res.Voices, "skipped", res.Skipped)
 	return nil
 }
 
@@ -310,12 +311,13 @@ func (h *Handler) scheduledScan(ctx context.Context, t *asynq.Task) error {
 		return nil
 	}
 
-	res, err := h.scan.ScanScheduled(ctx, listID)
+	res, err := h.scan.ScanScheduled(ctx, listID, service.ScanTriggerFromActorID(p.ActorID))
 	if err != nil {
 		return skipIfPermanent(err)
 	}
 	h.log.InfoContext(ctx, "scheduled:scan xong",
-		"list_id", listID, "fetched", res.Fetched, "created", res.Created, "skipped", res.Skipped)
+		"list_id", listID, "fetched", res.Fetched, "created", res.Created,
+		"voices", res.Voices, "skipped", res.Skipped)
 	return nil
 }
 
@@ -344,6 +346,9 @@ func (h *Handler) maintenanceCleanup(ctx context.Context, _ *asynq.Task) error {
 	// Bảng trên hỏng thì dừng luôn ở đây: job này chạy lại mỗi ngày, và dọn
 	// muộn một ngày không phải vấn đề — dữ liệu chỉ phình thêm một ngày.
 	if _, err := h.maintenance.CleanupAIUsage(ctx); err != nil {
+		return err
+	}
+	if _, err := h.maintenance.CleanupScanRuns(ctx); err != nil {
 		return err
 	}
 	return nil

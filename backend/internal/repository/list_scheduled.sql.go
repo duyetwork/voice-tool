@@ -97,15 +97,17 @@ INSERT INTO list_scheduled (
   language_default, auto_process, auto_publish, status, scan_limit,
   max_posts_per_run, created_by, llm_api_set_id,
   timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min,
-  backfill_limit, random_author
+  backfill_limit, random_author,
+  country_id
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
   $14, $15,
   $16, $17,
   $18, $19,
-  $20, $21
+  $20, $21,
+  $22
 )
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error, random_author
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error, random_author, country_id
 `
 
 type CreateListScheduledParams struct {
@@ -130,6 +132,7 @@ type CreateListScheduledParams struct {
 	FixedTimesMin   []int16         `json:"fixed_times_min"`
 	BackfillLimit   int32           `json:"backfill_limit"`
 	RandomAuthor    bool            `json:"random_author"`
+	CountryID       *int64          `json:"country_id"`
 }
 
 func (q *Queries) CreateListScheduled(ctx context.Context, arg CreateListScheduledParams) (ListScheduled, error) {
@@ -155,6 +158,7 @@ func (q *Queries) CreateListScheduled(ctx context.Context, arg CreateListSchedul
 		arg.FixedTimesMin,
 		arg.BackfillLimit,
 		arg.RandomAuthor,
+		arg.CountryID,
 	)
 	var i ListScheduled
 	err := row.Scan(
@@ -185,6 +189,7 @@ func (q *Queries) CreateListScheduled(ctx context.Context, arg CreateListSchedul
 		&i.BackfillDoneAt,
 		&i.LastError,
 		&i.RandomAuthor,
+		&i.CountryID,
 	)
 	return i, err
 }
@@ -202,7 +207,7 @@ func (q *Queries) DeleteListScheduled(ctx context.Context, id uuid.UUID) (int64,
 }
 
 const getListScheduled = `-- name: GetListScheduled :one
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error, random_author FROM list_scheduled WHERE id = $1
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error, random_author, country_id FROM list_scheduled WHERE id = $1
 `
 
 func (q *Queries) GetListScheduled(ctx context.Context, id uuid.UUID) (ListScheduled, error) {
@@ -236,12 +241,13 @@ func (q *Queries) GetListScheduled(ctx context.Context, id uuid.UUID) (ListSched
 		&i.BackfillDoneAt,
 		&i.LastError,
 		&i.RandomAuthor,
+		&i.CountryID,
 	)
 	return i, err
 }
 
 const listActiveListScheduleds = `-- name: ListActiveListScheduleds :many
-SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error, random_author FROM list_scheduled WHERE status = 'active' ORDER BY created_at
+SELECT id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error, random_author, country_id FROM list_scheduled WHERE status = 'active' ORDER BY created_at
 `
 
 func (q *Queries) ListActiveListScheduleds(ctx context.Context) ([]ListScheduled, error) {
@@ -281,6 +287,7 @@ func (q *Queries) ListActiveListScheduleds(ctx context.Context) ([]ListScheduled
 			&i.BackfillDoneAt,
 			&i.LastError,
 			&i.RandomAuthor,
+			&i.CountryID,
 		); err != nil {
 			return nil, err
 		}
@@ -293,12 +300,27 @@ func (q *Queries) ListActiveListScheduleds(ctx context.Context) ([]ListScheduled
 }
 
 const listListScheduleds = `-- name: ListListScheduleds :many
-SELECT ls.id, ls.source_url, ls.platform, ls.content_type, ls.collect_mode, ls.prompt_id, ls.scan_frequency, ls.language_default, ls.last_synced_post_id, ls.auto_process, ls.auto_publish, ls.status, ls.created_by, ls.created_at, ls.scan_limit, ls.max_posts_per_run, ls.last_scanned_at, ls.llm_api_set_id, ls.timezone, ls.active_from_min, ls.active_to_min, ls.active_weekdays, ls.fixed_times_min, ls.backfill_limit, ls.backfill_done_at, ls.last_error, ls.random_author, u.email AS created_by_email,
+SELECT ls.id, ls.source_url, ls.platform, ls.content_type, ls.collect_mode, ls.prompt_id, ls.scan_frequency, ls.language_default, ls.last_synced_post_id, ls.auto_process, ls.auto_publish, ls.status, ls.created_by, ls.created_at, ls.scan_limit, ls.max_posts_per_run, ls.last_scanned_at, ls.llm_api_set_id, ls.timezone, ls.active_from_min, ls.active_to_min, ls.active_weekdays, ls.fixed_times_min, ls.backfill_limit, ls.backfill_done_at, ls.last_error, ls.random_author, ls.country_id, u.email AS created_by_email,
        (SELECT COUNT(*) FROM source_post sp
          WHERE sp.list_scheduled_id = ls.id) AS post_count,
        (SELECT COUNT(*) FROM voice v
           JOIN source_post sp2 ON sp2.id = v.source_post_id
-         WHERE sp2.list_scheduled_id = ls.id) AS voice_count
+         WHERE sp2.list_scheduled_id = ls.id) AS voice_count,
+       -- Vòng quét GẦN NHẤT của kênh: 'running' = đang quét, 'success' =
+       -- vừa quét xong, 'error' = vòng vừa rồi hỏng, '' = chưa quét lần nào.
+       --
+       -- Đọc từ scan_run chứ không thêm cột "đang quét" lên kênh: một cột như
+       -- vậy phải được XOÁ bởi chính tiến trình vừa chết, nên nó sẽ kẹt ở
+       -- "đang quét" đúng lúc người ta cần tin nó nhất. Ở đây dòng 'running'
+       -- treo lại chỉ sống tới vòng quét kế tiếp, vì câu này luôn đọc dòng mới
+       -- nhất.
+       --
+       -- COALESCE về chuỗi rỗng vì sqlc suy ra subquery vô hướng là NOT NULL:
+       -- kênh chưa quét lần nào trả NULL, và quét NULL vào ` + "`" + `string` + "`" + ` là lỗi
+       -- runtime ngay ở kênh vừa thêm (xem ghi chú tương tự ở source_post.sql).
+       COALESCE((SELECT r.status FROM scan_run r
+                  WHERE r.list_scheduled_id = ls.id
+                  ORDER BY r.started_at DESC LIMIT 1), '')::text AS last_run_status
 FROM list_scheduled ls
 JOIN app_user u ON u.id = ls.created_by
 WHERE ($1::varchar   IS NULL OR ls.status     = $1)
@@ -355,9 +377,11 @@ type ListListScheduledsRow struct {
 	BackfillDoneAt   *time.Time      `json:"backfill_done_at"`
 	LastError        *string         `json:"last_error"`
 	RandomAuthor     bool            `json:"random_author"`
+	CountryID        *int64          `json:"country_id"`
 	CreatedByEmail   string          `json:"created_by_email"`
 	PostCount        int64           `json:"post_count"`
 	VoiceCount       int64           `json:"voice_count"`
+	LastRunStatus    string          `json:"last_run_status"`
 }
 
 // Kèm hai số đếm để bảng trả lời được "kênh này có ra gì không" mà không phải
@@ -414,9 +438,11 @@ func (q *Queries) ListListScheduleds(ctx context.Context, arg ListListScheduleds
 			&i.BackfillDoneAt,
 			&i.LastError,
 			&i.RandomAuthor,
+			&i.CountryID,
 			&i.CreatedByEmail,
 			&i.PostCount,
 			&i.VoiceCount,
+			&i.LastRunStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -524,9 +550,13 @@ SET source_url        = COALESCE($1, source_url),
                              ELSE COALESCE($19, active_to_min) END,
     active_weekdays   = COALESCE($20, active_weekdays),
     fixed_times_min   = COALESCE($21, fixed_times_min),
-    random_author     = COALESCE($22, random_author)
-WHERE id = $23
-RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error, random_author
+    random_author     = COALESCE($22, random_author),
+    -- country_id: cùng lý do — NULL ở đây nghĩa là "kênh không chốt quốc gia,
+    -- suy từ ngôn ngữ như cũ", không phải "không sửa".
+    country_id        = CASE WHEN $23::bool
+                             THEN $24 ELSE country_id END
+WHERE id = $25
+RETURNING id, source_url, platform, content_type, collect_mode, prompt_id, scan_frequency, language_default, last_synced_post_id, auto_process, auto_publish, status, created_by, created_at, scan_limit, max_posts_per_run, last_scanned_at, llm_api_set_id, timezone, active_from_min, active_to_min, active_weekdays, fixed_times_min, backfill_limit, backfill_done_at, last_error, random_author, country_id
 `
 
 type UpdateListScheduledParams struct {
@@ -552,6 +582,8 @@ type UpdateListScheduledParams struct {
 	ActiveWeekdays  []int16         `json:"active_weekdays"`
 	FixedTimesMin   []int16         `json:"fixed_times_min"`
 	RandomAuthor    *bool           `json:"random_author"`
+	SetCountry      bool            `json:"set_country"`
+	CountryID       *int64          `json:"country_id"`
 	ID              uuid.UUID       `json:"id"`
 }
 
@@ -579,6 +611,8 @@ func (q *Queries) UpdateListScheduled(ctx context.Context, arg UpdateListSchedul
 		arg.ActiveWeekdays,
 		arg.FixedTimesMin,
 		arg.RandomAuthor,
+		arg.SetCountry,
+		arg.CountryID,
 		arg.ID,
 	)
 	var i ListScheduled
@@ -610,6 +644,7 @@ func (q *Queries) UpdateListScheduled(ctx context.Context, arg UpdateListSchedul
 		&i.BackfillDoneAt,
 		&i.LastError,
 		&i.RandomAuthor,
+		&i.CountryID,
 	)
 	return i, err
 }

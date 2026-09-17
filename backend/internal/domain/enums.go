@@ -143,6 +143,24 @@ const (
 	AuditPublish AuditAction = "publish"
 )
 
+// ---------------------------------------------------------------------------
+// Vòng quét (bảng scan_run)
+// ---------------------------------------------------------------------------
+
+// Trạng thái của 1 vòng quét. `running` vừa là dòng lịch sử vừa là thứ bảng
+// kênh đọc ra để hiện "Đang quét".
+const (
+	ScanRunRunning = "running"
+	ScanRunSuccess = "success"
+	ScanRunError   = "error"
+)
+
+// Nguồn khởi động 1 vòng quét: lịch tự chạy, hay có người bấm nút.
+const (
+	ScanTriggerAuto   = "auto"
+	ScanTriggerManual = "manual"
+)
+
 // ObjectType — 4 entity bắt buộc audit.
 const (
 	ObjectListBreaking  = "list_breaking"

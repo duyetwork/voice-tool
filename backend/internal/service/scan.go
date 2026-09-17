@@ -106,15 +106,35 @@ func (s *Scan) latestPosts(
 type ScanResult struct {
 	Fetched int
 	Created int
+	// Voices: số Voice vòng quét này đẩy vào hàng đợi. Đếm riêng khỏi Created vì
+	// kênh tắt auto_process vẫn tạo Bài Post mà không tạo voice nào — gộp hai số
+	// làm một thì bảng lịch sử không phân biệt được "kênh không bắt được bài" với
+	// "kênh bắt được bài nhưng không ai bảo nó đọc".
+	Voices  int
 	Skipped int
 }
 
-// ScanBreaking bọc vòng quét thật để GHI LẠI kết quả lên chính kênh.
+// add cộng kết quả của 1 bài vào tổng của vòng quét.
+func (r *ScanResult) add(out remoteOutcome) {
+	if out.Created {
+		r.Created++
+	}
+	if out.Voiced {
+		r.Voices++
+	}
+}
+
+// ScanBreaking bọc vòng quét thật để GHI LẠI kết quả — lên chính kênh (lỗi gần
+// nhất) và vào bảng lịch sử (scan_run).
 //
 // Không gộp vào scanBreaking: hàm đó có nhiều đường thoát, và nhét việc ghi lỗi
 // vào từng đường là kiểu code mà chỉ cần thêm một `return` nữa là hỏng lặng lẽ.
-func (s *Scan) ScanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, error) {
+func (s *Scan) ScanBreaking(
+	ctx context.Context, listID uuid.UUID, trig ScanTrigger,
+) (ScanResult, error) {
+	runID := s.startRun(ctx, breakingOwner(listID), trig)
 	res, err := s.scanBreaking(ctx, listID)
+	s.finishRun(ctx, runID, res, err)
 	s.noteBreakingError(ctx, listID, err)
 	return res, err
 }
@@ -237,7 +257,7 @@ func (s *Scan) scanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 			continue
 		}
 
-		created, err := s.createFromRemote(ctx, remoteInput{
+		out, err := s.createFromRemote(ctx, remoteInput{
 			SourceType:   domain.SourceBreaking,
 			ListID:       list.ID,
 			Post:         p,
@@ -250,15 +270,14 @@ func (s *Scan) scanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 			LLMAPISetID:  list.LlmApiSetID,
 			AutoPublish:  list.AutoPublish,
 			RandomAuthor: list.RandomAuthor,
+			CountryID:    list.CountryID,
 		})
 		if err != nil {
 			s.log.ErrorContext(ctx, "breaking:scan tạo source_post thất bại",
 				"error", err, "list_id", list.ID, "post_id", p.PostID)
 			continue
 		}
-		if created {
-			res.Created++
-		}
+		res.add(out)
 	}
 	return res, nil
 }
@@ -268,8 +287,13 @@ func (s *Scan) scanBreaking(ctx context.Context, listID uuid.UUID) (ScanResult, 
 // ---------------------------------------------------------------------------
 
 // ScanScheduled — đối xứng với ScanBreaking, xem lý do ở đó.
-func (s *Scan) ScanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult, error) {
+func (s *Scan) ScanScheduled(
+	ctx context.Context, listID uuid.UUID, trig ScanTrigger,
+) (ScanResult, error) {
+	runID := s.startRun(ctx, scheduledOwner(listID), trig)
 	res, err := s.scanScheduled(ctx, listID)
+	s.finishRun(ctx, runID, res, err)
+
 	var msg *string
 	if err != nil {
 		m := domain.UserMessage(err)
@@ -364,7 +388,7 @@ func (s *Scan) scanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 	for i := len(fresh) - 1; i >= 0; i-- {
 		p := fresh[i]
 
-		created, err := s.createFromRemote(ctx, remoteInput{
+		out, err := s.createFromRemote(ctx, remoteInput{
 			SourceType:   domain.SourceScheduled,
 			ListID:       list.ID,
 			Post:         p,
@@ -377,13 +401,12 @@ func (s *Scan) scanScheduled(ctx context.Context, listID uuid.UUID) (ScanResult,
 			LLMAPISetID:  list.LlmApiSetID,
 			AutoPublish:  list.AutoPublish,
 			RandomAuthor: list.RandomAuthor,
+			CountryID:    list.CountryID,
 		})
 
 		switch {
 		case err == nil:
-			if created {
-				res.Created++
-			}
+			res.add(out)
 			lastOK = ptr(p.PostID)
 
 		case domain.IsPermanent(err):
@@ -531,15 +554,28 @@ type remoteInput struct {
 	// RandomAuthor: bốc tài khoản đứng tên bài đăng, lọc theo quốc gia suy ra
 	// từ Language.
 	RandomAuthor bool
+	// CountryID: quốc gia của kênh. Mọi Bài Post và Voice của kênh mang giá
+	// trị này; nil = kênh chưa chọn, và lúc đó quay về suy từ Language như cũ.
+	CountryID *int64
 }
 
-// createFromRemote tạo Bài Post từ 1 bài thô. created=false nghĩa là bài đã có
+// remoteOutcome là những gì 1 bài thô đã tạo ra trong hệ thống.
+//
+// Hai cờ chứ không một: bài vào được hệ thống mà không sinh voice là chuyện
+// bình thường (kênh tắt auto_process), và lịch sử quét phải đếm riêng hai con
+// số đó — xem ScanResult.
+type remoteOutcome struct {
+	Created bool
+	Voiced  bool
+}
+
+// createFromRemote tạo Bài Post từ 1 bài thô. Created=false nghĩa là bài đã có
 // trong hệ thống — không phải lỗi.
 //
 // Dedup theo (platform, post_id_extracted) trên TOÀN hệ thống, không theo URL
 // và không theo từng danh sách: cùng 1 bài nằm trong cả Breaking lẫn Định kỳ
 // thì vẫn chỉ vào hệ thống 1 lần, và cùng 1 bài có nhiều dạng URL vẫn là 1.
-func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, error) {
+func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (remoteOutcome, error) {
 	if in.Post.PostID != "" {
 		_, err := s.q.FindSourcePostByPostID(ctx, repository.FindSourcePostByPostIDParams{
 			Platform:        in.Platform,
@@ -547,9 +583,9 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 		})
 		switch {
 		case err == nil:
-			return false, nil
+			return remoteOutcome{}, nil
 		case !errors.Is(err, pgx.ErrNoRows):
-			return false, fmt.Errorf("kiểm tra trùng bài post: %w", err)
+			return remoteOutcome{}, fmt.Errorf("kiểm tra trùng bài post: %w", err)
 		}
 	}
 
@@ -574,6 +610,10 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 		ThumbnailUrl: nilIfEmpty(in.Post.Meta.ThumbnailURL),
 		AuthorName:   nilIfEmpty(in.Post.Meta.AuthorName),
 		PostedAt:     in.Post.Meta.PostedAt,
+		// Quốc gia chốt ngay lúc bài được tạo, không đọc ngược lên kênh lúc cần:
+		// kênh có thể bị xoá (list_*_id ON DELETE SET NULL) trong khi bài vẫn còn,
+		// và một lần sửa kênh về sau không được viết lại lịch sử.
+		CountryID: in.CountryID,
 	}
 	switch in.SourceType {
 	case domain.SourceBreaking:
@@ -587,9 +627,9 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 		// Unique index vẫn là lưới an toàn: 2 worker quét song song có thể cùng
 		// vượt qua bước kiểm tra ở trên rồi cùng insert.
 		if isUniqueViolation(err) {
-			return false, nil
+			return remoteOutcome{}, nil
 		}
-		return false, fmt.Errorf("tạo source_post: %w", err)
+		return remoteOutcome{}, fmt.Errorf("tạo source_post: %w", err)
 	}
 
 	// Metadata đầy đủ: vòng quét chạy `yt-dlp --flat-playlist`, và chế độ đó chỉ
@@ -608,24 +648,35 @@ func (s *Scan) createFromRemote(ctx context.Context, in remoteInput) (bool, erro
 			"error", err, "source_post_id", post.ID)
 	}
 
-	if in.AutoProcess {
-		seed := VoiceSeed{
-			LLMAPISetID:      in.LLMAPISetID,
-			PublishWhenReady: in.AutoPublish,
-		}
-		// Không có ai ngồi chọn author cho voice sinh ra từ kênh, nên
-		// author_gender của chúng luôn NULL — và ensureAuthor ở bước đăng trả
-		// lỗi vĩnh viễn vì thiếu đúng thứ đó. Nghĩa là trước cờ này, "tự đăng"
-		// của kênh chỉ tạo ra voice hỏng ở bước cuối.
-		if in.RandomAuthor {
-			seed.AuthorGender = ptr(string(domain.RandomGender()))
+	if !in.AutoProcess {
+		return remoteOutcome{Created: true}, nil
+	}
+
+	seed := VoiceSeed{
+		LLMAPISetID:      in.LLMAPISetID,
+		PublishWhenReady: in.AutoPublish,
+		// Quốc gia của kênh đi theo MỌI voice của nó, kể cả khi không bốc author
+		// tự động: đó chính là thứ lọc danh bạ tài khoản ở bước đăng, và người
+		// vào sửa tay một voice của kênh cũng phải thấy đúng nhóm tài khoản ấy.
+		AuthorCountryID: in.CountryID,
+	}
+	// Không có ai ngồi chọn author cho voice sinh ra từ kênh, nên
+	// author_gender của chúng luôn NULL — và ensureAuthor ở bước đăng trả
+	// lỗi vĩnh viễn vì thiếu đúng thứ đó. Nghĩa là trước cờ này, "tự đăng"
+	// của kênh chỉ tạo ra voice hỏng ở bước cuối.
+	if in.RandomAuthor {
+		seed.AuthorGender = ptr(string(domain.RandomGender()))
+		// Suy từ ngôn ngữ chỉ còn là ĐƯỜNG LÙI cho kênh chưa chọn quốc gia:
+		// nó đoán sai ở đúng những chỗ hay gặp nhất (tiếng Anh ra cả chục
+		// nước, 'auto' thì không ra nước nào).
+		if seed.AuthorCountryID == nil {
 			seed.AuthorCountryID = s.countryForLanguage(ctx, in.Language)
 		}
-		if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, in.CreatedBy, seed); err != nil {
-			return true, fmt.Errorf("enqueue voice:process: %w", err)
-		}
 	}
-	return true, nil
+	if _, err := enqueueVoiceProcess(ctx, s.q, s.enq, post, in.CreatedBy, seed); err != nil {
+		return remoteOutcome{Created: true}, fmt.Errorf("enqueue voice:process: %w", err)
+	}
+	return remoteOutcome{Created: true, Voiced: true}, nil
 }
 
 // countryForLanguage chốt quốc gia để lọc danh bạ tài khoản, suy ra từ ngôn ngữ

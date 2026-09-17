@@ -30,6 +30,7 @@ import type {
   AIUsageReport,
   Health,
   Role,
+  ScanHistory,
   SkippedLogPage,
   SourcePost,
   User,
@@ -46,6 +47,8 @@ export const keys = {
   breaking: (filters: Record<string, unknown>) => ["lists", "breaking", filters] as const,
   skippedLogs: (id: string, limit: number, offset: number) =>
     ["lists", "breaking", id, "skipped", limit, offset] as const,
+  scanRuns: (kind: ChannelKind, id: string, limit: number, offset: number) =>
+    ["lists", kind, id, "scans", limit, offset] as const,
   scheduled: (filters: Record<string, unknown>) => ["lists", "scheduled", filters] as const,
   prompts: (filters: Record<string, unknown>) => ["prompts", filters] as const,
   aiEngines: ["ai-engines"] as const,
@@ -417,6 +420,8 @@ export interface CreateBreakingInput {
   llm_api_set_id?: string | null;
   /** Bỏ trống = quét 24/7 (hành vi cũ). */
   schedule?: ChannelSchedule;
+  /** Quốc gia của kênh. 0 = gỡ quốc gia, quay lại suy từ ngôn ngữ. */
+  country_id?: number;
 }
 
 /**
@@ -426,7 +431,16 @@ export interface CreateBreakingInput {
  * dùng đặt — gửi lên chỉ tổ để server phải bỏ qua.
  */
 export type UpdateBreakingInput = Partial<
-  Omit<ListBreaking, "id" | "created_at" | "created_by" | "scan_interval" | "backfill_done_at">
+  Omit<
+    ListBreaking,
+    | "id"
+    | "created_at"
+    | "created_by"
+    | "scan_interval"
+    | "backfill_done_at"
+    // last_run_status là thứ server tính, không phải thứ client đặt.
+    | "last_run_status"
+  >
 > & {
   scan_interval?: string;
   schedule?: ChannelSchedule;
@@ -453,7 +467,12 @@ export function useRunBreakingList() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.post<{ status: string }>(`/lists/breaking/${id}/run`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["source-posts"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["source-posts"] });
+      // Bảng kênh đọc trạng thái vòng quét gần nhất, nên nó phải đổi ngay sang
+      // "Đang quét" sau khi bấm.
+      qc.invalidateQueries({ queryKey: ["lists", "breaking"] });
+    },
   });
 }
 
@@ -476,6 +495,30 @@ export function useDeleteBreakingList() {
   return useMutation({
     mutationFn: (id: string) => api.delete<void>(`/lists/breaking/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["lists", "breaking"] }),
+  });
+}
+
+/** ChannelKind phân biệt hai bảng kênh trong các hook dùng chung. */
+export type ChannelKind = "breaking" | "scheduled";
+
+/**
+ * Lịch sử quét của 1 kênh: vòng nào chạy lúc nào, ai cho chạy, ra bao nhiêu bài
+ * và voice.
+ *
+ * Chỉ gọi khi tab được mở (`enabled`), cùng lý do với useSkippedLogs: phần lớn
+ * lần mở modal là để sửa cấu hình.
+ *
+ * `refetchInterval` khi đang có vòng chạy: trạng thái "Đang quét" chỉ có ích
+ * nếu nó tự đổi thành "Xong" — bắt người dùng bấm Làm mới để biết vòng quét đã
+ * kết thúc chưa thì thà đừng hiện trạng thái đó.
+ */
+export function useScanRuns(kind: ChannelKind, id: string, limit = 20, offset = 0, enabled = true) {
+  return useQuery({
+    queryKey: keys.scanRuns(kind, id, limit, offset),
+    queryFn: () => api.get<ScanHistory>(`/lists/${kind}/${id}/scans`, { limit, offset }),
+    enabled: enabled && Boolean(id),
+    refetchInterval: (query) =>
+      query.state.data?.items.some((r) => r.status === "running") ? 5_000 : false,
   });
 }
 
@@ -513,10 +556,15 @@ export interface CreateScheduledInput {
    * cố định THAY THẾ tần suất.
    */
   schedule?: ChannelSchedule;
+  /** Quốc gia của kênh. 0 = gỡ quốc gia, quay lại suy từ ngôn ngữ. */
+  country_id?: number;
 }
 
 export type UpdateScheduledInput = Partial<
-  Omit<ListScheduled, "id" | "created_at" | "created_by" | "scan_frequency" | "backfill_done_at">
+  Omit<
+    ListScheduled,
+    "id" | "created_at" | "created_by" | "scan_frequency" | "backfill_done_at" | "last_run_status"
+  >
 > & {
   scan_frequency?: string;
   schedule?: ChannelSchedule;
@@ -536,6 +584,25 @@ export function useUpdateScheduledList() {
     mutationFn: ({ id, ...body }: { id: string } & UpdateScheduledInput) =>
       api.patch<ListScheduled>(`/lists/scheduled/${id}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["lists", "scheduled"] }),
+  });
+}
+
+/**
+ * Quét thử 1 kênh Định kỳ. Đối xứng với useRunBreakingList, và cần vì cùng lý
+ * do: kênh đặt tần suất 6 tiếng thì không có cách nào thử cấu hình vừa sửa
+ * ngoài việc ngồi chờ.
+ *
+ * Làm mới cả bảng kênh, không chỉ Bài Post: vòng quét vừa đẩy vào hàng đợi sẽ
+ * hiện lên đó thành "Đang quét".
+ */
+export function useRunScheduledList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<{ status: string }>(`/lists/scheduled/${id}/run`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["source-posts"] });
+      qc.invalidateQueries({ queryKey: ["lists", "scheduled"] });
+    },
   });
 }
 

@@ -17,12 +17,23 @@ type Maintenance struct {
 	skippedLogRetention time.Duration
 	// aiUsageRetention: giữ ai_usage bao lâu.
 	aiUsageRetention time.Duration
+	// scanRunRetention: giữ lịch sử quét bao lâu.
+	scanRunRetention time.Duration
 }
+
+// staleScanRunAfter — sau bấy lâu, một vòng quét còn ở `running` được coi là đã
+// chết cùng worker của nó.
+//
+// 2 giờ, trong khi task chỉ có timeout 30 phút và tối đa 3 lần retry: ngưỡng
+// rộng để không bao giờ đóng nhầm một vòng đang chạy thật. Đóng nhầm tệ hơn
+// đóng muộn — nó ghi "lỗi" vào lịch sử cho một vòng rồi sẽ chạy xong bình
+// thường.
+const staleScanRunAfter = 2 * time.Hour
 
 func NewMaintenance(
 	q *repository.Queries,
 	log *slog.Logger,
-	skippedLogRetention, aiUsageRetention time.Duration,
+	skippedLogRetention, aiUsageRetention, scanRunRetention time.Duration,
 ) *Maintenance {
 	if skippedLogRetention <= 0 {
 		skippedLogRetention = 7 * 24 * time.Hour
@@ -30,10 +41,14 @@ func NewMaintenance(
 	if aiUsageRetention <= 0 {
 		aiUsageRetention = 90 * 24 * time.Hour
 	}
+	if scanRunRetention <= 0 {
+		scanRunRetention = 30 * 24 * time.Hour
+	}
 	return &Maintenance{
 		q: q, log: log,
 		skippedLogRetention: skippedLogRetention,
 		aiUsageRetention:    aiUsageRetention,
+		scanRunRetention:    scanRunRetention,
 	}
 }
 
@@ -78,6 +93,37 @@ func (m *Maintenance) CleanupAIUsage(ctx context.Context) (int64, error) {
 	if rows > 0 {
 		m.log.InfoContext(ctx, "đã dọn ai_usage quá hạn",
 			"deleted", rows, "retention", m.aiUsageRetention.String())
+	}
+	return rows, nil
+}
+
+// CleanupScanRuns đóng những vòng quét treo rồi xoá lịch sử quá hạn.
+//
+// Hai việc trong một hàm vì chúng phải chạy theo đúng thứ tự đó: xoá trước rồi
+// mới đóng thì một vòng treo vừa quá hạn sẽ bị xoá khi vẫn đang mang trạng thái
+// `running`, và bản ghi cuối cùng của nó — thứ duy nhất nói ra rằng worker đã
+// chết ở đấy — biến mất trước khi ai kịp nhìn.
+//
+// Vì sao phải đóng vòng treo: worker bị kill giữa vòng quét thì không ai gọi
+// FinishScanRun. Trên bảng kênh dòng đó chỉ sai tới vòng kế tiếp (bảng luôn đọc
+// vòng mới nhất), nhưng trong tab lịch sử thì nó "đang quét" mãi mãi.
+func (m *Maintenance) CleanupScanRuns(ctx context.Context) (int64, error) {
+	stale, err := m.q.FailStaleScanRuns(ctx, time.Now().Add(-staleScanRunAfter))
+	if err != nil {
+		return 0, fmt.Errorf("đóng vòng quét treo: %w", err)
+	}
+	if stale > 0 {
+		m.log.WarnContext(ctx, "đã đóng vòng quét treo (worker dừng giữa chừng)",
+			"count", stale, "ngưỡng", staleScanRunAfter.String())
+	}
+
+	rows, err := m.q.DeleteScanRunsBefore(ctx, time.Now().Add(-m.scanRunRetention))
+	if err != nil {
+		return stale, fmt.Errorf("dọn scan_run: %w", err)
+	}
+	if rows > 0 {
+		m.log.InfoContext(ctx, "đã dọn lịch sử quét quá hạn",
+			"deleted", rows, "retention", m.scanRunRetention.String())
 	}
 	return rows, nil
 }

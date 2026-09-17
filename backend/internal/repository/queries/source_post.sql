@@ -3,7 +3,7 @@ INSERT INTO source_post (
   source_type, list_breaking_id, list_scheduled_id, source_url, platform,
   content_type, post_id_extracted, extracted_text, collect_mode, prompt_id,
   language, status, created_by, title, hashtags, thumbnail_url,
-  author_name, posted_at
+  author_name, posted_at, country_id
 ) VALUES (
   sqlc.arg('source_type'), sqlc.narg('list_breaking_id'), sqlc.narg('list_scheduled_id'),
   sqlc.arg('source_url'), sqlc.arg('platform'), sqlc.narg('content_type'),
@@ -11,7 +11,8 @@ INSERT INTO source_post (
   sqlc.narg('prompt_id'), sqlc.arg('language'), sqlc.arg('status'),
   sqlc.arg('created_by'), sqlc.narg('title'),
   COALESCE(sqlc.narg('hashtags')::text[], '{}'),
-  sqlc.narg('thumbnail_url'), sqlc.narg('author_name'), sqlc.narg('posted_at')
+  sqlc.narg('thumbnail_url'), sqlc.narg('author_name'), sqlc.narg('posted_at'),
+  sqlc.narg('country_id')
 )
 RETURNING *;
 

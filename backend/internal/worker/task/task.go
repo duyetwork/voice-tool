@@ -87,12 +87,19 @@ type VoicePublishPayload struct {
 
 type BreakingScanPayload struct {
 	ListID string `json:"list_id"`
+	// ActorID là người đã bấm "Quét thử". Rỗng = vòng chạy theo lịch.
+	//
+	// Nằm ở payload vì đây là thuộc tính của MỘT LẦN CHẠY, không phải của kênh:
+	// cùng một kênh có vòng tự động xen giữa các lần bấm tay, và lịch sử quét
+	// phải phân biệt được chúng. Asynq giữ nguyên payload qua mọi lần retry.
+	ActorID string `json:"actor_id,omitempty"`
 }
 
 type BreakingDispatchPayload struct{}
 
 type ScheduledScanPayload struct {
-	ListID string `json:"list_id"`
+	ListID  string `json:"list_id"`
+	ActorID string `json:"actor_id,omitempty"`
 }
 
 type MaintenanceCleanupPayload struct{}

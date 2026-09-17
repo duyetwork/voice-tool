@@ -60,6 +60,9 @@ func run() error {
 		AIUsage:    application.AIUsage,
 		Audit:      application.Audit,
 		User:       application.User,
+		// Thiếu dòng này thì d.Health là nil và GET /meta/health panic —
+		// mà thanh cảnh báo trên giao diện gọi nó ở MỖI lần đổi trang.
+		Health: application.Health,
 
 		MultimeUsers: application.MultimeUsers,
 		CatalogCache: application.CatalogCache,
