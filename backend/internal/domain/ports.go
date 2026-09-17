@@ -376,14 +376,17 @@ type Enqueuer interface {
 	// được để API phải chờ.
 	EnqueuePostMetadata(ctx context.Context, sourcePostID string) error
 	EnqueueVoicePublish(ctx context.Context, voiceID, actorID string) error
-	EnqueueBreakingScan(ctx context.Context, listID string) error
+	// actorID là người BẤM NÚT quét, rỗng = vòng chạy theo lịch. Đi kèm payload
+	// chứ không tra lại từ DB: lịch sử quét phải trả lời được "ai quét", và lúc
+	// worker chạy thì không còn request nào để hỏi.
+	EnqueueBreakingScan(ctx context.Context, listID, actorID string) error
 	// EnqueueScheduledScan đẩy MỘT vòng quét ngoài lịch cho 1 kênh Định kỳ.
 	//
 	// Dùng khi người dùng vừa bật lại một kênh đang tắt: kênh tắt thì scheduler
 	// bỏ qua mọi vòng, nên không có câu này thì phải chờ trọn một chu kỳ nữa.
 	// Vẫn đi qua đúng handler như vòng theo lịch, nên khung giờ của kênh vẫn
 	// được tôn trọng.
-	EnqueueScheduledScan(ctx context.Context, listID string) error
+	EnqueueScheduledScan(ctx context.Context, listID, actorID string) error
 }
 
 // ChannelScan mô tả khả năng quét CẢ KÊNH của một nền tảng.

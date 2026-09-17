@@ -107,6 +107,9 @@ type BreakingInput struct {
 	LLMAPISetID *uuid.UUID
 	// Schedule: khung giờ / thứ được phép quét. Zero value = 24/7.
 	Schedule domain.ChannelSchedule
+	// CountryID: quốc gia của kênh. Mọi Bài Post và Voice của kênh mang giá trị
+	// này; nil = suy từ ngôn ngữ như trước.
+	CountryID *int64
 }
 
 func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingInput) (repository.ListBreaking, error) {
@@ -134,7 +137,6 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 	if err := validateBackfillLimit(in.BackfillLimit); err != nil {
 		return repository.ListBreaking{}, err
 	}
-
 	list, err := l.q.CreateListBreaking(ctx, repository.CreateListBreakingParams{
 		SourceUrl:       strings.TrimSpace(in.SourceURL),
 		Platform:        platform,
@@ -144,8 +146,12 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 		RegexPatterns:   patterns,
 		LanguageDefault: resolveLanguage(in.Language, "", l.defaultLanguage),
 		// Breaking ưu tiên tốc độ -> auto_process mặc định bật (specs -1).
-		AutoProcess:    boolOr(in.AutoProcess, true),
-		AutoPublish:    boolOr(in.AutoPublish, false),
+		AutoProcess: boolOr(in.AutoProcess, true),
+		AutoPublish: boolOr(in.AutoPublish, false),
+		// Bốc tài khoản đứng tên bài: không ghi giá trị này thì voice của kênh
+		// không có author và hỏng ở bước đăng — không có ai ngồi chọn tay cho
+		// chúng (xem createFromRemote).
+		RandomAuthor:   boolOr(in.RandomAuthor, false),
 		Status:         statusOr(in.Status),
 		ScanLimit:      l.scanLimitOr(in.ScanLimit),
 		ScanInterval:   interval,
@@ -157,6 +163,7 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 		ActiveFromMin:  in.Schedule.FromMin,
 		ActiveToMin:    in.Schedule.ToMin,
 		ActiveWeekdays: in.Schedule.Weekdays,
+		CountryID:      in.CountryID,
 	})
 	if err != nil {
 		return repository.ListBreaking{}, fmt.Errorf("tạo list_breaking: %w", err)
@@ -169,6 +176,7 @@ func (l *List) CreateBreaking(ctx context.Context, actor uuid.UUID, in BreakingI
 		"regex_patterns": list.RegexPatterns,
 		"scan_limit":     list.ScanLimit,
 		"backfill_limit": list.BackfillLimit,
+		"country_id":     list.CountryID,
 	})
 	return list, nil
 }
@@ -328,6 +336,10 @@ type BreakingUpdate struct {
 	// nghĩa "bỏ khung giờ", và chỉ một trong hai diễn giải được.
 	Schedule    *domain.ChannelSchedule
 	ClearWindow bool
+	// CountryID / SetCountry: quốc gia của kênh. Cần cờ riêng vì nil ở CountryID
+	// vừa có nghĩa "không sửa" vừa có nghĩa "gỡ quốc gia".
+	CountryID  *int64
+	SetCountry bool
 }
 
 func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in BreakingUpdate) (repository.ListBreaking, error) {
@@ -351,6 +363,9 @@ func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in Break
 		ClearMaxPosts:  in.ClearMaxPosts,
 		LlmApiSetID:    in.LLMAPISetID,
 		ClearWindow:    in.ClearWindow,
+		RandomAuthor:   in.RandomAuthor,
+		CountryID:      in.CountryID,
+		SetCountry:     in.SetCountry,
 	}
 	if in.Schedule != nil {
 		if err := in.Schedule.Validate(); err != nil {
@@ -403,7 +418,6 @@ func (l *List) UpdateBreaking(ctx context.Context, actor, id uuid.UUID, in Break
 	if err := validateBackfillLimit(in.BackfillLimit); err != nil {
 		return repository.ListBreaking{}, err
 	}
-
 	after, err := l.q.UpdateListBreaking(ctx, params)
 	if err != nil {
 		return repository.ListBreaking{}, wrapNotFound(err, "list_breaking "+id.String())
@@ -433,7 +447,7 @@ func (l *List) RunBreaking(ctx context.Context, actor, id uuid.UUID) error {
 	if _, err := l.GetBreaking(ctx, id); err != nil {
 		return err
 	}
-	if err := l.enq.EnqueueBreakingScan(ctx, id.String()); err != nil {
+	if err := l.enq.EnqueueBreakingScan(ctx, id.String(), actor.String()); err != nil {
 		return err
 	}
 	l.audit.Record(ctx, actor, domain.AuditRun, domain.ObjectListBreaking, id, nil)
@@ -461,8 +475,10 @@ type ScheduledInput struct {
 	LLMAPISetID   *uuid.UUID
 	Schedule      domain.ChannelSchedule
 	// RandomAuthor: bốc tài khoản đứng tên bài đăng cho từng voice của kênh,
-	// lọc theo quốc gia suy ra từ Language.
+	// lọc theo quốc gia của kênh (hoặc suy từ Language nếu kênh chưa chọn).
 	RandomAuthor *bool
+	// CountryID — xem BreakingInput.
+	CountryID *int64
 }
 
 func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in ScheduledInput) (repository.ListScheduled, error) {
@@ -489,7 +505,6 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 	if err := validateBackfillLimit(in.BackfillLimit); err != nil {
 		return repository.ListScheduled{}, err
 	}
-
 	list, err := l.q.CreateListScheduled(ctx, repository.CreateListScheduledParams{
 		SourceUrl:       strings.TrimSpace(in.SourceURL),
 		Platform:        platform,
@@ -516,6 +531,7 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 		ActiveToMin:    in.Schedule.ToMin,
 		ActiveWeekdays: in.Schedule.Weekdays,
 		FixedTimesMin:  in.Schedule.FixedTimes,
+		CountryID:      in.CountryID,
 	})
 	if err != nil {
 		return repository.ListScheduled{}, fmt.Errorf("tạo list_scheduled: %w", err)
@@ -526,7 +542,10 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 	// im lặng 6 tiếng sau khi thêm thì không ai phân biệt được với kênh hỏng.
 	// Vẫn đi qua đúng handler nên khung giờ của kênh vẫn được tôn trọng.
 	if list.Status == statusActive {
-		if err := l.enq.EnqueueScheduledScan(ctx, list.ID.String()); err != nil {
+		// actor rỗng: đây là vòng quét hệ thống tự chạy ngay sau khi thêm kênh,
+		// không phải một lần "Quét thử" ai đó bấm — lịch sử quét phải nói đúng
+		// điều đó.
+		if err := l.enq.EnqueueScheduledScan(ctx, list.ID.String(), ""); err != nil {
 			l.log.WarnContext(ctx, "không đẩy được vòng quét đầu cho kênh vừa thêm",
 				"error", err, "list_scheduled_id", list.ID)
 		}
@@ -539,6 +558,7 @@ func (l *List) CreateScheduled(ctx context.Context, actor uuid.UUID, in Schedule
 		"scan_frequency": in.ScanFrequency.String(),
 		"scan_limit":     list.ScanLimit,
 		"backfill_limit": list.BackfillLimit,
+		"country_id":     list.CountryID,
 	})
 	return list, nil
 }
@@ -603,6 +623,9 @@ type ScheduledUpdate struct {
 	Schedule      *domain.ChannelSchedule
 	ClearWindow   bool
 	RandomAuthor  *bool
+	// CountryID / SetCountry — xem BreakingUpdate.
+	CountryID  *int64
+	SetCountry bool
 }
 
 func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in ScheduledUpdate) (repository.ListScheduled, error) {
@@ -627,6 +650,8 @@ func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in Sche
 		LlmApiSetID:    in.LLMAPISetID,
 		ClearWindow:    in.ClearWindow,
 		RandomAuthor:   in.RandomAuthor,
+		CountryID:      in.CountryID,
+		SetCountry:     in.SetCountry,
 		// pgtype.Interval zero value = NULL -> COALESCE giữ giá trị cũ.
 	}
 	if in.Schedule != nil {
@@ -674,7 +699,6 @@ func (l *List) UpdateScheduled(ctx context.Context, actor, id uuid.UUID, in Sche
 	if err := validateBackfillLimit(in.BackfillLimit); err != nil {
 		return repository.ListScheduled{}, err
 	}
-
 	after, err := l.q.UpdateListScheduled(ctx, params)
 	if err != nil {
 		return repository.ListScheduled{}, wrapNotFound(err, "list_scheduled "+id.String())
@@ -749,7 +773,9 @@ func (l *List) kickIfReactivated(ctx context.Context, before string, after repos
 		l.log.WarnContext(ctx, "không xoá được mốc quét của kênh vừa bật lại",
 			"error", err, "list_scheduled_id", after.ID)
 	}
-	if err := l.enq.EnqueueScheduledScan(ctx, after.ID.String()); err != nil {
+	// actor rỗng: bật lại kênh là một thao tác sửa cấu hình, vòng quét theo sau
+	// vẫn là vòng của hệ thống — xem CreateScheduled.
+	if err := l.enq.EnqueueScheduledScan(ctx, after.ID.String(), ""); err != nil {
 		l.log.WarnContext(ctx, "không đẩy được vòng quét ngay cho kênh vừa bật lại",
 			"error", err, "list_scheduled_id", after.ID)
 		return
@@ -781,6 +807,23 @@ func (l *List) cascadeBreakingLanguage(ctx context.Context, before, after reposi
 	}
 	l.log.InfoContext(ctx, "lan ngôn ngữ từ kênh Breaking xuống bài và voice",
 		"list_breaking_id", after.ID, "language", lang, "bài", posts, "voice", voices)
+}
+
+// RunScheduled trigger 1 vòng quét thủ công cho kênh Định kỳ.
+//
+// Đối xứng với RunBreaking, và cần vì cùng một lý do: kênh Định kỳ có thể đặt
+// tần suất 6 tiếng, nên sau khi sửa cấu hình thì không có cách nào thử xem nó
+// chạy đúng chưa ngoài việc ngồi chờ. Vẫn đi qua đúng handler như vòng theo
+// lịch, nên khung giờ của kênh vẫn được tôn trọng.
+func (l *List) RunScheduled(ctx context.Context, actor, id uuid.UUID) error {
+	if _, err := l.GetScheduled(ctx, id); err != nil {
+		return err
+	}
+	if err := l.enq.EnqueueScheduledScan(ctx, id.String(), actor.String()); err != nil {
+		return err
+	}
+	l.audit.Record(ctx, actor, domain.AuditRun, domain.ObjectListScheduled, id, nil)
+	return nil
 }
 
 func (l *List) DeleteScheduled(ctx context.Context, actor, id uuid.UUID) error {

@@ -59,16 +59,16 @@ func (e *Enqueuer) EnqueueVoicePublish(ctx context.Context, voiceID, actorID str
 	return e.enqueue(ctx, t)
 }
 
-func (e *Enqueuer) EnqueueBreakingScan(ctx context.Context, listID string) error {
-	t, err := task.NewBreakingScan(task.BreakingScanPayload{ListID: listID})
+func (e *Enqueuer) EnqueueBreakingScan(ctx context.Context, listID, actorID string) error {
+	t, err := task.NewBreakingScan(task.BreakingScanPayload{ListID: listID, ActorID: actorID})
 	if err != nil {
 		return err
 	}
 	return e.enqueue(ctx, t)
 }
 
-func (e *Enqueuer) EnqueueScheduledScan(ctx context.Context, listID string) error {
-	t, err := task.NewScheduledScan(task.ScheduledScanPayload{ListID: listID})
+func (e *Enqueuer) EnqueueScheduledScan(ctx context.Context, listID, actorID string) error {
+	t, err := task.NewScheduledScan(task.ScheduledScanPayload{ListID: listID, ActorID: actorID})
 	if err != nil {
 		return err
 	}

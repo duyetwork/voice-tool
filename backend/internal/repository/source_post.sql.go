@@ -40,7 +40,7 @@ const claimSourcePostForProcessing = `-- name: ClaimSourcePostForProcessing :one
 UPDATE source_post
 SET status = 'processing', last_error = NULL
 WHERE id = $1 AND status IN ('new', 'failed')
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at, country_id
 `
 
 // Chỉ 1 worker được xử lý 1 bài tại 1 thời điểm (idempotent khi Asynq retry).
@@ -69,6 +69,7 @@ func (q *Queries) ClaimSourcePostForProcessing(ctx context.Context, id uuid.UUID
 		&i.ThumbnailUrl,
 		&i.AuthorName,
 		&i.PostedAt,
+		&i.CountryID,
 	)
 	return i, err
 }
@@ -123,7 +124,7 @@ INSERT INTO source_post (
   source_type, list_breaking_id, list_scheduled_id, source_url, platform,
   content_type, post_id_extracted, extracted_text, collect_mode, prompt_id,
   language, status, created_by, title, hashtags, thumbnail_url,
-  author_name, posted_at
+  author_name, posted_at, country_id
 ) VALUES (
   $1, $2, $3,
   $4, $5, $6,
@@ -131,9 +132,10 @@ INSERT INTO source_post (
   $10, $11, $12,
   $13, $14,
   COALESCE($15::text[], '{}'),
-  $16, $17, $18
+  $16, $17, $18,
+  $19
 )
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at, country_id
 `
 
 type CreateSourcePostParams struct {
@@ -155,6 +157,7 @@ type CreateSourcePostParams struct {
 	ThumbnailUrl    *string    `json:"thumbnail_url"`
 	AuthorName      *string    `json:"author_name"`
 	PostedAt        *time.Time `json:"posted_at"`
+	CountryID       *int64     `json:"country_id"`
 }
 
 func (q *Queries) CreateSourcePost(ctx context.Context, arg CreateSourcePostParams) (SourcePost, error) {
@@ -177,6 +180,7 @@ func (q *Queries) CreateSourcePost(ctx context.Context, arg CreateSourcePostPara
 		arg.ThumbnailUrl,
 		arg.AuthorName,
 		arg.PostedAt,
+		arg.CountryID,
 	)
 	var i SourcePost
 	err := row.Scan(
@@ -201,6 +205,7 @@ func (q *Queries) CreateSourcePost(ctx context.Context, arg CreateSourcePostPara
 		&i.ThumbnailUrl,
 		&i.AuthorName,
 		&i.PostedAt,
+		&i.CountryID,
 	)
 	return i, err
 }
@@ -218,7 +223,7 @@ func (q *Queries) DeleteSourcePost(ctx context.Context, id uuid.UUID) (int64, er
 }
 
 const findSourcePostByPostID = `-- name: FindSourcePostByPostID :one
-SELECT id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at FROM source_post
+SELECT id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at, country_id FROM source_post
 WHERE platform = $1 AND post_id_extracted = $2
 ORDER BY created_at ASC
 LIMIT 1
@@ -257,12 +262,13 @@ func (q *Queries) FindSourcePostByPostID(ctx context.Context, arg FindSourcePost
 		&i.ThumbnailUrl,
 		&i.AuthorName,
 		&i.PostedAt,
+		&i.CountryID,
 	)
 	return i, err
 }
 
 const getSourcePost = `-- name: GetSourcePost :one
-SELECT id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at FROM source_post WHERE id = $1
+SELECT id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at, country_id FROM source_post WHERE id = $1
 `
 
 func (q *Queries) GetSourcePost(ctx context.Context, id uuid.UUID) (SourcePost, error) {
@@ -290,12 +296,13 @@ func (q *Queries) GetSourcePost(ctx context.Context, id uuid.UUID) (SourcePost, 
 		&i.ThumbnailUrl,
 		&i.AuthorName,
 		&i.PostedAt,
+		&i.CountryID,
 	)
 	return i, err
 }
 
 const listSourcePosts = `-- name: ListSourcePosts :many
-SELECT sp.id, sp.source_type, sp.list_breaking_id, sp.list_scheduled_id, sp.source_url, sp.platform, sp.content_type, sp.post_id_extracted, sp.extracted_text, sp.collect_mode, sp.prompt_id, sp.language, sp.status, sp.last_error, sp.created_by, sp.created_at, sp.title, sp.hashtags, sp.thumbnail_url, sp.author_name, sp.posted_at, u.email AS created_by_email,
+SELECT sp.id, sp.source_type, sp.list_breaking_id, sp.list_scheduled_id, sp.source_url, sp.platform, sp.content_type, sp.post_id_extracted, sp.extracted_text, sp.collect_mode, sp.prompt_id, sp.language, sp.status, sp.last_error, sp.created_by, sp.created_at, sp.title, sp.hashtags, sp.thumbnail_url, sp.author_name, sp.posted_at, sp.country_id, u.email AS created_by_email,
        COALESCE(lb.source_url, ls.source_url, '') AS list_source_url
 FROM source_post sp
 JOIN app_user u ON u.id = sp.created_by
@@ -355,6 +362,7 @@ type ListSourcePostsRow struct {
 	ThumbnailUrl    *string    `json:"thumbnail_url"`
 	AuthorName      *string    `json:"author_name"`
 	PostedAt        *time.Time `json:"posted_at"`
+	CountryID       *int64     `json:"country_id"`
 	CreatedByEmail  string     `json:"created_by_email"`
 	ListSourceUrl   string     `json:"list_source_url"`
 }
@@ -417,6 +425,7 @@ func (q *Queries) ListSourcePosts(ctx context.Context, arg ListSourcePostsParams
 			&i.ThumbnailUrl,
 			&i.AuthorName,
 			&i.PostedAt,
+			&i.CountryID,
 			&i.CreatedByEmail,
 			&i.ListSourceUrl,
 		); err != nil {
@@ -434,7 +443,7 @@ const setSourcePostStatus = `-- name: SetSourcePostStatus :one
 UPDATE source_post
 SET status = $1, last_error = $2
 WHERE id = $3
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at, country_id
 `
 
 type SetSourcePostStatusParams struct {
@@ -468,6 +477,7 @@ func (q *Queries) SetSourcePostStatus(ctx context.Context, arg SetSourcePostStat
 		&i.ThumbnailUrl,
 		&i.AuthorName,
 		&i.PostedAt,
+		&i.CountryID,
 	)
 	return i, err
 }
@@ -479,7 +489,7 @@ SET collect_mode   = COALESCE($1, collect_mode),
     language       = COALESCE($3, language),
     extracted_text = COALESCE($4, extracted_text)
 WHERE id = $5
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at, country_id
 `
 
 type UpdateSourcePostParams struct {
@@ -521,6 +531,7 @@ func (q *Queries) UpdateSourcePost(ctx context.Context, arg UpdateSourcePostPara
 		&i.ThumbnailUrl,
 		&i.AuthorName,
 		&i.PostedAt,
+		&i.CountryID,
 	)
 	return i, err
 }
@@ -534,7 +545,7 @@ SET title         = COALESCE($1, title),
     posted_at     = COALESCE($5, posted_at),
     content_type  = COALESCE($6, content_type)
 WHERE id = $7
-RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at
+RETURNING id, source_type, list_breaking_id, list_scheduled_id, source_url, platform, content_type, post_id_extracted, extracted_text, collect_mode, prompt_id, language, status, last_error, created_by, created_at, title, hashtags, thumbnail_url, author_name, posted_at, country_id
 `
 
 type UpdateSourcePostMetadataParams struct {
@@ -585,6 +596,7 @@ func (q *Queries) UpdateSourcePostMetadata(ctx context.Context, arg UpdateSource
 		&i.ThumbnailUrl,
 		&i.AuthorName,
 		&i.PostedAt,
+		&i.CountryID,
 	)
 	return i, err
 }

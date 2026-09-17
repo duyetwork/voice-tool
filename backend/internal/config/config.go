@@ -109,6 +109,8 @@ type Config struct {
 	TTSMaxConcurrent int           `mapstructure:"TTS_MAX_CONCURRENT"`
 	// Giữ bản ghi ai_usage bao lâu trước khi job dọn dẹp xoá.
 	AIUsageRetention time.Duration `mapstructure:"AI_USAGE_RETENTION"`
+	// Giữ lịch sử quét (scan_run) bao lâu trước khi job dọn dẹp xoá.
+	ScanRunRetention time.Duration `mapstructure:"SCAN_RUN_RETENTION"`
 
 	// Ngôn ngữ mặc định hệ thống — đáy của cascade (business rule #9).
 	// "auto" = để nền tảng nguồn / multime.ai tự nhận diện.
@@ -210,6 +212,11 @@ func setDefaults(v *viper.Viper) {
 	// 90 ngày: đủ để so một quý với quý trước, và đủ ngắn để bảng không phình
 	// mãi vì một thứ chỉ dùng để nhìn xu hướng.
 	v.SetDefault("AI_USAGE_RETENTION", "2160h")
+	// 30 ngày: dài hơn skipped_log vì lịch sử quét dùng để nhìn NHỊP chạy của
+	// một kênh (nó im từ bao giờ, trước đó có ra bài không), mà một cửa sổ 7
+	// ngày không trả lời được câu đó. Vẫn phải xoá: kênh Breaking quét mỗi phút
+	// là ~43k dòng một tháng cho MỖI kênh.
+	v.SetDefault("SCAN_RUN_RETENTION", "720h")
 	v.SetDefault("DEFAULT_LANGUAGE", "auto")
 	// B/C đã chạy được (TTS 3voices + LLM) nên bật sẵn cả 3 hình thức.
 	v.SetDefault("ENABLED_COLLECT_MODES", "A,B,C")
@@ -244,7 +251,7 @@ var allKeys = []string{
 	"MULTIME_PUBLIC_DOWNLOAD",
 	"BREAKING_SCAN_INTERVAL", "SCAN_LIMIT_DEFAULT", "MAX_POSTS_PER_RUN_DEFAULT",
 	"BREAKING_SCAN_PARALLELISM", "SCHEDULER_SYNC_INTERVAL", "SKIPPED_LOG_RETENTION", "PLATFORM_MIN_GAP",
-	"TTS_MIN_GAP", "TTS_MAX_CONCURRENT", "AI_USAGE_RETENTION",
+	"TTS_MIN_GAP", "TTS_MAX_CONCURRENT", "AI_USAGE_RETENTION", "SCAN_RUN_RETENTION",
 	"DEFAULT_LANGUAGE", "ENABLED_COLLECT_MODES", "BOOTSTRAP_ADMIN_EMAIL", "DEFAULT_USER_ROLE",
 	"TOKEN_ENCRYPTION_KEY",
 	"THREEVOICES_API_KEY", "THREEVOICES_BASE_URL", "THREEVOICES_VOICE_ID",

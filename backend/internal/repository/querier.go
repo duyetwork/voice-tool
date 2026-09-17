@@ -72,6 +72,7 @@ type Querier interface {
 	// Tổng số kênh khớp bộ lọc, để bảng phân trang biết có bao nhiêu trang.
 	CountListScheduleds(ctx context.Context, arg CountListScheduledsParams) (int64, error)
 	CountPrompts(ctx context.Context) (int64, error)
+	CountScanRuns(ctx context.Context, arg CountScanRunsParams) (int64, error)
 	CountSkippedLogs(ctx context.Context, listBreakingID uuid.UUID) (int64, error)
 	// Tỉ lệ bỏ qua giúp đánh giá regex có quá chặt/quá lỏng hay không.
 	CountSkippedLogsSince(ctx context.Context, arg CountSkippedLogsSinceParams) (int64, error)
@@ -127,13 +128,26 @@ type Querier interface {
 	DeleteListBreaking(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteListScheduled(ctx context.Context, id uuid.UUID) (int64, error)
 	DeletePrompt(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteScanRunsBefore(ctx context.Context, before time.Time) (int64, error)
 	DeleteSkippedLogsBefore(ctx context.Context, before time.Time) (int64, error)
 	DeleteSourcePost(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteVoice(ctx context.Context, id uuid.UUID) (int64, error)
+	// Đóng những vòng quét không bao giờ kết thúc.
+	//
+	// Worker bị kill giữa vòng quét thì không ai chạy FinishScanRun, và dòng đó
+	// nằm lại ở 'running' vĩnh viễn. Trên bảng kênh nó chỉ sai cho tới vòng kế
+	// tiếp (bảng đọc vòng MỚI NHẤT), nhưng trong tab lịch sử thì nó sai mãi — và
+	// một dòng "đang quét" từ tuần trước là thứ khiến người đọc mất lòng tin vào
+	// cả bảng.
+	FailStaleScanRuns(ctx context.Context, before time.Time) (int64, error)
 	// Tra cứu bài trùng theo ID bài đăng trên nền tảng (KHÔNG theo URL): cùng 1
 	// bài có nhiều dạng URL khác nhau nhưng chỉ 1 id.
 	// Trả bản CŨ NHẤT để thông báo trùng luôn trỏ về bài gốc.
 	FindSourcePostByPostID(ctx context.Context, arg FindSourcePostByPostIDParams) (SourcePost, error)
+	// Đóng vòng quét kèm kết quả. Ghi một lần ở cuối chứ không cộng dồn từng bài:
+	// vòng quét đã có sẵn bộ đếm trong bộ nhớ, và mỗi bài một UPDATE thì một kênh
+	// scan_limit=200 thành 200 lượt ghi cho một dòng.
+	FinishScanRun(ctx context.Context, arg FinishScanRunParams) error
 	// Worker điền kết quả vào record `processing` đã tạo sẵn lúc enqueue.
 	// Metadata dùng COALESCE: fetch không ra tiêu đề thì giữ nguyên phần đã điền
 	// sẵn từ Bài Post, không xoá trắng.
@@ -223,6 +237,8 @@ type Querier interface {
 	// Sắp xếp động theo cột thời gian đang chọn; mặc định kênh mới nhất trước.
 	ListListScheduleds(ctx context.Context, arg ListListScheduledsParams) ([]ListListScheduledsRow, error)
 	ListPrompts(ctx context.Context, arg ListPromptsParams) ([]Prompt, error)
+	// Lịch sử của ĐÚNG MỘT kênh — service luôn truyền đúng một trong hai id.
+	ListScanRuns(ctx context.Context, arg ListScanRunsParams) ([]ListScanRunsRow, error)
 	ListSkippedLogs(ctx context.Context, arg ListSkippedLogsParams) ([]SkippedLog, error)
 	// Bài Post đi kèm URL của kênh đã đẻ ra nó. Kênh không có cột tên, nên thứ
 	// nhận diện được một kênh trên giao diện vẫn là source_url của nó.
@@ -326,6 +342,13 @@ type Querier interface {
 	// mình, để sau khi đăng lên multime thì xoá đi cho đỡ tốn dung lượng.
 	SetVoiceImage(ctx context.Context, arg SetVoiceImageParams) (Voice, error)
 	SetVoicePublishStatus(ctx context.Context, arg SetVoicePublishStatusParams) (Voice, error)
+	// Mở 1 vòng quét. Dòng này hiện lên bảng kênh là "Đang quét" cho tới khi
+	// FinishScanRun đóng nó lại.
+	StartScanRun(ctx context.Context, arg StartScanRunParams) (ScanRun, error)
+	// Tổng kết cửa sổ gần đây, hiện ở đầu tab Lịch sử quét. Cần vì một trang 20
+	// dòng không trả lời được "kênh này mấy hôm nay có ra gì không" — mà đó mới là
+	// câu hỏi người ta mở tab này để hỏi.
+	SumScanRunsSince(ctx context.Context, arg SumScanRunsSinceParams) (SumScanRunsSinceRow, error)
 	// Đóng dấu thời điểm key thật sự đọc ra audio. Chỉ gọi sau khi TTS thành công:
 	// cột này để người dùng biết key nào còn sống, key nào khai xong bỏ đó.
 	TouchAIEngineUsed(ctx context.Context, id uuid.UUID) error

@@ -223,3 +223,5 @@ Một tên miền (`SITE_DOMAIN`) phục vụ cả giao diện lẫn API qua Cad
 - Deploy, vận hành, storage, backup: [docs/deployment.md](docs/deployment.md)
 - Xử lý lỗi hay gặp: [docs/troubleshooting.md](docs/troubleshooting.md)
 - Việc còn cần chốt: [docs/open-questions.md](docs/open-questions.md)
+- Quét kênh Facebook/Instagram/X — nghiên cứu giải pháp: [docs/channel-scan-fb-ig-x.md](docs/channel-scan-fb-ig-x.md)
+- Việc cần anh chốt sau đợt 17/09: [docs/review-2026-09-17.md](docs/review-2026-09-17.md)

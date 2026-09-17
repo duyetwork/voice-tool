@@ -128,6 +128,7 @@ type ListBreaking struct {
 	MaxPostsPerRun      *int32          `json:"max_posts_per_run"`
 	LastError           *string         `json:"last_error"`
 	RandomAuthor        bool            `json:"random_author"`
+	CountryID           *int64          `json:"country_id"`
 }
 
 type ListScheduled struct {
@@ -158,6 +159,7 @@ type ListScheduled struct {
 	BackfillDoneAt   *time.Time      `json:"backfill_done_at"`
 	LastError        *string         `json:"last_error"`
 	RandomAuthor     bool            `json:"random_author"`
+	CountryID        *int64          `json:"country_id"`
 }
 
 type LlmApiKey struct {
@@ -198,6 +200,22 @@ type Prompt struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type ScanRun struct {
+	ID              uuid.UUID  `json:"id"`
+	ListBreakingID  *uuid.UUID `json:"list_breaking_id"`
+	ListScheduledID *uuid.UUID `json:"list_scheduled_id"`
+	StartedAt       time.Time  `json:"started_at"`
+	FinishedAt      *time.Time `json:"finished_at"`
+	Status          string     `json:"status"`
+	TriggerKind     string     `json:"trigger_kind"`
+	TriggeredBy     *uuid.UUID `json:"triggered_by"`
+	Fetched         int32      `json:"fetched"`
+	PostsCreated    int32      `json:"posts_created"`
+	VoicesCreated   int32      `json:"voices_created"`
+	Skipped         int32      `json:"skipped"`
+	Error           *string    `json:"error"`
+}
+
 type SkippedLog struct {
 	ID             uuid.UUID `json:"id"`
 	ListBreakingID uuid.UUID `json:"list_breaking_id"`
@@ -230,6 +248,7 @@ type SourcePost struct {
 	ThumbnailUrl    *string    `json:"thumbnail_url"`
 	AuthorName      *string    `json:"author_name"`
 	PostedAt        *time.Time `json:"posted_at"`
+	CountryID       *int64     `json:"country_id"`
 }
 
 type Voice struct {

@@ -19,7 +19,9 @@ import {
   toChannelSchedule,
 } from "@/components/schedule-fields";
 import { Can } from "@/components/permission";
+import { ScanHistoryPanel, ScanStatusBadge } from "@/components/scan-history";
 import { Badge, statusTone } from "@/components/ui/badge";
+import { Combobox } from "@/components/ui/combobox";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
 import { Checkbox, Field, Input, Select, Toggle } from "@/components/ui/field";
@@ -28,6 +30,7 @@ import { Pagination, usePaging } from "@/components/ui/pagination";
 import { EmptyRow, RowActions, SortableTh, Table, Td, Th, useSorting } from "@/components/ui/table";
 import {
   useBreakingLists,
+  useCatalog,
   useChannelScanSupport,
   useCollectModes,
   useCreateBreakingList,
@@ -49,6 +52,9 @@ import {
 } from "@/lib/utils";
 import type { CollectMode, ListBreaking } from "@/types/api";
 
+/** Các tab trong modal chi tiết kênh. */
+type ChannelTab = "config" | "scans" | "skipped";
+
 /**
  * F2 — Danh sách Breaking. Không có tần suất quét: worker quét liên tục và chỉ
  * lấy bài khớp Regex Pattern (business rule #3, #4). Mỗi kênh có thể khai nhiều
@@ -61,7 +67,14 @@ export default function BreakingListsPage() {
   const [creating, setCreating] = React.useState(false);
   // Kênh đang sửa. Giữ cả object chứ không chỉ id: dialog cần giá trị hiện tại
   // để đổ vào form, và bảng đã có sẵn chúng rồi.
-  const [editing, setEditing] = React.useState<ListBreaking | null>(null);
+  // Kênh đang mở, kèm tab mở sẵn. Giữ cả object chứ không chỉ id: dialog cần
+  // giá trị hiện tại để đổ vào form, và bảng đã có sẵn chúng rồi.
+  //
+  // `tab` nằm ở đây chứ không chỉ trong dialog vì mỗi nút trên bảng mở một tab
+  // khác nhau — "Sửa" vào cấu hình, "Lịch sử" vào lịch sử quét.
+  const [editing, setEditing] = React.useState<{ list: ListBreaking; tab: ChannelTab } | null>(
+    null,
+  );
   const paging = usePaging();
   const sorting = useSorting("created_at", paging.reset);
   // Nút "Xoá lọc" chỉ hiện khi thực sự có gì để xoá.
@@ -214,6 +227,7 @@ export default function BreakingListsPage() {
                 <Th>Ngôn ngữ</Th>
                 <Th>Người tạo</Th>
                 <Th>Kết quả</Th>
+                <Th>Vòng quét</Th>
                 <SortableTh sorting={sorting} column="last_scanned_at">
                   Thời gian
                 </SortableTh>
@@ -227,7 +241,7 @@ export default function BreakingListsPage() {
             </thead>
             <tbody>
               {lists.isLoading ? (
-                <EmptyRow colSpan={11}>Đang tải…</EmptyRow>
+                <EmptyRow colSpan={12}>Đang tải…</EmptyRow>
               ) : lists.data?.items.length ? (
                 lists.data.items.map((list) => (
                   <tr key={list.id}>
@@ -294,6 +308,13 @@ export default function BreakingListsPage() {
                       <div className="text-slate-500">{list.voice_count ?? 0} voice</div>
                     </Td>
 
+                    {/* Trạng thái vòng quét gần nhất. Không có cột này thì
+                        "kênh đang chạy dở" và "kênh đã xong từ lâu" trông y
+                        hệt nhau — cùng một last_scanned_at cũ. */}
+                    <Td className="whitespace-nowrap">
+                      <ScanStatusBadge status={list.last_run_status} />
+                    </Td>
+
                     <Td className="max-w-56 text-xs">
                       <div className="whitespace-nowrap text-slate-500">
                         tạo: {formatDateTime(list.created_at)}
@@ -348,8 +369,21 @@ export default function BreakingListsPage() {
                     <Can permission="can_write">
                       <Td className="whitespace-nowrap text-right">
                         <RowActions>
-                          <Button size="sm" variant="secondary" onClick={() => setEditing(list)}>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => setEditing({ list, tab: "config" })}
+                          >
                             Sửa
+                          </Button>
+                          {/* Lối vào riêng cho lịch sử quét. Nằm sau nút "Sửa"
+                              thì không ai tìm ra: không ai bấm Sửa để XEM. */}
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => setEditing({ list, tab: "scans" })}
+                          >
+                            Lịch sử
                           </Button>
                           <Button
                             size="sm"
@@ -378,7 +412,7 @@ export default function BreakingListsPage() {
                   </tr>
                 ))
               ) : (
-                <EmptyRow colSpan={11}>Chưa có kênh nào.</EmptyRow>
+                <EmptyRow colSpan={12}>Chưa có kênh nào.</EmptyRow>
               )}
             </tbody>
           </Table>
@@ -388,7 +422,13 @@ export default function BreakingListsPage() {
       </Card>
 
       {creating ? <BreakingDialog onClose={() => setCreating(false)} /> : null}
-      {editing ? <BreakingDialog list={editing} onClose={() => setEditing(null)} /> : null}
+      {editing ? (
+        <BreakingDialog
+          list={editing.list}
+          initialTab={editing.tab}
+          onClose={() => setEditing(null)}
+        />
+      ) : null}
     </>
   );
 }
@@ -400,10 +440,18 @@ export default function BreakingListsPage() {
  * ra hai dialog chỉ tạo ra hai bản sao của cùng một danh sách trường — và bản
  * "sửa" sẽ là bản thiếu trường mỗi lần thêm tính năng mới.
  */
-function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () => void }) {
+function BreakingDialog({
+  list,
+  initialTab = "config",
+  onClose,
+}: {
+  list?: ListBreaking;
+  initialTab?: ChannelTab;
+  onClose: () => void;
+}) {
   const editing = list != null;
-  // Kênh mới chưa quét lần nào nên không có gì để bỏ qua — tab chỉ hiện khi sửa.
-  const [tab, setTab] = React.useState<"config" | "skipped">("config");
+  // Kênh mới chưa quét lần nào nên không có gì để xem — tab chỉ hiện khi sửa.
+  const [tab, setTab] = React.useState<ChannelTab>(initialTab);
   const prompts = usePrompts();
   const modes = useCollectModes();
   const create = useCreateBreakingList();
@@ -436,6 +484,15 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
   // nên bộ phải nằm sẵn trên kênh.
   const [llmSetId, setLlmSetId] = React.useState(list?.llm_api_set_id ?? "");
   const [schedule, setSchedule] = React.useState(list ? scheduleDraftOf(list) : emptySchedule);
+  // Quốc gia của kênh: mọi Bài Post và Voice của kênh thuộc về nước này, và đó
+  // là thứ lọc danh bạ tài khoản ở bước đăng. Để trống thì hệ thống suy từ ngôn
+  // ngữ như trước — đoán đúng với tiếng Việt, đoán bừa với tiếng Anh.
+  const [countryId, setCountryId] = React.useState(list?.country_id ? String(list.country_id) : "");
+  const catalog = useCatalog();
+  const countryOptions = React.useMemo(
+    () => (catalog.data?.countries ?? []).map((c) => ({ value: String(c.id), label: c.name })),
+    [catalog.data?.countries],
+  );
 
   const llmSets = useLLMAPISets();
   const needsPrompt = collectMode === "C";
@@ -464,6 +521,9 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
       scan_interval: scanInterval || undefined,
       llm_api_set_id: needsPrompt && llmSetId ? llmSetId : null,
       schedule: toChannelSchedule(schedule),
+      // 0 = gỡ quốc gia (id của Strongbody luôn > 0) — xem scanConfigRequest ở
+      // backend. Không gửi 0 thì người dùng bỏ chọn nước mà kênh vẫn giữ nước cũ.
+      country_id: countryId ? Number(countryId) : 0,
     };
     if (list) {
       await update.mutateAsync({ id: list.id, ...common, ...tuningUpdatePayload(tuning) });
@@ -475,18 +535,18 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
 
   return (
     <Modal
-      title={editing ? "Sửa kênh Breaking" : "Thêm kênh Breaking"}
-      description="Kênh sẽ được quét liên tục; chỉ bài khớp một trong các pattern bên dưới mới tạo Bài Post."
+      title={editing ? "Kênh Breaking" : "Thêm kênh Breaking"}
       width="2xl"
       onClose={onClose}
     >
       {editing ? (
-        <div className="mb-4 grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+        <div className="mb-4 grid grid-cols-3 gap-2 rounded-lg bg-slate-100 p-1">
           {(
             [
               ["config", "Cấu hình"],
+              ["scans", "Lịch sử quét"],
               ["skipped", "Bài bị bỏ qua"],
-            ] as ["config" | "skipped", string][]
+            ] as [ChannelTab, string][]
           ).map(([value, label]) => (
             <button
               key={value}
@@ -505,180 +565,189 @@ function BreakingDialog({ list, onClose }: { list?: ListBreaking; onClose: () =>
         </div>
       ) : null}
 
-      {editing && tab === "skipped" ? (
+      {editing && tab === "scans" ? (
+        <ScanHistoryPanel kind="breaking" listId={list.id} />
+      ) : editing && tab === "skipped" ? (
         <SkippedPanel listId={list.id} patternCount={list.regex_patterns?.length ?? 0} />
       ) : (
-      <form onSubmit={submit} className="space-y-4">
-        {/* Nhận diện được URL của một nền tảng không có nghĩa là quét được
+        <form onSubmit={submit} className="space-y-4">
+          {/* Nhận diện được URL của một nền tảng không có nghĩa là quét được
             kênh của nó: yt-dlp lấy từng bài X/Facebook/Instagram bình thường
             nhưng không đọc được dòng thời gian. Nói ngay lúc gõ URL, chứ để
             người dùng bấm Lưu rồi mới báo thì họ đã điền xong cả form. */}
-        <Field label="URL kênh nguồn" required error={blocked?.reason}>
-          <Input
-            type="url"
-            placeholder="https://www.youtube.com/@kenh"
-            value={sourceUrl}
-            onChange={(e) => setSourceUrl(e.target.value)}
-            required
-            autoFocus
-          />
-        </Field>
-
-        <div>
-          <div className="mb-1.5 flex items-center justify-between">
-            <label className="text-sm font-medium text-slate-700">Điều kiện bắt bài</label>
-            <button
-              type="button"
-              className="text-xs font-medium text-indigo-700 hover:underline"
-              onClick={() => setPatterns((prev) => [...prev, ""])}
-            >
-              + Thêm pattern
-            </button>
-          </div>
-          <div className="space-y-2">
-            {patterns.map((pattern, index) => (
-              <div key={index} className="flex gap-2">
-                <Input
-                  placeholder={index === 0 ? "tin nóng" : "#khancap"}
-                  value={pattern}
-                  onChange={(e) => setPattern(index, e.target.value)}
-                  required={index === 0}
-                />
-                {patterns.length > 1 ? (
-                  <Button
-                    type="button"
-                    variant="danger"
-                    size="sm"
-                    onClick={() => setPatterns((prev) => prev.filter((_, i) => i !== index))}
-                  >
-                    Xoá
-                  </Button>
-                ) : null}
-              </div>
-            ))}
-          </div>
-          <p className="mt-1 text-xs text-slate-500">
-            Khớp <strong>một</strong> pattern là bắt bài (OR). Gõ từ khoá, hashtag, hoặc regex —
-            backend tự chuẩn hoá về regex.
-          </p>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field
-            label="Hình thức thu thập"
-          >
-            <Select
-              value={collectMode}
-              onChange={(e) => setCollectMode(e.target.value as CollectMode)}
-            >
-              {Object.entries(COLLECT_MODE_LABELS).map(([value, label]) => (
-                <option key={value} value={value} disabled={!isEnabled(value)}>
-                  {label}
-                  {isEnabled(value) ? "" : " — chưa hỗ trợ"}
-                </option>
-              ))}
-            </Select>
+          <Field label="URL kênh nguồn" required error={blocked?.reason}>
+            <Input
+              type="url"
+              placeholder="https://www.youtube.com/@kenh"
+              value={sourceUrl}
+              onChange={(e) => setSourceUrl(e.target.value)}
+              required
+              autoFocus
+            />
           </Field>
 
-          <Field
-            label="Ngôn ngữ mặc định"
-          >
-            <Select value={language} onChange={(e) => setLanguage(e.target.value)}>
-              {LANGUAGE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-
-        {needsPrompt ? (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Prompt mẫu" required>
-              <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
-                <option value="">— Chọn prompt —</option>
-                {prompts.data?.items.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field
-              label="Bộ API"
-              hint="Quét tự động không có ai bấm nút để chọn bộ — không gán thì hình thức C của kênh này không chạy."
-            >
-              <Select value={llmSetId} onChange={(e) => setLlmSetId(e.target.value)}>
-                <option value="">— Không chọn —</option>
-                {llmSets.data?.items.map((set) => (
-                  <option key={set.id} value={set.id}>
-                    {set.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-        ) : null}
-
-        <ScheduleFields value={schedule} onChange={setSchedule} />
-
-        {/* Chỉ còn HAI ô — xem ghi chú ở màn Định kỳ. */}
-        <label className="flex items-center gap-2 text-sm text-slate-700">
-          <Checkbox
-            checked={autoProcess}
-            onChange={(e) => {
-              setAutoProcess(e.target.checked);
-              if (e.target.checked) setRandomAuthor(true);
-            }}
-          />
-          Tự động tạo Voice và đăng lên multime.ai khi bắt được bài
-        </label>
-        <label className="flex items-center gap-2 text-sm text-slate-700">
-          <Checkbox checked={randomAuthor} onChange={(e) => setRandomAuthor(e.target.checked)} />
-          Random author — bốc tài khoản đứng tên bài theo ngôn ngữ của kênh
-        </label>
-
-        <div className="rounded-md border border-slate-200 p-3">
-          <button
-            type="button"
-            className="text-sm font-medium text-slate-700"
-            onClick={() => setShowTuning((v) => !v)}
-          >
-            {showTuning ? "▾" : "▸"} Tham số quét (nâng cao)
-          </button>
-          {showTuning ? (
-            <div className="mt-3 space-y-3">
-              <ChannelTuning
-                value={tuning}
-                onChange={setTuning}
-                backfillDone={Boolean(list?.backfill_done_at)}
-              />
-              <Field
-                label="Khoảng nghỉ giữa 2 vòng"
-                hint="Ví dụ 30s, 2m. Bỏ trống = theo hệ thống (60s). Tối thiểu 15s."
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className="text-sm font-medium text-slate-700">Điều kiện bắt bài</label>
+              <button
+                type="button"
+                className="text-xs font-medium text-indigo-700 hover:underline"
+                onClick={() => setPatterns((prev) => [...prev, ""])}
               >
-                <Input
-                  placeholder="60s"
-                  value={scanInterval}
-                  onChange={(e) => setScanInterval(e.target.value)}
-                />
+                + Thêm pattern
+              </button>
+            </div>
+            <div className="space-y-2">
+              {patterns.map((pattern, index) => (
+                <div key={index} className="flex gap-2">
+                  <Input
+                    placeholder={index === 0 ? "tin nóng" : "#khancap"}
+                    value={pattern}
+                    onChange={(e) => setPattern(index, e.target.value)}
+                    required={index === 0}
+                  />
+                  {patterns.length > 1 ? (
+                    <Button
+                      type="button"
+                      variant="danger"
+                      size="sm"
+                      onClick={() => setPatterns((prev) => prev.filter((_, i) => i !== index))}
+                    >
+                      Xoá
+                    </Button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Khớp <strong>một</strong> pattern là bắt bài (OR). Gõ từ khoá, hashtag, hoặc regex —
+              backend tự chuẩn hoá về regex.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Hình thức thu thập">
+              <Select
+                value={collectMode}
+                onChange={(e) => setCollectMode(e.target.value as CollectMode)}
+              >
+                {Object.entries(COLLECT_MODE_LABELS).map(([value, label]) => (
+                  <option key={value} value={value} disabled={!isEnabled(value)}>
+                    {label}
+                    {isEnabled(value) ? "" : " — chưa hỗ trợ"}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
+            <Field label="Ngôn ngữ mặc định">
+              <Select value={language} onChange={(e) => setLanguage(e.target.value)}>
+                {LANGUAGE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+
+          <Field
+            label="Quốc gia"
+          >
+            <Combobox
+              value={countryId}
+              options={countryOptions}
+              onChange={setCountryId}
+              emptyLabel="Chọn quốc gia"
+              placeholder="Chọn quốc gia"
+            />
+          </Field>
+
+          {needsPrompt ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Prompt mẫu" required>
+                <Select value={promptId} onChange={(e) => setPromptId(e.target.value)} required>
+                  <option value="">— Chọn prompt —</option>
+                  {prompts.data?.items.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field
+                label="Bộ API"
+              >
+                <Select value={llmSetId} onChange={(e) => setLlmSetId(e.target.value)}>
+                  <option value="">— Không chọn —</option>
+                  {llmSets.data?.items.map((set) => (
+                    <option key={set.id} value={set.id}>
+                      {set.name}
+                    </option>
+                  ))}
+                </Select>
               </Field>
             </div>
           ) : null}
-        </div>
 
-        <ErrorNote error={create.error ?? update.error} />
+          <ScheduleFields value={schedule} onChange={setSchedule} />
 
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
-            Huỷ
-          </Button>
-          <Button type="submit" disabled={pending}>
-            {pending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Thêm kênh"}
-          </Button>
-        </div>
-      </form>
+          {/* Chỉ còn HAI ô — xem ghi chú ở màn Định kỳ. */}
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <Checkbox
+              checked={autoProcess}
+              onChange={(e) => {
+                setAutoProcess(e.target.checked);
+                if (e.target.checked) setRandomAuthor(true);
+              }}
+            />
+            Tự động tạo Voice và đăng lên multime.ai khi bắt được bài
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <Checkbox checked={randomAuthor} onChange={(e) => setRandomAuthor(e.target.checked)} />
+            Random author — bốc tài khoản đứng tên bài theo ngôn ngữ của kênh
+          </label>
+
+          <div className="rounded-md border border-slate-200 p-3">
+            <button
+              type="button"
+              className="text-sm font-medium text-slate-700"
+              onClick={() => setShowTuning((v) => !v)}
+            >
+              {showTuning ? "▾" : "▸"} Tham số quét (nâng cao)
+            </button>
+            {showTuning ? (
+              <div className="mt-3 space-y-3">
+                <ChannelTuning
+                  value={tuning}
+                  onChange={setTuning}
+                  backfillDone={Boolean(list?.backfill_done_at)}
+                />
+                <Field
+                  label="Khoảng nghỉ giữa 2 vòng"
+                  hint="Ví dụ 30s, 2m. Bỏ trống = theo hệ thống (60s). Tối thiểu 15s."
+                >
+                  <Input
+                    placeholder="60s"
+                    value={scanInterval}
+                    onChange={(e) => setScanInterval(e.target.value)}
+                  />
+                </Field>
+              </div>
+            ) : null}
+          </div>
+
+          <ErrorNote error={create.error ?? update.error} />
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose}>
+              Huỷ
+            </Button>
+            <Button type="submit" disabled={pending}>
+              {pending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Thêm kênh"}
+            </Button>
+          </div>
+        </form>
       )}
     </Modal>
   );
@@ -708,8 +777,8 @@ function SkippedPanel({ listId, patternCount }: { listId: string; patternCount: 
   return (
     <div className="space-y-3">
       <p className="text-sm text-slate-600">
-        <b>{data?.last_7_days ?? 0}</b> bài bị bỏ qua trong 7 ngày qua vì không khớp{" "}
-        {patternCount} điều kiện bắt bài. Log chỉ giữ 7 ngày.
+        <b>{data?.last_7_days ?? 0}</b> bài bị bỏ qua trong 7 ngày qua vì không khớp {patternCount}{" "}
+        điều kiện bắt bài. Log chỉ giữ 7 ngày.
       </p>
 
       <Table>

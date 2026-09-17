@@ -247,8 +247,12 @@ func registerReadOnly(g *gin.RouterGroup, d RouterDeps) {
 	// route /skipped-logs toàn cục: lý do bỏ qua chỉ có nghĩa khi đọc cạnh
 	// regex của chính kênh đó.
 	g.GET("/lists/breaking/:id/skipped", list.SkippedLogs)
+	// Lịch sử quét: vòng nào chạy lúc nào, ai cho chạy, ra bao nhiêu bài/voice.
+	// Nằm dưới kênh vì cùng lý do với /skipped ở trên.
+	g.GET("/lists/breaking/:id/scans", list.ScanRunsBreaking)
 	g.GET("/lists/scheduled", list.ListScheduled)
 	g.GET("/lists/scheduled/:id", list.GetScheduled)
+	g.GET("/lists/scheduled/:id/scans", list.ScanRunsScheduled)
 
 	g.GET("/prompts", catalog.ListPrompts)
 	g.GET("/prompts/:id", catalog.GetPrompt)
@@ -299,6 +303,9 @@ func registerWrite(g *gin.RouterGroup, d RouterDeps) {
 
 	g.POST("/lists/scheduled", list.CreateScheduled)
 	g.PATCH("/lists/scheduled/:id", list.UpdateScheduled)
+	// Đối xứng với /lists/breaking/:id/run — kênh Định kỳ đặt tần suất 6 tiếng
+	// thì không có cách nào thử cấu hình vừa sửa ngoài việc ngồi chờ.
+	g.POST("/lists/scheduled/:id/run", list.RunScheduled)
 
 	g.POST("/prompts", catalog.CreatePrompt)
 	g.PATCH("/prompts/:id", catalog.UpdatePrompt)

@@ -385,6 +385,20 @@ export interface ListBreaking {
   active_from_min: number | null;
   active_to_min: number | null;
   active_weekdays: number[] | null;
+  /**
+   * Quốc gia của kênh. Mọi Bài Post và Voice của kênh thuộc về quốc gia này;
+   * null = suy từ ngôn ngữ như trước.
+   */
+  country_id: number | null;
+  /**
+   * Trạng thái vòng quét GẦN NHẤT: `running` = đang quét, `success` = vừa quét
+   * xong, `error` = vòng vừa rồi hỏng, rỗng = chưa quét lần nào.
+   *
+   * Đọc từ bảng scan_run chứ không phải một cột trên kênh: cột như vậy phải
+   * được xoá bởi chính tiến trình vừa chết, nên nó sẽ kẹt ở "đang quét" đúng
+   * lúc cần tin nó nhất.
+   */
+  last_run_status?: string;
 }
 
 /** Postgres INTERVAL do pgx trả về. */
@@ -451,6 +465,20 @@ export interface ListScheduled {
   active_to_min: number | null;
   active_weekdays: number[] | null;
   fixed_times_min: number[] | null;
+  /**
+   * Quốc gia của kênh. Mọi Bài Post và Voice của kênh thuộc về quốc gia này;
+   * null = suy từ ngôn ngữ như trước.
+   */
+  country_id: number | null;
+  /**
+   * Trạng thái vòng quét GẦN NHẤT: `running` = đang quét, `success` = vừa quét
+   * xong, `error` = vòng vừa rồi hỏng, rỗng = chưa quét lần nào.
+   *
+   * Đọc từ bảng scan_run chứ không phải một cột trên kênh: cột như vậy phải
+   * được xoá bởi chính tiến trình vừa chết, nên nó sẽ kẹt ở "đang quét" đúng
+   * lúc cần tin nó nhất.
+   */
+  last_run_status?: string;
 }
 
 export interface Prompt {
@@ -715,6 +743,47 @@ export interface SkippedLogPage {
   total: number;
   /** Số bài bỏ qua trong 7 ngày gần nhất — cửa sổ cố định để so giữa các kênh. */
   last_7_days: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * ScanRun — MỘT vòng quét đã chạy của một kênh.
+ *
+ * Kênh chỉ mang được trạng thái của vòng gần nhất (`last_scanned_at`,
+ * `last_error`), và vòng sau ghi đè vòng trước. Bảng này là chỗ duy nhất trả
+ * lời được "kênh này quét bao giờ, ai cho chạy, mấy vòng vừa rồi có ra gì".
+ */
+export interface ScanRun {
+  id: string;
+  started_at: string;
+  /** null = vòng vẫn đang chạy. */
+  finished_at: string | null;
+  /** `running` | `success` | `error`. */
+  status: string;
+  /** `auto` = lịch chạy, `manual` = có người bấm nút. */
+  trigger_kind: string;
+  /**
+   * Rỗng ở vòng tự động, và cũng rỗng khi tài khoản đã bị xoá — `trigger_kind`
+   * mới là thứ phân biệt hai trường hợp đó.
+   */
+  triggered_by_email: string;
+  /** Số bài vòng này thật sự đem ra xét. */
+  fetched: number;
+  posts_created: number;
+  voices_created: number;
+  skipped: number;
+  error: string;
+}
+
+export interface ScanHistory {
+  items: ScanRun[];
+  total: number;
+  /** Tổng kết 7 ngày qua — cửa sổ cố định để so được giữa các kênh. */
+  runs_7d: number;
+  posts_created_7d: number;
+  voices_created_7d: number;
+  failed_7d: number;
   limit: number;
   offset: number;
 }

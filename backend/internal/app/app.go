@@ -290,7 +290,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		AIUsage:    aiUsage,
 		Health:     service.NewHealth(queries, log),
 		Maintenance: service.NewMaintenance(
-			queries, log, cfg.SkippedLogRetention, cfg.AIUsageRetention),
+			queries, log, cfg.SkippedLogRetention, cfg.AIUsageRetention, cfg.ScanRunRetention),
 		MultimeCreds: multimeCreds,
 		MultimeUsers: multimeUsers,
 		CatalogCache: service.NewCatalogCache(queries, multimeUsers, log),
